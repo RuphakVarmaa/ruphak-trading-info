@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import { TradingCalendar } from "../calendar/calendar";
 import { istAt } from "../clock";
 import { DEFAULT_CONFIG } from "../config";
-import { GLOBAL_KEYS, MARKET_SYMBOLS, type Candle, type MarketFeatures, type MarketSnapshot } from "../types";
+import { GLOBAL_KEYS, type Candle, type MarketSnapshot } from "../types";
 import { logRetPct } from "../util/math";
 import {
   fixtureCandles5m,

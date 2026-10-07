@@ -81,6 +81,39 @@ describe("parseYahooChart", () => {
     expect(chart.candles.map((c) => c.c)).toEqual([1, 3]);
   });
 
+  it("folds Yahoo's trailing live tick into its 5-minute bar", () => {
+    // Recorded ES=F chart: the last point is stamped 20:35:54 IST (the last trade), after the 20:35 bar.
+    const raw = readMarketFixture("yahoo-5m-5d-ES_F.json") as {
+      chart: { result: { timestamp: number[]; indicators: { quote: { close: (number | null)[] }[] } }[] };
+    };
+    const ts = raw.chart.result[0].timestamp;
+    expect(ts[ts.length - 1] % 300).not.toBe(0);
+    const chart = parseYahooChart(raw, "ES=F");
+    expect(chart.candles.every((c) => c.t % 300_000 === 0)).toBe(true);
+    const last = chart.candles[chart.candles.length - 1];
+    expect(last.t).toBe(istAt("2026-10-07", "20:35"));
+    expect(last.c).toBe(raw.chart.result[0].indicators.quote[0].close[ts.length - 1]);
+
+    const t0 = 1_791_344_700; // 09:15 IST
+    const live = chartJson([
+      { ts: t0, o: 100, h: 101, l: 99, c: 100.5, v: 5 },
+      { ts: t0 + 300, o: 100.5, h: 100.8, l: 100.4, c: 100.6, v: 3 },
+      { ts: t0 + 433, o: 100.9, h: 100.9, l: 100.9, c: 100.9, v: 0 },
+    ]) as { chart: { result: { meta: Record<string, unknown> }[] } };
+    live.chart.result[0].meta.dataGranularity = "5m";
+    expect(parseYahooChart(live, "^TEST").candles).toEqual([
+      { t: t0 * 1000, o: 100, h: 101, l: 99, c: 100.5, v: 5 },
+      { t: (t0 + 300) * 1000, o: 100.5, h: 100.9, l: 100.4, c: 100.9, v: 3 },
+    ]);
+    // A tick whose own bar is missing becomes that bar.
+    const orphan = chartJson([{ ts: t0 + 777, o: 101, h: 101, l: 101, c: 101, v: 0 }]) as typeof live;
+    orphan.chart.result[0].meta.dataGranularity = "5m";
+    expect(parseYahooChart(orphan, "^TEST").candles).toEqual([{ t: (t0 + 600) * 1000, o: 101, h: 101, l: 101, c: 101, v: 0 }]);
+    // Daily charts are left alone (their last point is today's running bar).
+    const daily = parseYahooChart(readMarketFixture("yahoo-1d-3mo-NSEI.json"), "^NSEI");
+    expect(daily.candles.length).toBeGreaterThan(60);
+  });
+
   it("returns no candles when the range holds no data", () => {
     const chart = parseYahooChart({ chart: { result: [{ meta: { symbol: "X" }, indicators: { quote: [{}] } }], error: null } }, "X");
     expect(chart.candles).toEqual([]);

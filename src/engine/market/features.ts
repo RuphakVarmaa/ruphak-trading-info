@@ -74,12 +74,20 @@ interface Series {
 }
 
 /**
- * Calendar days of 5m history the features look at: 20 prior sessions for percentiles and divergence
- * z-scores plus slack for holidays. Older bars are skipped without being touched.
+ * Calendar days of 5m history the features need: enough prior sessions for the ATR percentile
+ * (sessionLookbackDays), divergence z-scores (20) and daily realized vol (21 closes), plus slack for
+ * weekends and holidays. Older bars are skipped without being touched.
  */
-const HISTORY_WINDOW_DAYS = 40;
+function historyWindowDays(cfg: EngineConfig): number {
+  const sessions = Math.max(cfg.features.sessionLookbackDays, DIVERGENCE_HISTORY_SESSIONS, DAILY_RV_CLOSES);
+  return Math.ceil((sessions * 7) / 5) + 14;
+}
 
-/** Prepared series are cached per snapshot object (snapshots are treated as immutable). */
+/**
+ * Prepared series are cached per snapshot object, keyed by symbol, time and window, so computing
+ * NIFTY and SENSEX features from one snapshot prepares each series once. Snapshots are treated as
+ * immutable apart from `t`.
+ */
 const seriesCache = new WeakMap<MarketSnapshot, WeakMap<TradingCalendar, Map<string, Series>>>();
 
 function firstIndexAtOrAfter(candles: Candle[], t: number): number {
@@ -94,16 +102,24 @@ function firstIndexAtOrAfter(candles: Candle[], t: number): number {
 }
 
 /** One pass over the history window: session filter, closed/visible split and grouping by date. */
-function prepare(snap: MarketSnapshot, symbol: string, calendar: TradingCalendar, t: number, today: string): Series {
+function prepare(
+  snap: MarketSnapshot,
+  symbol: string,
+  calendar: TradingCalendar,
+  t: number,
+  today: string,
+  windowDays: number,
+): Series {
   let byCal = seriesCache.get(snap);
   if (!byCal) seriesCache.set(snap, (byCal = new WeakMap()));
-  let bySym = byCal.get(calendar);
-  if (!bySym) byCal.set(calendar, (bySym = new Map()));
-  const hit = bySym.get(symbol);
+  let byKey = byCal.get(calendar);
+  if (!byKey) byCal.set(calendar, (byKey = new Map()));
+  const key = `${symbol}|${t}|${windowDays}`;
+  const hit = byKey.get(key);
   if (hit) return hit;
 
   const raw = snap.candles[symbol] ?? [];
-  const fromMs = istMidnight(today) - HISTORY_WINDOW_DAYS * DAY_MS;
+  const fromMs = istMidnight(today) - windowDays * DAY_MS;
   const visible: Candle[] = [];
   const closed: Candle[] = [];
   const byDate = new Map<string, Candle[]>();
@@ -135,7 +151,7 @@ function prepare(snap: MarketSnapshot, symbol: string, calendar: TradingCalendar
     prevDates: [...byDate.keys()].filter((d) => d < today).sort(),
     daily: (snap.daily[symbol] ?? []).filter((c) => c.t <= t && Number.isFinite(c.c)),
   };
-  bySym.set(symbol, series);
+  byKey.set(key, series);
   return series;
 }
 
@@ -279,8 +295,7 @@ function sanitizeGlobal(g: Record<GlobalKey, number | null>): Record<GlobalKey, 
 
 function snapshotAge(snap: MarketSnapshot): number {
   const a = snap.dataAgeSec;
-  if (typeof a !== "number" || Number.isNaN(a)) return NO_DATA_AGE_SEC;
-  if (!Number.isFinite(a)) return a > 0 ? NO_DATA_AGE_SEC : 0;
+  if (typeof a !== "number" || !Number.isFinite(a)) return NO_DATA_AGE_SEC;
   return Math.max(0, a);
 }
 
@@ -367,10 +382,11 @@ function buildFeatures(index: IndexId, snap: MarketSnapshot, calendar: TradingCa
   const t = snap.t;
   const today = istDate(t);
   const otherIndex: IndexId = index === "NIFTY" ? "SENSEX" : "NIFTY";
-  const self = prepare(snap, MARKET_SYMBOLS[index], calendar, t, today);
-  const other = prepare(snap, MARKET_SYMBOLS[otherIndex], calendar, t, today);
-  const bank = prepare(snap, MARKET_SYMBOLS.BANKNIFTY, calendar, t, today);
-  const vixS = prepare(snap, MARKET_SYMBOLS.INDIAVIX, calendar, t, today);
+  const windowDays = historyWindowDays(cfg);
+  const self = prepare(snap, MARKET_SYMBOLS[index], calendar, t, today, windowDays);
+  const other = prepare(snap, MARKET_SYMBOLS[otherIndex], calendar, t, today, windowDays);
+  const bank = prepare(snap, MARKET_SYMBOLS.BANKNIFTY, calendar, t, today, windowDays);
+  const vixS = prepare(snap, MARKET_SYMBOLS.INDIAVIX, calendar, t, today, windowDays);
   const openMs = istAt(today, SESSION.open);
 
   // --- Spot -------------------------------------------------------------------------------
@@ -379,7 +395,16 @@ function buildFeatures(index: IndexId, snap: MarketSnapshot, calendar: TradingCa
   let spot = 0;
   if (hasLtp) spot = ltpRaw;
   else if (self.closed.length > 0) spot = self.closed[self.closed.length - 1].c;
-  else if (self.daily.length > 0) spot = self.daily[self.daily.length - 1].c;
+  else {
+    // Daily fallback: only completed sessions (today's daily bar may be running or, in a careless
+    // snapshot, final).
+    for (let i = self.daily.length - 1; i >= 0; i--) {
+      if (istDateOf(self.daily[i].t) < today) {
+        spot = self.daily[i].c;
+        break;
+      }
+    }
+  }
   if (!(spot > 0)) spot = 0;
 
   // --- Returns ----------------------------------------------------------------------------

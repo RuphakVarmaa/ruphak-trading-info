@@ -2,18 +2,19 @@
  * Live MarketDataSource backed by Yahoo chart v8 with in-memory caching. One instance lives inside
  * the trading Durable Object and is asked for a snapshot on every 30-second tick:
  * - ^NSEI ^BSESN ^NSEBANK ^INDIAVIX: 5m range=60d once per IST day, then range=1d at most every
- *   `intradayTtlMs` (default 60 s), merged into the cache;
+ *   `intradayTtlMs` (default 60 s), spliced into the cache (fresh bars replace the window they cover);
+ *   outside the session the incremental refresh stops once data fetched after the last close is in;
  * - cross-assets (US futures, crude, gold, DXY, USDINR, ^TNX, ^VIX, Nikkei, Hang Seng, Shanghai):
- *   5m range=5d at most every `crossTtlMs` (default 2 min), merged;
+ *   5m range=5d at most every `crossTtlMs` (default 2 min), spliced the same way;
  * - daily range=6mo for every symbol once per IST day (or after `dailyTtlMs`).
  * At most 4 requests run at once. A failing symbol never fails the snapshot: its stale data is kept
  * and the error is logged. An optional LtpProvider (Groww) overrides the index spot.
  */
 import type { TradingCalendar } from "../calendar/calendar";
-import { DAY_MS, istDate } from "../clock";
+import { DAY_MS, MINUTE_MS, istDate } from "../clock";
 import type { MarketDataSource } from "../ports";
 import { MARKET_SYMBOLS, type Candle, type FeatureIndexId, type MarketSnapshot } from "../types";
-import { BAR_5M_MS, lastIndexAtOrBefore, mergeCandles } from "./candles";
+import { BAR_5M_MS, lastIndexAtOrBefore, spliceCandles } from "./candles";
 import { NO_DATA_AGE_SEC } from "./features";
 import { fetchYahooChart, type YahooChart, type YahooInterval } from "./yahooClient";
 
@@ -54,6 +55,8 @@ const FRESHNESS_INDICES: readonly FeatureIndexId[] = ["NIFTY", "SENSEX"];
 
 const MAX_CONCURRENCY = 4;
 const INDIAN_KEEP_MS = 70 * DAY_MS;
+/** Yahoo publishes the last bars of a session within a few minutes of the 15:30 close. */
+const CLOSE_SETTLE_MS = 10 * MINUTE_MS;
 const CROSS_KEEP_MS = 10 * DAY_MS;
 
 export interface YahooMarketDataOptions {
@@ -77,7 +80,6 @@ interface Task {
   interval: YahooInterval;
   range: string;
   apply: (chart: YahooChart) => void;
-  onError?: () => void;
 }
 
 async function runPool(tasks: (() => Promise<void>)[], limit: number): Promise<void> {
@@ -109,6 +111,8 @@ export class YahooMarketDataSource implements MarketDataSource {
   /** IST date of the last successful 60-day load per Indian symbol. */
   private readonly fullLoadDate = new Map<string, string>();
   private readonly lastIntradayAttempt = new Map<string, number>();
+  /** Time of the last successful intraday fetch per symbol. */
+  private readonly lastIntradayOk = new Map<string, number>();
   private readonly dailyLoadDate = new Map<string, string>();
   private readonly lastDailyAttempt = new Map<string, number>();
   private refreshing: Promise<void> | null = null;
@@ -187,23 +191,35 @@ export class YahooMarketDataSource implements MarketDataSource {
     const today = istDate(now);
     const tasks: Task[] = [];
 
+    const sessionOpen = this.calendar.sessionPhase(now) === "OPEN";
+    let settledAfter = Infinity;
+    try {
+      settledAfter = this.calendar.prevCloseMs(now) + CLOSE_SETTLE_MS;
+    } catch {
+      // No recent session in the calendar: keep refreshing on the TTL.
+    }
+
     for (const sym of INDIAN_SYMBOLS) {
       const last = this.lastIntradayAttempt.get(sym);
       if (last !== undefined && now - last < this.intradayTtlMs) continue;
+      const fullLoadDue = this.fullLoadDate.get(sym) !== today;
+      const ok = this.lastIntradayOk.get(sym);
+      // Market closed and we already hold everything published after the last close: nothing new can come.
+      if (!fullLoadDue && !sessionOpen && ok !== undefined && ok >= settledAfter) continue;
       this.lastIntradayAttempt.set(sym, now);
-      if (this.fullLoadDate.get(sym) !== today) {
+      if (fullLoadDue) {
         // First load of the IST day (or a retry after a failed one): the full 60-day warm-up window.
         tasks.push({
           symbol: sym,
           interval: "5m",
           range: "60d",
           apply: (chart) => {
-            this.mergeIntraday(sym, chart, now - INDIAN_KEEP_MS);
+            this.mergeIntraday(sym, chart, now - INDIAN_KEEP_MS, now);
             this.fullLoadDate.set(sym, today);
           },
         });
       } else {
-        tasks.push({ symbol: sym, interval: "5m", range: "1d", apply: (chart) => this.mergeIntraday(sym, chart, now - INDIAN_KEEP_MS) });
+        tasks.push({ symbol: sym, interval: "5m", range: "1d", apply: (chart) => this.mergeIntraday(sym, chart, now - INDIAN_KEEP_MS, now) });
       }
     }
 
@@ -211,7 +227,7 @@ export class YahooMarketDataSource implements MarketDataSource {
       const last = this.lastIntradayAttempt.get(sym);
       if (last !== undefined && now - last < this.crossTtlMs) continue;
       this.lastIntradayAttempt.set(sym, now);
-      tasks.push({ symbol: sym, interval: "5m", range: "5d", apply: (chart) => this.mergeIntraday(sym, chart, now - CROSS_KEEP_MS) });
+      tasks.push({ symbol: sym, interval: "5m", range: "5d", apply: (chart) => this.mergeIntraday(sym, chart, now - CROSS_KEEP_MS, now) });
     }
 
     for (const sym of [...INDIAN_SYMBOLS, ...CROSS_ASSET_SYMBOLS]) {
@@ -227,7 +243,7 @@ export class YahooMarketDataSource implements MarketDataSource {
         interval: "1d",
         range: "6mo",
         apply: (chart) => {
-          this.daily.set(sym, mergeCandles(this.daily.get(sym) ?? [], chart.candles));
+          this.daily.set(sym, spliceCandles(this.daily.get(sym) ?? [], chart.candles));
           this.dailyLoadDate.set(sym, today);
         },
       });
@@ -257,8 +273,9 @@ export class YahooMarketDataSource implements MarketDataSource {
     );
   }
 
-  private mergeIntraday(sym: string, chart: YahooChart, keepFromMs: number): void {
-    const merged = mergeCandles(this.intraday.get(sym) ?? [], chart.candles);
+  private mergeIntraday(sym: string, chart: YahooChart, keepFromMs: number, fetchedAt: number): void {
+    this.lastIntradayOk.set(sym, fetchedAt);
+    const merged = spliceCandles(this.intraday.get(sym) ?? [], chart.candles);
     let start = 0;
     while (start < merged.length && merged[start].t < keepFromMs) start++;
     this.intraday.set(sym, start > 0 ? merged.slice(start) : merged);

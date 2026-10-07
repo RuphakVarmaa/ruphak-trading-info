@@ -7,6 +7,9 @@
  * - Unknown symbols return HTTP 404 with `chart.error`.
  * - Bars are keyed by their OPEN time; the newest bar can still be forming.
  * - Exchange holidays inside the range come back as rows of nulls (dropped here).
+ * - While a market trades, intraday charts end with an extra point stamped at the last trade time
+ *   (e.g. 15:43:13 after the 15:40 bar). For 1m/2m/5m/15m charts it is folded into the bar it falls in
+ *   (close = that price, high/low extended) so every candle sits on the interval grid.
  * - Index volume is 0 on intraday bars (^NSEI, ^BSESN, ^NSEBANK, ^INDIAVIX).
  * - `meta.previousClose` is unreliable for multi-day ranges (on a 5d chart it can be the close
  *   from two sessions back); derive prior closes from the bars instead.
@@ -40,6 +43,9 @@ export const YAHOO_USER_AGENT =
 /** Yahoo accepts a far-future period2 and clamps it to "now"; period1 alone is rejected. */
 const FAR_FUTURE_PERIOD2 = 9_999_999_999;
 
+/** Intraday granularities whose bars sit on an epoch-aligned grid for every exchange used here. */
+const GRID_SECONDS: Record<string, number> = { "1m": 60, "2m": 120, "5m": 300, "15m": 900 };
+
 function finiteOrNull(x: unknown): number | null {
   return typeof x === "number" && Number.isFinite(x) ? x : null;
 }
@@ -60,6 +66,7 @@ function describeChartError(err: unknown): string {
 /**
  * Parses a chart v8 JSON response. Pure: no I/O.
  * Drops bars with any null/non-finite OHLC value; `t` = timestamp * 1000 (bar open); null volume -> 0.
+ * Off-grid trailing ticks of 1m-15m charts are folded into their bar (see the module comment).
  * A result without timestamps (no data in range) yields an empty candle list.
  * Throws on `chart.error` or an unrecognizable shape.
  */
@@ -84,7 +91,7 @@ export function parseYahooChart(json: unknown, symbol: string): YahooChart {
   const close = col("close");
   const volume = col("volume");
 
-  const byTime = new Map<number, Candle>();
+  const points: { ts: number; bar: Omit<Candle, "t"> }[] = [];
   for (let i = 0; i < timestamps.length; i++) {
     const ts = finiteOrNull(timestamps[i]);
     const o = finiteOrNull(open[i]);
@@ -92,9 +99,27 @@ export function parseYahooChart(json: unknown, symbol: string): YahooChart {
     const l = finiteOrNull(low[i]);
     const c = finiteOrNull(close[i]);
     if (ts === null || o === null || h === null || l === null || c === null) continue;
-    const t = ts * 1000;
+    points.push({ ts, bar: { o, h, l, c, v: finiteOrNull(volume[i]) ?? 0 } });
+  }
+  points.sort((a, b) => a.ts - b.ts); // stable: equal timestamps keep their order
+
+  const grid = GRID_SECONDS[typeof meta.dataGranularity === "string" ? meta.dataGranularity : ""];
+  const byTime = new Map<number, Candle>();
+  for (const { ts, bar } of points) {
+    if (grid && ts % grid !== 0) {
+      // Live tick stamped at its trade time: fold it into the bar it belongs to.
+      const t = Math.floor(ts / grid) * grid * 1000;
+      const cur = byTime.get(t);
+      byTime.set(
+        t,
+        cur
+          ? { ...cur, h: Math.max(cur.h, bar.h, bar.c), l: Math.min(cur.l, bar.l, bar.c), c: bar.c }
+          : { t, ...bar },
+      );
+      continue;
+    }
     // A later duplicate row for the same bar wins (Yahoo repeats the forming bar occasionally).
-    byTime.set(t, { t, o, h, l, c, v: finiteOrNull(volume[i]) ?? 0 });
+    byTime.set(ts * 1000, { t: ts * 1000, ...bar });
   }
   const candles = [...byTime.values()].sort((a, b) => a.t - b.t);
 

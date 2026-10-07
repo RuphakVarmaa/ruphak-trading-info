@@ -32,7 +32,8 @@ describe("ReplayMarketDataSource point-in-time guarantees", () => {
         expect(snap.t).toBe(t);
         for (const [sym, all] of Object.entries(candles)) {
           const visible = snap.candles[sym];
-          for (const c of visible) expect(c.t + BAR).toBeLessThanOrEqual(t - lagMs);
+          const leaked = visible.filter((c) => c.t + BAR > t - lagMs);
+          expect(leaked).toEqual([]);
           // Completeness: every eligible bar is there, and the next one is not eligible.
           const eligible = all.filter((c) => c.t + BAR <= t - lagMs);
           expect(visible.length).toBe(eligible.length);
@@ -40,7 +41,7 @@ describe("ReplayMarketDataSource point-in-time guarantees", () => {
           if (next) expect(next.t + BAR).toBeGreaterThan(t - lagMs);
         }
         for (const bars of Object.values(snap.daily)) {
-          for (const c of bars) expect(istDate(c.t) < istDate(t)).toBe(true);
+          expect(bars.filter((c) => istDate(c.t) >= istDate(t))).toEqual([]);
         }
       }
     });

@@ -143,6 +143,18 @@ export function mergeCandles(a: Candle[], b: Candle[]): Candle[] {
   return [...m.values()].sort((x, y) => x.t - y.t);
 }
 
+/**
+ * Cache update for a fresh download: bars of `old` before the first fresh bar are kept, everything from
+ * there on is replaced by `fresh` (so bars Yahoo revised or dropped do not linger). Empty `fresh` keeps `old`.
+ */
+export function spliceCandles(old: Candle[], fresh: Candle[]): Candle[] {
+  if (fresh.length === 0) return old;
+  const next = normalizeCandles(fresh);
+  const from = next[0].t;
+  const kept = old.filter((c) => c.t < from);
+  return kept.length > 0 ? [...kept, ...next] : next;
+}
+
 /** Sorts ascending and removes duplicate open times (the later element wins). Returns a new array. */
 export function normalizeCandles(candles: Candle[]): Candle[] {
   return mergeCandles([], candles);

@@ -15,6 +15,7 @@ import {
   resample,
   sessionBars,
   sessionDates,
+  spliceCandles,
 } from "./candles";
 
 const cal = new TradingCalendar();
@@ -127,6 +128,15 @@ describe("daily aggregation and merging", () => {
       expect(d.c).toBeCloseTo(y!.c, 1);
       expect(d.o).toBeCloseTo(y!.o, 1);
     }
+  });
+
+  it("spliceCandles replaces the window covered by fresh bars", () => {
+    const old = sessionFromCloses("2026-10-07", [1, 2, 3, 4], 1);
+    const stale = { ...old[3], t: old[3].t + 77_000 }; // e.g. a leftover off-grid point
+    const fresh = [{ ...old[2], c: 30 }];
+    expect(spliceCandles([...old, stale], fresh).map((c) => c.c)).toEqual([1, 2, 30]);
+    expect(spliceCandles(old, [])).toBe(old);
+    expect(spliceCandles([], fresh)).toEqual(fresh);
   });
 
   it("mergeCandles unions by open time, later input wins, sorted", () => {
