@@ -81,7 +81,7 @@ const HEALTH_KEYS: Record<SourceName, string[]> = {
   yahoo: ["health:yahoo"],
   gdelt: ["health:gdelt"],
   gnews: ["health:gnews"],
-  rss: ["health:google_rss", "health:rss"],
+  rss: ["health:publisher_rss", "health:bing_rss", "health:google_rss", "health:rss"],
   claude: ["health:claude", "health:llm"],
   groww: ["health:groww"],
   relay: ["health:relay"],

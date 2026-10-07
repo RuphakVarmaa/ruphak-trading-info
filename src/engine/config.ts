@@ -4,6 +4,15 @@
  */
 import type { Exchange, Horizon, IndexId, Regime, SignalSource } from "./types";
 
+/** A publisher RSS feed polled by the ingest cycle. */
+export interface FeedSpec {
+  name: string;
+  url: string;
+  publisher: string;
+  /** Also polled on the 2-minute boost cycles (market-moving feeds only). */
+  boost?: boolean;
+}
+
 /** Exchange-mandated and broker charges for index options, effective from a date. */
 export interface ChargeSchedule {
   /** IST date YYYY-MM-DD from which this schedule applies. */
@@ -83,7 +92,10 @@ export interface EngineConfig {
   };
   ingest: {
     gnewsQueries: string[];
+    /** Search queries for Google News RSS and Bing News RSS. */
     rssQueries: string[];
+    /** Publisher feeds. Unlike Google News and GDELT, they answer requests from Cloudflare Workers. */
+    feeds: FeedSpec[];
     gdeltQueries: string[];
     gdeltMinIntervalMs: number;
     lookbackHours: number;
@@ -246,6 +258,17 @@ export const DEFAULT_CONFIG: EngineConfig = {
       "Federal Reserve rate decision",
       "geopolitical conflict oil shipping Hormuz Red Sea",
       "China stimulus economy markets",
+    ],
+    feeds: [
+      { name: "et-markets", publisher: "The Economic Times", url: "https://economictimes.indiatimes.com/markets/rssfeeds/1977021501.cms", boost: true },
+      { name: "et-stocks", publisher: "The Economic Times", url: "https://economictimes.indiatimes.com/markets/stocks/news/rssfeeds/2146842.cms" },
+      { name: "et-economy", publisher: "The Economic Times", url: "https://economictimes.indiatimes.com/news/economy/rssfeeds/1373380680.cms" },
+      { name: "bs-markets", publisher: "Business Standard", url: "https://www.business-standard.com/rss/markets-106.rss", boost: true },
+      { name: "bs-economy", publisher: "Business Standard", url: "https://www.business-standard.com/rss/economy-102.rss" },
+      { name: "mint-markets", publisher: "Mint", url: "https://www.livemint.com/rss/markets", boost: true },
+      { name: "mint-economy", publisher: "Mint", url: "https://www.livemint.com/rss/economy" },
+      { name: "hbl-markets", publisher: "BusinessLine", url: "https://www.thehindubusinessline.com/markets/feeder/default.rss" },
+      { name: "ndtv-profit", publisher: "NDTV Profit", url: "https://feeds.feedburner.com/ndtvprofit-latest" },
     ],
     gdeltQueries: [
       "(India OR Nifty OR Sensex OR RBI) sourcelang:english",

@@ -53,7 +53,10 @@ export class IngestDO extends DurableObject<Env> {
         clock: systemClock,
         state: repo.state,
         gnewsApiKey: env.GNEWS_API_KEY,
+        // Google News RSS answers Cloudflare Workers with HTTP 503; publisher feeds and Bing News do not.
+        googleNews: false,
         gdelt: true,
+        boost: reason === "boost",
         // Each GDELT query costs >= 5.5 s of spacing: one per boost cycle, two on base cycles.
         gdeltQueriesPerCycle: reason === "boost" ? 1 : 2,
       });

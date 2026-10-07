@@ -19,9 +19,9 @@ A retail desk cannot copy a market maker's co-location, latency or balance sheet
 ## How it works
 
 ```
- Google News RSS ┐                                   ┌─ Yahoo 5m/daily (indices, VIX, crude, ES, DXY, USDINR, yields, Asia)
- GNews           ├─ IngestDO ─ normalize ─ dedupe ─ cluster ─┐   └─ Groww LTP (decision-time spot), option quotes with depth
- GDELT (spaced)  ┘                                 │         │
+ Publisher RSS   ┐                                   ┌─ Yahoo 5m/daily (indices, VIX, crude, ES, DXY, USDINR, yields, Asia)
+ Bing News RSS   ├─ IngestDO ─ normalize ─ dedupe ─ cluster ─┐   └─ Groww LTP (decision-time spot), option quotes with depth
+ GNews, GDELT    ┘                                 │         │
                                                    ▼         ▼
                           Queue: events-to-score ─ GLM-5.3 on Workers AI or Claude (structured output, rubric) ─ lexicon fallback
                                                    │
@@ -38,7 +38,7 @@ A retail desk cannot copy a market maker's co-location, latency or balance sheet
 
 ### From news to a number
 
-1. **Ingest** runs every 10 minutes around the clock, plus every 2 minutes on market days. It pulls Google News RSS queries, GNews when a key is set, and GDELT at most one request per 5.5 s because GDELT rate-limits per IP. Only market-relevant headlines are kept.
+1. **Ingest** runs every 10 minutes around the clock, plus every 2 minutes on market days. It reads publisher RSS feeds (Economic Times, Business Standard, Mint, BusinessLine, NDTV Profit) and Bing News RSS searches. It also reads GNews when a key is set, and GDELT at most one request per 5.5 s because GDELT rate-limits per IP. The 2-minute cycles poll only the markets feeds and the first two searches. Google News RSS is still supported but switched off in the Worker, because it answers Cloudflare Workers with HTTP 503. Only market-relevant headlines are kept.
 2. **Clustering** groups articles about the same story. It uses canonical URLs, normalized and stemmed titles, shingle Jaccard and entity overlap, and the model's story key for anything still left over. Pressure is computed per story, never per article: 50 articles about one RBI decision count as about 1.3 times 10 articles, not 5 times.
 3. **Scoring.** The model scores up to 10 clusters per request and must return JSON that matches the score schema. The default is Z.ai GLM-5.3 (`@cf/zai-org/glm-5.3`) through the Worker's Workers AI binding, so no API key is needed inside Cloudflare. Answers are validated, and a bad answer gets one corrective retry. `LLM_PROVIDER=anthropic` switches to Claude with the `ANTHROPIC_API_KEY` secret. A daily token budget caps cost. Over budget, or when the model is unavailable, a keyword lexicon scores instead. Its scores are always low confidence and are tagged `fallback`.
 4. **Event Pressure Index (EPI).** For each index, EPI = tanh(Σ numeric × coverage × 2^(−age/half-life)) over live stories. Here numeric = (0.7 × direction × magnitude × confidence + 0.3 × sector-weighted view) × novelty × priced-in × India relevance.
@@ -257,7 +257,7 @@ Reports are written to `reports/` and caches to `.cache/`; both are gitignored. 
 | News scoring with Claude (optional) | Roughly $200–280 a month on Opus 5.5 at about 200 calls a day; set `LLM_PROVIDER=anthropic`. |
 | Groww Trade API | ₹499 + GST a month (live data and live trading) |
 | Relay VPS | ₹300–800 a month (live only) |
-| Yahoo, Google News, GDELT, Telegram | free |
+| Yahoo, publisher RSS, Bing News, Google News, GDELT, Telegram | free |
 
 ## Configuration reference
 

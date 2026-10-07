@@ -7,6 +7,9 @@ import { fmtAge, fmtCompact, fmtIstHm } from "@/components/shared/format";
 import { Dot, Pill } from "@/components/shared/ui";
 
 const SOURCE_ORDER: SourceName[] = ["yahoo", "groww", "gnews", "rss", "gdelt", "claude", "relay"];
+/** Display names; "claude" is the health key of whichever model scores the news. */
+const SOURCE_LABEL: Partial<Record<SourceName, string>> = { claude: "LLM" };
+const sourceLabel = (s: SourceName) => SOURCE_LABEL[s] ?? s.toUpperCase();
 const STATUS_WORD = { loading: "CONNECTING", live: "LIVE", stale: "STALE", offline: "OFFLINE" } as const;
 
 function TickAge({ at }: { at: string | null }) {
@@ -55,11 +58,11 @@ export default function EngineStatusBar() {
               return (
                 <span
                   key={s}
-                  title={`${s.toUpperCase()}: ${h.ok ? "ok" : "failing"}${h.lastOkAt ? ` · last ok ${fmtIstHm(h.lastOkAt)} IST` : ""}${h.detail ? ` · ${h.detail}` : ""}`}
+                  title={`${sourceLabel(s)}: ${h.ok ? "ok" : "failing"}${h.lastOkAt ? ` · last ok ${fmtIstHm(h.lastOkAt)} IST` : ""}${h.detail ? ` · ${h.detail}` : ""}`}
                   style={{ display: "inline-flex", alignItems: "center", gap: 3, color: h.ok ? C.muted : C.red }}
                 >
                   <Dot color={healthColor(h.ok)} size={5} />
-                  {s.toUpperCase()} {h.ok ? "✓" : "✗"}
+                  {sourceLabel(s)} {h.ok ? "✓" : "✗"}
                 </span>
               );
             })}

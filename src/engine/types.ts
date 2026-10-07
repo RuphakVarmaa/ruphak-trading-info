@@ -159,7 +159,7 @@ export type Relevance = "NONE" | "INDIRECT" | "DIRECT";
 export type Surprise = "POSITIVE" | "NEGATIVE" | "INLINE" | "NA";
 export type SectorWeight = "LOW" | "MEDIUM" | "HIGH";
 
-export type ArticleSource = "gnews" | "google_rss" | "gdelt";
+export type ArticleSource = "gnews" | "google_rss" | "gdelt" | "publisher_rss" | "bing_rss";
 
 export interface RawArticle {
   source: ArticleSource;
