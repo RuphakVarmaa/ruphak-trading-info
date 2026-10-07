@@ -38,6 +38,41 @@ function mockFor(env: CloudflareEnv | null): EngineApi {
   return getMockEngine({ adminToken: adminTokenFrom(env), fail: pick("ENGINE_MOCK_FAIL", env) === "1" }, clock);
 }
 
+const RPC_METHODS = [
+  "getState",
+  "getSignals",
+  "getPositions",
+  "getEvents",
+  "getEventDetail",
+  "getOrders",
+  "getPnl",
+  "getPerformance",
+  "getScheduled",
+  "getBacktest",
+  "verifyAdmin",
+  "setArmed",
+  "setKillSwitch",
+  "setMode",
+  "startBacktest",
+] as const satisfies readonly (keyof EngineApi)[];
+
+/**
+ * Workers RPC returns thenables and objects that are not plain (proxies / null prototypes);
+ * React refuses to pass those to Client Components. Every result is copied into plain JSON,
+ * which the DTO contract guarantees is lossless.
+ */
+function plainRpc(stub: EngineApi): EngineApi {
+  const out: Record<string, unknown> = {};
+  for (const name of RPC_METHODS) {
+    const call = stub[name] as unknown as (...args: unknown[]) => PromiseLike<unknown>;
+    out[name] = async (...args: unknown[]) => {
+      const value = await call.apply(stub, args);
+      return value === undefined || value === null ? value : JSON.parse(JSON.stringify(value));
+    };
+  }
+  return out as unknown as EngineApi;
+}
+
 /**
  * The EngineApi to use for this request: the real engine through the service binding, or
  * the mock when ENGINE_MOCK=1 or the binding is absent.
@@ -46,7 +81,7 @@ export async function getEngineApi(): Promise<{ api: EngineApi; source: EngineSo
   if (process.env.ENGINE_MOCK === "1") return { api: mockFor(null), source: "mock" };
   const env = await cloudflareEnv();
   if (pick("ENGINE_MOCK", env) === "1") return { api: mockFor(env), source: "mock" };
-  if (env?.ENGINE) return { api: env.ENGINE, source: "engine" };
+  if (env?.ENGINE) return { api: plainRpc(env.ENGINE), source: "engine" };
   return { api: mockFor(env), source: "mock" };
 }
 

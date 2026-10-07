@@ -11,7 +11,7 @@ function taxonomyFromText(text: string): EventTaxonomy {
   const t = text.toLowerCase();
   if (/\b(rbi|repo rate|monetary policy|inflation|cpi|gdp|fiscal|budget|gst)\b/.test(t)) return "MACRO_POLICY";
   if (/\b(fed|fomc|powell|treasury|wall street|nasdaq|s&p 500|payrolls)\b/.test(t)) return "US_MARKET_FED";
-  if (/\b(fii|fpi|dii|foreign investors|outflows?|inflows?)\b/.test(t)) return "FII_FLOWS";
+  if (/\b(fiis?|fpis?|diis?|foreign (portfolio |institutional )?investors|outflows?|inflows?)\b/.test(t)) return "FII_FLOWS";
   if (/\b(china|pboc|yuan|beijing)\b/.test(t)) return "CHINA";
   if (/\b(results|earnings|profit|revenue|q[1-4])\b/.test(t)) return "CORPORATE_EARNINGS";
   if (/\b(sebi|election|parliament|ministry|regulat)/.test(t)) return "DOMESTIC_POLITICS_REGULATION";

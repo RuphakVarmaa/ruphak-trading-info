@@ -14,8 +14,9 @@ export const DEFAULT_SCHEDULED_HOURS = 192;
 export const DEFAULT_EVENTS_LIMIT = 60;
 export const DEFAULT_PNL_DAYS = 30;
 
-function settle<T>(p: Promise<T>, deadline: Promise<null>): Promise<T | null> {
-  return Promise.race([p.catch(() => null), deadline]);
+/** Engine RPC calls return thenables (RPC promises), not real Promises: adopt them first. */
+function settle<T>(p: PromiseLike<T>, deadline: Promise<null>): Promise<T | null> {
+  return Promise.race([Promise.resolve(p).catch(() => null), deadline]);
 }
 
 export async function getInitialEngineSnapshot(): Promise<EngineSnapshot | null> {

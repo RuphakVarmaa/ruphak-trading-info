@@ -28,9 +28,28 @@ function CardSkeleton({ index }: { index: IndexId }) {
   );
 }
 
-function SignalCard({ index, signal }: { index: IndexId; signal: SignalView | null }) {
+/** Signals loaded, but the engine has not evaluated this index yet (e.g. before the first tick of the day). */
+function NoSignal({ index }: { index: IndexId }) {
   const { state } = useEngineState();
-  if (!signal) return <CardSkeleton index={index} />;
+  const phase = state?.market.phase;
+  const nextOpen = state?.market.nextOpenAt;
+  const when =
+    phase === "OPEN" || phase === "PRE_OPEN"
+      ? "The engine evaluates every 30 seconds; the first decision appears after its next tick."
+      : `Market ${phase === "HOLIDAY" ? "holiday" : "closed"}. The engine evaluates every 30 seconds from ${nextOpen ? new Date(nextOpen).toLocaleString("en-IN", { timeZone: "Asia/Kolkata", weekday: "short", hour: "2-digit", minute: "2-digit" }) : "the next open"} IST.`;
+  return (
+    <div style={{ padding: "14px 16px", display: "flex", flexDirection: "column", gap: 10 }}>
+      <div style={{ fontSize: 13, fontWeight: 800, color: C.textSoft }}>{INDEX_LABEL[index]}</div>
+      <div style={{ fontSize: 11, color: C.muted3, lineHeight: 1.6 }}>
+        – No signal yet. {when}
+      </div>
+    </div>
+  );
+}
+
+function SignalCard({ index, signal, loaded }: { index: IndexId; signal: SignalView | null; loaded: boolean }) {
+  const { state } = useEngineState();
+  if (!signal) return loaded ? <NoSignal index={index} /> : <CardSkeleton index={index} />;
   const quote = state?.quotes.find((q) => q.key === index);
   const sColor = stanceColor(signal.stance);
   return (
@@ -90,7 +109,7 @@ export default function SignalConsole() {
       >
         {(["NIFTY", "SENSEX"] as IndexId[]).map((index, i) => (
           <div key={index} style={{ minHeight: 0, display: "flex", flexDirection: "column", borderLeft: i > 0 ? `1px solid ${C.border}` : undefined }}>
-            <SignalCard index={index} signal={signals?.find((s) => s.index === index) ?? null} />
+            <SignalCard index={index} signal={signals?.find((s) => s.index === index) ?? null} loaded={Array.isArray(signals)} />
           </div>
         ))}
       </div>
