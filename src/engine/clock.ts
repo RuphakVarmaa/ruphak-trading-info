@@ -139,6 +139,12 @@ export function formatIst(ms: number): string {
   return `${p.date} ${pad2(p.hour)}:${pad2(p.minute)}:${pad2(p.second)} IST`;
 }
 
+/** ISO-8601 timestamp in IST with an explicit offset: "2026-10-07T10:00:00+05:30". */
+export function istIso(ms: number): string {
+  const p = istParts(ms);
+  return `${p.date}T${pad2(p.hour)}:${pad2(p.minute)}:${pad2(p.second)}+05:30`;
+}
+
 /** Monday (YYYY-MM-DD) of the IST week containing `ms`. */
 export function istWeekStart(ms: number): string {
   const p = istParts(ms);
