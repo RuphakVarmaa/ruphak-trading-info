@@ -568,7 +568,10 @@ export interface Position {
   eventKeysAtEntry: string[];
   exitMs?: number;
   exitReason?: OrderReason;
+  /** Quantity sold so far (partial exits reduce `qty` until it reaches 0). */
+  exitedQty?: number;
   avgExit?: number;
+  /** Gross realized P&L so far, rupees (before charges). */
   realized?: number;
   exitCharges?: number;
   /** Max adverse / favorable premium excursion in percent of entry. */
@@ -627,6 +630,8 @@ export interface SignalPerformance {
   enabled: boolean;
   disabledSinceMs?: number;
   disabledReason?: string;
+  /** When the source was re-enabled on probation. */
+  probationSinceMs?: number;
   /** Counterfactual trades taken while disabled, for re-enable decisions. */
   shadowTrades: number;
   shadowExpectancyPct: number;

@@ -6,6 +6,7 @@ import type { ZodType } from "zod";
 import type { Clock } from "./clock";
 import type { EngineConfig } from "./config";
 import type { TradingCalendar } from "./calendar/calendar";
+import type { MarketContextStore } from "./pipeline/marketContext";
 import type {
   ArticleCluster,
   AuditEntry,
@@ -309,4 +310,6 @@ export interface EngineDeps {
   logger: Logger;
   newId: IdGenerator;
   mode: TradingMode;
+  /** Latest spot/VIX per index, shared with the broker's quote lookups. */
+  marketContext: MarketContextStore;
 }
