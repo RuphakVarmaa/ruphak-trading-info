@@ -137,6 +137,8 @@ export interface EngineConfig {
     eventWindowBeforeMin: number;
     eventWindowAfterMin: number;
     eventVixJumpPct: number;
+    /** ADX(14) at or above which an aligned tape (DI direction, 60-minute return, VWAP side) also counts as a trend. */
+    trendAdx: number;
   };
   conviction: {
     priorWeights: Record<SignalSource, number>;
@@ -148,6 +150,13 @@ export interface EngineConfig {
     counterTrendThreshold: number;
     /** Sources that may vote in the EVENT regime. */
     eventRegimeSources: SignalSource[];
+    /** Sources that vote only in the listed regimes (others: every regime). */
+    regimeMask: Partial<Record<SignalSource, Regime[]>>;
+    /**
+     * Minimum total weight of the sources with a view (abstainers excluded) before a score is
+     * produced: news alone, or two technical signals, never a single technical signal.
+     */
+    minActiveWeight: number;
   };
   gates: {
     noEntryBeforeIst: string;
@@ -327,14 +336,27 @@ export const DEFAULT_CONFIG: EngineConfig = {
     eventWindowBeforeMin: 15,
     eventWindowAfterMin: 30,
     eventVixJumpPct: 8,
+    trendAdx: 25,
   },
   conviction: {
-    priorWeights: { EVENT: 0.35, MOMENTUM: 0.25, GAP: 0.15, RELATIVE_VALUE: 0.1, GLOBAL_BETA: 0.15, VOL_REGIME: 0 },
+    priorWeights: {
+      EVENT: 0.3,
+      TREND: 0.2,
+      ORB: 0.15,
+      MOMENTUM: 0.15,
+      GAP: 0.1,
+      MEAN_REVERSION: 0.1,
+      GLOBAL_BETA: 0.05,
+      RELATIVE_VALUE: 0.05,
+      VOL_REGIME: 0,
+    },
     shrinkK: 30,
-    gain: 1.5,
+    gain: 1.2,
     thresholds: { TREND_UP: 0.35, TREND_DOWN: 0.35, RANGE: 0.55, HIGH_VOL: 0.5, EVENT: 0.45 },
     counterTrendThreshold: 0.6,
-    eventRegimeSources: ["EVENT", "GAP"],
+    eventRegimeSources: ["EVENT", "GAP", "TREND"],
+    regimeMask: { MEAN_REVERSION: ["RANGE"] },
+    minActiveWeight: 0.3,
   },
   gates: {
     noEntryBeforeIst: "09:25",
@@ -342,11 +364,11 @@ export const DEFAULT_CONFIG: EngineConfig = {
     expiryDayNoEntryMinBeforeClose: 90,
     preEventBlackoutMin: 15,
     postEventWaitMin: 5,
-    minEdgeRatio: 0.15,
-    minExpectedVsImplied: 0.5,
+    minEdgeRatio: 0.1,
+    minExpectedVsImplied: 0.35,
     maxSpreadPct: 1.5,
     minOi: 50_000,
-    maxDataAgeSec: 180,
+    maxDataAgeSec: 300,
     maxEventAgeMinForEventPlay: 120,
     kEM: 1.0,
     intradayVolFactor: 1.1,
@@ -427,7 +449,12 @@ function deepMerge<T>(base: T, patch: unknown): T {
 
 /** Returns DEFAULT_CONFIG overridden by `overrides`, validated. Throws on invalid values. */
 export function makeConfig(overrides: DeepPartial<EngineConfig> = {}): EngineConfig {
-  const cfg = deepMerge(DEFAULT_CONFIG, overrides);
+  return withOverrides(DEFAULT_CONFIG, overrides);
+}
+
+/** Returns `base` deep-merged with `overrides` (nested groups keep their other keys), validated. */
+export function withOverrides(base: EngineConfig, overrides: DeepPartial<EngineConfig> = {}): EngineConfig {
+  const cfg = deepMerge(base, overrides);
   const problems = validateConfig(cfg);
   if (problems.length > 0) throw new Error(`Invalid engine config: ${problems.join("; ")}`);
   return cfg;
@@ -457,6 +484,7 @@ export function validateConfig(cfg: EngineConfig): string[] {
   }
   for (const [k, v] of Object.entries(cfg.conviction.thresholds)) frac(`conviction.thresholds.${k}`, v);
   frac("conviction.counterTrendThreshold", cfg.conviction.counterTrendThreshold);
+  frac("conviction.minActiveWeight", cfg.conviction.minActiveWeight);
   for (const [k, v] of Object.entries(cfg.conviction.priorWeights)) {
     if (!(v >= 0)) p.push(`conviction.priorWeights.${k} must be >= 0`);
   }

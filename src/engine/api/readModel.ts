@@ -344,8 +344,9 @@ export class ReadModel {
     parts.push(`${stance} (conviction ${c.score >= 0 ? "+" : ""}${c.score.toFixed(2)} vs threshold ${c.threshold.toFixed(2)}, regime ${c.regime.replace("_", " ").toLowerCase()}).`);
     const top = contributors[0];
     if (top) parts.push(`Top event: ${top.title} (${top.score >= 0 ? "+" : ""}${top.score.toFixed(2)}, ${top.ageMin} min old).`);
-    const lead = [...c.components].filter((x) => x.enabled && x.source !== "EVENT").sort((a, b) => Math.abs(b.weight * b.value) - Math.abs(a.weight * a.value))[0];
+    const lead = [...c.components].filter((x) => x.enabled && !x.abstain && x.source !== "EVENT").sort((a, b) => Math.abs(b.weight * b.value) - Math.abs(a.weight * a.value))[0];
     if (lead && Math.abs(lead.value) > 0.05) parts.push(`${SIGNAL_SOURCE_LABELS[lead.source]} ${lead.value >= 0 ? "+" : ""}${lead.value.toFixed(2)}.`);
+    if (c.note) parts.push(`No score: ${c.note}.`);
     const failed = d.gates.filter((g) => g.passed === false);
     if (d.plan) parts.push(`All gates passed: plan ${d.plan.lots} lot(s) of ${d.plan.contract.tradingSymbol}.`);
     else if (failed.length > 0) parts.push(`Blocked by ${failed.map((g) => `${g.label} (${g.detail})`).slice(0, 2).join("; ")}.`);
@@ -380,14 +381,23 @@ export class ReadModel {
         expectedMovePct: d.expectedMovePct,
         impliedMovePct: d.impliedMovePct,
         edgeRatio: d.edgeRatio,
+        minEdgeRatio: cfg.gates.minEdgeRatio,
         gates: d.gates,
         allGatesPassed: d.gates.every((g) => g.passed !== false),
         contract,
         noPlanReason: d.noPlanReason,
-        components: d.conviction.components.map((c) => ({ source: c.source, value: c.value, weight: c.weight, enabled: c.enabled, ...(c.notes ? { notes: c.notes } : {}) })),
+        components: d.conviction.components.map((c) => ({
+          source: c.source,
+          value: c.value,
+          weight: c.weight,
+          enabled: c.enabled,
+          ...(c.notes ? { notes: c.notes } : {}),
+          ...(c.abstain ? { abstain: true } : {}),
+        })),
         contributors,
         rationale: this.rationale(index, d, contributors),
         position: pos ? positionView(pos) : null,
+        indicators: d.indicators ?? null,
       });
     }
     return out;

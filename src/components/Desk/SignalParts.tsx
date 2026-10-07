@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { useState } from "react";
-import type { EventContribution, GateResult, SignalComponentView, SignalSource, SignalView, Stance } from "@/engine/api-types";
+import type { EventContribution, GateResult, IndicatorView, SignalComponentView, SignalSource, SignalView, Stance } from "@/engine/api-types";
 import { SIGNAL_SOURCE_LABELS } from "@/engine/api-types";
 import { alpha, C, dirColor, stanceColor, taxonomyColor } from "@/components/shared/colors";
 import { enumLabel, fmtDuration, fmtInr, fmtSigned } from "@/components/shared/format";
@@ -141,8 +141,8 @@ export function ContractBlock({ signal }: { signal: SignalView }) {
           </span>
         )}
         {signal.edgeRatio != null && (
-          <span style={{ color: signal.edgeRatio >= 0.15 ? C.green : C.orange }}>
-            edge {signal.edgeRatio.toFixed(2)} {signal.edgeRatio >= 0.15 ? "✓" : "✗"}
+          <span style={{ color: signal.edgeRatio >= signal.minEdgeRatio ? C.green : C.orange }}>
+            edge {signal.edgeRatio.toFixed(2)} {signal.edgeRatio >= signal.minEdgeRatio ? "✓" : "✗"}
           </span>
         )}
       </div>
@@ -155,9 +155,9 @@ export function ContractBlock({ signal }: { signal: SignalView }) {
         {signal.edgeRatio != null && (
           <span
             title="Theta-gate edge ratio: (delta × expected move − theta − costs) / premium"
-            style={{ fontSize: 9, fontFamily: "monospace", color: signal.edgeRatio >= 0.15 ? C.green : C.orange }}
+            style={{ fontSize: 9, fontFamily: "monospace", color: signal.edgeRatio >= signal.minEdgeRatio ? C.green : C.orange }}
           >
-            EDGE {signal.edgeRatio.toFixed(2)} {signal.edgeRatio >= 0.15 ? "✓" : "✗"}
+            EDGE {signal.edgeRatio.toFixed(2)} {signal.edgeRatio >= signal.minEdgeRatio ? "✓" : "✗"}
           </span>
         )}
       </div>
@@ -239,6 +239,9 @@ export function GateList({ gates, allPassed }: { gates: GateResult[]; allPassed:
 
 const SOURCE_SHORT: Record<SignalSource, string> = {
   EVENT: "EVENT",
+  TREND: "TREND",
+  ORB: "ORB",
+  MEAN_REVERSION: "MEAN REV",
   MOMENTUM: "MOMENTUM",
   GAP: "GAP",
   RELATIVE_VALUE: "REL VALUE",
@@ -253,24 +256,25 @@ export function ComponentBars({ components }: { components: SignalComponentView[
       <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
         {components.map((c) => {
           const modifier = c.source === "VOL_REGIME";
-          const color = c.enabled ? dirColor(c.value) : C.muted3;
+          const silent = !modifier && c.abstain === true;
+          const color = c.enabled && !silent ? dirColor(c.value) : C.muted3;
           return (
             <div
               key={c.source}
-              title={`${SIGNAL_SOURCE_LABELS[c.source]}: ${fmtSigned(c.value)} × weight ${c.weight.toFixed(2)}${c.enabled ? "" : " (disabled)"}${c.notes ? ` · ${c.notes}` : ""}`}
+              title={`${SIGNAL_SOURCE_LABELS[c.source]}: ${silent ? "no view (left out of the conviction)" : `${fmtSigned(c.value)} × weight ${c.weight.toFixed(2)}`}${c.enabled ? "" : " (disabled)"}${c.notes ? ` · ${c.notes}` : ""}`}
               style={{
                 display: "grid",
                 gridTemplateColumns: "74px 1fr 40px 46px",
                 gap: 8,
                 alignItems: "center",
                 fontSize: 9,
-                opacity: c.enabled ? 1 : 0.5,
+                opacity: c.enabled && !silent ? 1 : 0.5,
               }}
             >
               <span style={{ color: C.textDim, letterSpacing: "0.04em", whiteSpace: "nowrap" }}>{SOURCE_SHORT[c.source]}</span>
-              {modifier ? (
+              {modifier || silent ? (
                 <span style={{ color: C.muted3, fontSize: 9, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-                  modifier · {c.notes ?? "threshold/size only"}
+                  {modifier ? `modifier · ${c.notes ?? "threshold/size only"}` : `no view · ${c.notes ?? "abstains"}`}
                 </span>
               ) : (
                 <div style={{ position: "relative", height: 6, background: "#1a1a1a", borderRadius: 3 }}>
@@ -289,7 +293,7 @@ export function ComponentBars({ components }: { components: SignalComponentView[
                 </div>
               )}
               <span className="tnum" style={{ fontFamily: "monospace", textAlign: "right", color: modifier ? C.muted3 : color === C.muted3 ? C.muted : color }}>
-                {modifier ? "—" : fmtSigned(c.value)}
+                {modifier || silent ? "—" : fmtSigned(c.value)}
               </span>
               <span className="tnum" style={{ fontFamily: "monospace", textAlign: "right", color: C.muted3 }}>
                 {c.enabled ? `w ${c.weight.toFixed(2)}` : "OFF"}
@@ -297,6 +301,49 @@ export function ComponentBars({ components }: { components: SignalComponentView[
             </div>
           );
         })}
+      </div>
+    </div>
+  );
+}
+
+const arrow = (d: number) => (d > 0 ? "▲" : d < 0 ? "▼" : "•");
+
+function Reading({ label, value, color, title }: { label: string; value: string; color?: string; title?: string }) {
+  return (
+    <div title={title} style={{ display: "flex", justifyContent: "space-between", gap: 6, fontSize: 9, minWidth: 0 }}>
+      <span style={{ color: C.muted3, letterSpacing: "0.04em", whiteSpace: "nowrap" }}>{label}</span>
+      <span className="tnum" style={{ fontFamily: "monospace", color: color ?? C.textDim, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
+        {value}
+      </span>
+    </div>
+  );
+}
+
+/** The indicator readings behind the current decision (5-minute bars). */
+export function IndicatorBlock({ ind }: { ind: IndicatorView | null }) {
+  if (!ind) return null;
+  const or = ind.openingRange;
+  const orText =
+    or.state === "FORMING"
+      ? "forming"
+      : `${or.low.toFixed(0)}–${or.high.toFixed(0)} ${or.state === "BROKE_UP" ? `▲ ${or.strengthAtr.toFixed(2)} ATR` : or.state === "BROKE_DOWN" ? `▼ ${or.strengthAtr.toFixed(2)} ATR` : or.lastBreak ? `inside (failed ${or.lastBreak.toLowerCase()})` : "inside"}`;
+  const orColor = or.state === "BROKE_UP" ? C.green : or.state === "BROKE_DOWN" ? C.red : C.textDim;
+  const rsiColor = ind.rsi14 >= 70 ? C.orange : ind.rsi14 <= 30 ? C.orange : C.textDim;
+  const trendDir = Math.sign(ind.ema9 - ind.ema21);
+  return (
+    <div>
+      <div style={{ ...microLabel, marginBottom: 6 }}>Indicators (5-min)</div>
+      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", columnGap: 12, rowGap: 3 }}>
+        <Reading label="VWAP" value={`${ind.vwapZ >= 0 ? "+" : ""}${ind.vwapZ.toFixed(2)}σ`} color={dirColor(ind.vwapZ)} title={`VWAP ${ind.vwap.toFixed(1)}; spot ${ind.vwapDistPct.toFixed(2)}% away`} />
+        <Reading label="RSI 14" value={ind.rsi14.toFixed(0)} color={rsiColor} />
+        <Reading label="ADX 14" value={`${ind.adx14.toFixed(0)} · +${ind.plusDi14.toFixed(0)}/−${ind.minusDi14.toFixed(0)}`} color={ind.adx14 >= 25 ? C.gold : C.textDim} title="ADX with +DI / −DI" />
+        <Reading label="EMA 9/21" value={`${arrow(trendDir)} ${ind.ema9SlopePct >= 0 ? "+" : ""}${ind.ema9SlopePct.toFixed(2)}%`} color={dirColor(trendDir)} title={`EMA9 ${ind.ema9.toFixed(1)} vs EMA21 ${ind.ema21.toFixed(1)}; EMA9 slope over 15 min`} />
+        <Reading label="SUPERTREND" value={`${arrow(ind.supertrendDir)} ${ind.supertrendLine > 0 ? ind.supertrendLine.toFixed(0) : "—"}`} color={dirColor(ind.supertrendDir)} />
+        <Reading label="BOLL %B" value={ind.bbPctB.toFixed(2)} color={ind.bbPctB >= 1 || ind.bbPctB <= 0 ? C.orange : C.textDim} title={`Band width ${ind.bbWidthPct.toFixed(2)}%`} />
+        <Reading label="OPEN RANGE" value={orText} color={orColor} />
+        <Reading label="DAILY" value={`${arrow(ind.dailyBias)} ${ind.dailyEmaGapPct >= 0 ? "+" : ""}${ind.dailyEmaGapPct.toFixed(2)}%`} color={dirColor(ind.dailyBias)} title="Daily EMA20 vs EMA50" />
+        <Reading label="PREV DAY" value={ind.prevDayClose > 0 ? `${ind.prevDayLow.toFixed(0)}–${ind.prevDayHigh.toFixed(0)} · ${ind.prevDayClose.toFixed(0)}` : "—"} title="Previous session low–high · close" />
+        <Reading label="ATR 5m" value={`${ind.atrPct5m.toFixed(2)}%`} />
       </div>
     </div>
   );

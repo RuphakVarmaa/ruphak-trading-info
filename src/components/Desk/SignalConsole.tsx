@@ -6,7 +6,7 @@ import { C, regimeColor, regimeGlyph, stanceColor, stanceGlyph, dirColor, dirGly
 import { enumLabel, fmtAge, fmtNum, fmtPct } from "@/components/shared/format";
 import { PanelHeader, Pill, Skeleton } from "@/components/shared/ui";
 import PositionLive from "./PositionLive";
-import { ComponentBars, ContractBlock, ContributorList, ConvictionGauge, GateList, Rationale } from "./SignalParts";
+import { ComponentBars, ContractBlock, ContributorList, ConvictionGauge, GateList, IndicatorBlock, Rationale } from "./SignalParts";
 
 const INDEX_LABEL: Record<IndexId, string> = { NIFTY: "NIFTY 50", SENSEX: "SENSEX" };
 
@@ -93,6 +93,7 @@ function SignalCard({ index, signal, loaded }: { index: IndexId; signal: SignalV
       <GateList gates={signal.gates} allPassed={signal.allGatesPassed} />
       <ContributorList contributors={signal.contributors} />
       <ComponentBars components={signal.components} />
+      <IndicatorBlock ind={signal.indicators} />
       <Rationale text={signal.rationale} />
     </section>
   );

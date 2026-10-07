@@ -27,8 +27,11 @@ import {
   type Candle,
   type GlobalKey,
   type IndexId,
+  type IndicatorView,
+  type Indicators,
   type MarketFeatures,
   type MarketSnapshot,
+  type OpeningRange,
 } from "../types";
 import { logRetPct, percentileRank } from "../util/math";
 import { BAR_5M_MS, isTradingDayCached, istDateOf, istMinuteOfDay } from "./candles";
@@ -37,10 +40,16 @@ import {
   annualizedVolPct,
   atr,
   barsSameSideOfVwap,
+  bollinger,
+  dmi,
   efficiencyRatio,
+  ema,
   realizedVolPct,
+  rsi,
+  supertrend,
   trueRanges,
   vwap,
+  vwapBands,
   zScore,
 } from "./indicators";
 
@@ -54,6 +63,10 @@ const MIN_TODAY_BARS_FOR_RV = 6;
 const DIVERGENCE_HISTORY_SESSIONS = 20;
 const BANK_WINDOW_BARS = 3;
 const DAILY_RV_CLOSES = 21;
+/** Closed 5-minute bars (across sessions) the classic indicators are computed on: about 1.6 sessions. */
+const INDICATOR_BARS = 120;
+/** Daily closes needed for the EMA20/EMA50 daily bias. */
+const DAILY_BIAS_CLOSES = 50;
 const SESSION_SLOTS = (SESSION.close - SESSION.open) / 5;
 
 interface Series {
@@ -318,6 +331,43 @@ function calendarFields(index: IndexId, t: number, today: string, calendar: Trad
   };
 }
 
+/** Indicator values while nothing is known (all finite). */
+export const NEUTRAL_INDICATORS: Indicators = {
+  rsi14: 50,
+  adx14: 0,
+  plusDi14: 0,
+  minusDi14: 0,
+  ema9: 0,
+  ema21: 0,
+  ema9SlopePct: 0,
+  supertrendDir: 0,
+  supertrendLine: 0,
+  bbPctB: 0.5,
+  bbWidthPct: 0,
+  vwap: 0,
+  vwapZ: 0,
+  dailyBias: 0,
+  dailyEmaGapPct: 0,
+  prevDayHigh: 0,
+  prevDayLow: 0,
+  prevDayClose: 0,
+};
+
+export const NEUTRAL_OPENING_RANGE: OpeningRange = {
+  high: 0,
+  low: 0,
+  state: "FORMING",
+  strengthAtr: 0,
+  barsOutside: 0,
+  lastBreak: null,
+  barsSinceReentry: 0,
+};
+
+/** The indicator readings behind a decision, for the dashboard. */
+export function indicatorView(f: MarketFeatures): IndicatorView {
+  return { ...f.indicators, spot: f.spot, atrPct5m: f.atrPct5m, vwapDistPct: f.vwapDistPct, openingRange: f.openingRange };
+}
+
 function emptyGlobal(): Record<GlobalKey, number | null> {
   const out = {} as Record<GlobalKey, number | null>;
   for (const k of GLOBAL_KEYS) out[k] = null;
@@ -340,7 +390,7 @@ export function neutralFeatures(index: IndexId, snap: MarketSnapshot, calendar: 
     retFromOpen: 0,
     vwapDistPct: 0,
     barsSameSideOfVwap: 0,
-    openingRange: { high: 0, low: 0, state: "FORMING" },
+    openingRange: { ...NEUTRAL_OPENING_RANGE },
     efficiencyRatio60m: 0,
     atrPct5m: 0,
     atrPctile20d: 50,
@@ -362,6 +412,7 @@ export function neutralFeatures(index: IndexId, snap: MarketSnapshot, calendar: 
       nextScheduledEvent: null,
       recentScheduledEvent: null,
     }),
+    indicators: { ...NEUTRAL_INDICATORS },
   };
 }
 
@@ -438,9 +489,29 @@ function buildFeatures(index: IndexId, snap: MarketSnapshot, calendar: TradingCa
   }
   let orState: MarketFeatures["openingRange"]["state"] = "FORMING";
   const orComplete = t >= orEnd && n > 0 && tb[n - 1].t + BAR_5M_MS >= orEnd;
+  let orStrengthAtr = 0;
+  let orBarsOutside = 0;
+  let orLastBreak: OpeningRange["lastBreak"] = null;
+  let orBarsSinceReentry = 0;
   if (orComplete && orBars.length > 0) {
     const lc = tb[n - 1].c;
     orState = lc > orHigh ? "BROKE_UP" : lc < orLow ? "BROKE_DOWN" : "INSIDE";
+    // Walk the bars after the range: how long the current break has lasted, and failed breaks.
+    for (const b of tb) {
+      if (b.t < orEnd) continue;
+      const side = b.c > orHigh ? "UP" : b.c < orLow ? "DOWN" : null;
+      if (side) {
+        orBarsOutside = side === orLastBreak && orBarsSinceReentry === 0 ? orBarsOutside + 1 : 1;
+        orLastBreak = side;
+        orBarsSinceReentry = 0;
+      } else {
+        orBarsOutside = 0;
+        if (orLastBreak) orBarsSinceReentry++;
+      }
+    }
+    const atrPts = atr(tb, ATR_BARS);
+    if (atrPts > 0 && orState === "BROKE_UP") orStrengthAtr = Math.min(10, (lc - orHigh) / atrPts);
+    else if (atrPts > 0 && orState === "BROKE_DOWN") orStrengthAtr = Math.min(10, (orLow - lc) / atrPts);
   }
 
   // --- Efficiency, ATR ------------------------------------------------------------------------
@@ -529,6 +600,50 @@ function buildFeatures(index: IndexId, snap: MarketSnapshot, calendar: TradingCa
   // --- Global moves since the previous Indian close ---------------------------------------------
   const global = sanitizeGlobal(globalMoves(snap, prevCloseMs, t));
 
+  // --- Classic indicators -----------------------------------------------------------------------
+  const hist = self.closed.slice(-INDICATOR_BARS);
+  const histCloses = hist.map((b) => b.c);
+  const dm = dmi(hist, 14);
+  const st = supertrend(hist, 10, 3);
+  const e9 = histCloses.length >= 9 ? ema(histCloses, 9) : [];
+  const e21 = histCloses.length >= 21 ? ema(histCloses, 21) : [];
+  const ema9 = e9.at(-1) ?? 0;
+  const ema9Back = e9.length >= 4 ? e9[e9.length - 4] : 0;
+  const bb = bollinger(histCloses, 20, 2);
+  const vb = vwapBands(tb, spot);
+  const allDaily = [...closeByDate.keys()].sort().map((d) => closeByDate.get(d) as number);
+  let dailyEmaGapPct = 0;
+  if (allDaily.length >= DAILY_BIAS_CLOSES) {
+    const d20 = ema(allDaily, 20).at(-1) ?? 0;
+    const d50 = ema(allDaily, 50).at(-1) ?? 0;
+    dailyEmaGapPct = d50 > 0 ? (d20 / d50 - 1) * 100 : 0;
+  }
+  const prevBars = prevDate !== null ? (self.byDate.get(prevDate) ?? []) : [];
+  const prevDaily = prevDate !== null ? self.daily.find((c) => istDateOf(c.t) === prevDate) : undefined;
+  const prevDayHigh = prevBars.length > 0 ? Math.max(...prevBars.map((b) => b.h)) : (prevDaily?.h ?? 0);
+  const prevDayLow = prevBars.length > 0 ? Math.min(...prevBars.map((b) => b.l)) : (prevDaily?.l ?? 0);
+  const prevDayClose = prevClose ?? 0;
+  const indicators: Indicators = {
+    rsi14: fin(rsi(histCloses, 14), 50),
+    adx14: fin(dm.adx),
+    plusDi14: fin(dm.plusDi),
+    minusDi14: fin(dm.minusDi),
+    ema9: fin(ema9),
+    ema21: fin(e21.at(-1) ?? 0),
+    ema9SlopePct: fin(ema9Back > 0 ? (ema9 / ema9Back - 1) * 100 : 0),
+    supertrendDir: fin(st.dir),
+    supertrendLine: fin(st.line),
+    bbPctB: fin(bb.pctB, 0.5),
+    bbWidthPct: fin(bb.bandwidthPct),
+    vwap: fin(vb.vwap),
+    vwapZ: fin(vb.z),
+    dailyBias: fin(Math.sign(dailyEmaGapPct)),
+    dailyEmaGapPct: fin(dailyEmaGapPct),
+    prevDayHigh: fin(prevDayHigh),
+    prevDayLow: fin(prevDayLow),
+    prevDayClose: fin(prevDayClose),
+  };
+
   return {
     index,
     t,
@@ -540,7 +655,15 @@ function buildFeatures(index: IndexId, snap: MarketSnapshot, calendar: TradingCa
     retFromOpen: fin(retFromOpen),
     vwapDistPct: fin(vwapDistPct),
     barsSameSideOfVwap: fin(sameSide),
-    openingRange: { high: fin(orHigh), low: fin(orLow), state: orState },
+    openingRange: {
+      high: fin(orHigh),
+      low: fin(orLow),
+      state: orState,
+      strengthAtr: fin(orStrengthAtr),
+      barsOutside: fin(orBarsOutside),
+      lastBreak: orLastBreak,
+      barsSinceReentry: fin(orBarsSinceReentry),
+    },
     efficiencyRatio60m: fin(efficiencyRatio60m),
     atrPct5m: fin(atrPct5m),
     atrPctile20d: fin(atrPctile20d, 50),
@@ -561,5 +684,6 @@ function buildFeatures(index: IndexId, snap: MarketSnapshot, calendar: TradingCa
     },
     global,
     ...calendarFields(index, t, today, calendar),
+    indicators,
   };
 }

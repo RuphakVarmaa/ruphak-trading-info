@@ -14,7 +14,7 @@ import type {
   TradeRecord,
   TradingMode,
 } from "../types";
-import { DIRECTIONAL_SOURCES } from "../types";
+import { DIRECTIONAL_SOURCES, SIGNAL_SOURCES } from "../types";
 import { mean, stdev } from "../util/math";
 
 export interface TradeStats {
@@ -157,7 +157,7 @@ export function updatePerformance(input: PerformanceInput, cfg: EngineConfig): S
 
 /** Splits a trade's net P&L across sources by its attribution shares (for reports). */
 export function attributePnl(trades: TradeRecord[]): Record<SignalSource, number> {
-  const out = { EVENT: 0, MOMENTUM: 0, GAP: 0, RELATIVE_VALUE: 0, GLOBAL_BETA: 0, VOL_REGIME: 0 } as Record<SignalSource, number>;
+  const out = Object.fromEntries(SIGNAL_SOURCES.map((s) => [s, 0])) as Record<SignalSource, number>;
   for (const t of trades) for (const a of t.attribution) out[a.source] += t.pnl * a.share;
   return out;
 }

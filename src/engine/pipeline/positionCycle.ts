@@ -3,7 +3,8 @@ import { HOUR_MS } from "../clock";
 import type { EngineDeps } from "../ports";
 import { haltReason } from "../risk/limits";
 import { evaluateExits, markPosition } from "../strategy/exits";
-import type { Conviction, IndexId, Order, Position, ScoredEvent } from "../types";
+import type { Conviction, IndexId, Order, Position, Quote, ScoredEvent } from "../types";
+import type { IndexContext } from "./marketContext";
 import { applyExitFills, openPositionFromFills, persistResult, submitExit } from "./execution";
 import { loadDayLedger, loadRiskState } from "./riskState";
 
@@ -66,6 +67,16 @@ async function manageOpenOrders(deps: EngineDeps, report: PositionReport): Promi
   }
 }
 
+/**
+ * Why a quote must not drive exits right now, or null when it is usable: synthetic quotes need a
+ * real spot and VIX, and every quote needs a positive bid or last price.
+ */
+export function exitPriceProblem(ctx: IndexContext, q: Quote): string | null {
+  if (q.source === "synthetic" && !(ctx.spot > 0 && ctx.vix > 0)) return `no market data to price it (spot ${ctx.spot}, VIX ${ctx.vix})`;
+  if (!(q.bid > 0 || q.ltp > 0)) return "the quote has no bid or last price";
+  return null;
+}
+
 export async function runPositionCycle(deps: EngineDeps, opts: PositionCycleOptions = {}): Promise<PositionReport> {
   const { cfg, repo, logger } = deps;
   const now = deps.clock.now();
@@ -89,6 +100,14 @@ export async function runPositionCycle(deps: EngineDeps, opts: PositionCycleOpti
         continue;
       }
       const q = await deps.optionQuotes.quote(p.contract, { t: now, spot: ctx.spot, vix: ctx.vix });
+      const problem = exitPriceProblem(ctx, q);
+      if (problem && !halt) {
+        // Never mark or exit on a nonsense price (e.g. a synthetic quote priced off spot 0 after a
+        // restart while market data is down): puts would look like jackpots and calls worthless.
+        report.errors.push(`${p.contract.tradingSymbol}: exits paused, ${problem}`);
+        unrealized += p.unrealized;
+        continue;
+      }
       const marked: Position = markPosition(p, q, now);
       report.marked++;
       if (pendingExit.has(p.id)) {

@@ -489,6 +489,7 @@ export class MockEngineApi implements EngineApi {
       expectedMovePct: round2(Math.abs(conviction) * impliedMovePct),
       impliedMovePct,
       edgeRatio: seed.index === "NIFTY" ? round2(0.21 + (conviction - seed.baseConviction) * 0.5) : null,
+      minEdgeRatio: 0.1,
       gates,
       allGatesPassed,
       contract: plannedContract,
@@ -497,6 +498,7 @@ export class MockEngineApi implements EngineApi {
       contributors: this.contributions(seed, now),
       rationale: seed.rationale,
       position: pos ? this.positionView(pos, now) : null,
+      indicators: seed.indicators,
     };
   }
 

@@ -195,3 +195,177 @@ export function ridgeRegression(X: number[][], y: number[], lambda: number): num
   for (let j = 0; j < p; j++) A[j][j] += lam;
   return solveLinearSystem(A, b);
 }
+
+// ---------------------------------------------------------------------------------------------
+// Classic intraday indicators (Wilder smoothing where the textbook definition uses it). Each
+// returns the value at the last bar and a finite neutral value while warming up.
+// ---------------------------------------------------------------------------------------------
+
+/** Wilder's smoothing (RMA): the first value is the mean of the first n inputs, then (prev·(n−1) + x) / n. [] with fewer than n inputs. */
+export function wilderSmooth(xs: number[], n: number): number[] {
+  const k = Math.floor(n);
+  if (!(k >= 1) || xs.length < k) return [];
+  let prev = mean(xs.slice(0, k));
+  const out = [prev];
+  for (let i = k; i < xs.length; i++) {
+    prev = (prev * (k - 1) + xs[i]) / k;
+    out.push(prev);
+  }
+  return out;
+}
+
+/** Wilder RSI of the closes; 50 with fewer than n + 1 closes, 100 when there were no losses. */
+export function rsi(closes: number[], n = 14): number {
+  const k = Math.floor(n);
+  if (!(k >= 1) || closes.length < k + 1) return 50;
+  const gains: number[] = [];
+  const losses: number[] = [];
+  for (let i = 1; i < closes.length; i++) {
+    const d = closes[i] - closes[i - 1];
+    gains.push(d > 0 ? d : 0);
+    losses.push(d < 0 ? -d : 0);
+  }
+  const g = wilderSmooth(gains, k).at(-1) ?? 0;
+  const l = wilderSmooth(losses, k).at(-1) ?? 0;
+  if (!(l > 0)) return g > 0 ? 100 : 50;
+  return 100 - 100 / (1 + g / l);
+}
+
+export interface Dmi {
+  adx: number;
+  plusDi: number;
+  minusDi: number;
+}
+
+/** Wilder's directional movement: +DI/−DI need n + 1 bars, ADX needs 2n; missing values are 0. */
+export function dmi(candles: Candle[], n = 14): Dmi {
+  const k = Math.floor(n);
+  if (!(k >= 1) || candles.length < k + 1) return { adx: 0, plusDi: 0, minusDi: 0 };
+  const tr: number[] = [];
+  const pdm: number[] = [];
+  const mdm: number[] = [];
+  for (let i = 1; i < candles.length; i++) {
+    const c = candles[i];
+    const p = candles[i - 1];
+    const up = c.h - p.h;
+    const down = p.l - c.l;
+    pdm.push(up > down && up > 0 ? up : 0);
+    mdm.push(down > up && down > 0 ? down : 0);
+    tr.push(Math.max(c.h - c.l, Math.abs(c.h - p.c), Math.abs(c.l - p.c)));
+  }
+  const sTr = wilderSmooth(tr, k);
+  const sP = wilderSmooth(pdm, k);
+  const sM = wilderSmooth(mdm, k);
+  const dx: number[] = [];
+  let plusDi = 0;
+  let minusDi = 0;
+  for (let i = 0; i < sTr.length; i++) {
+    plusDi = sTr[i] > 0 ? (100 * sP[i]) / sTr[i] : 0;
+    minusDi = sTr[i] > 0 ? (100 * sM[i]) / sTr[i] : 0;
+    const total = plusDi + minusDi;
+    dx.push(total > 0 ? (100 * Math.abs(plusDi - minusDi)) / total : 0);
+  }
+  const adx = wilderSmooth(dx, k).at(-1) ?? 0;
+  return { adx, plusDi, minusDi };
+}
+
+export interface Supertrend {
+  /** +1 up (price above the trailing band), −1 down, 0 while warming up. */
+  dir: -1 | 0 | 1;
+  /** The active band: the lower band in an uptrend, the upper band in a downtrend. */
+  line: number;
+}
+
+/** Supertrend with a Wilder ATR(n) and the usual band carry-forward rules. */
+export function supertrend(candles: Candle[], n = 10, mult = 3): Supertrend {
+  const k = Math.floor(n);
+  if (!(k >= 1) || candles.length < k + 1) return { dir: 0, line: 0 };
+  const atrs = wilderSmooth(trueRanges(candles), k); // atrs[j] belongs to bar j + k - 1
+  let upper = 0;
+  let lower = 0;
+  let dir: -1 | 1 = 1;
+  for (let j = 0; j < atrs.length; j++) {
+    const i = j + k - 1;
+    const c = candles[i];
+    const mid = (c.h + c.l) / 2;
+    const bu = mid + mult * atrs[j];
+    const bl = mid - mult * atrs[j];
+    if (j === 0) {
+      upper = bu;
+      lower = bl;
+      dir = c.c >= mid ? 1 : -1;
+      continue;
+    }
+    const pc = candles[i - 1].c;
+    upper = bu < upper || pc > upper ? bu : upper;
+    lower = bl > lower || pc < lower ? bl : lower;
+    if (dir === 1 && c.c < lower) dir = -1;
+    else if (dir === -1 && c.c > upper) dir = 1;
+  }
+  return { dir, line: dir === 1 ? lower : upper };
+}
+
+export interface Bollinger {
+  mid: number;
+  upper: number;
+  lower: number;
+  /** Where the last close sits in the band: 0 at the lower band, 1 at the upper band. */
+  pctB: number;
+  /** Band width as a percentage of the middle band. */
+  bandwidthPct: number;
+}
+
+/** Bollinger bands on the last n closes (population standard deviation); neutral with fewer than n closes. */
+export function bollinger(closes: number[], n = 20, k = 2): Bollinger {
+  const m = Math.floor(n);
+  if (!(m >= 2) || closes.length < m) return { mid: 0, upper: 0, lower: 0, pctB: 0.5, bandwidthPct: 0 };
+  const w = closes.slice(-m);
+  const mid = mean(w);
+  const sd = Math.sqrt(mean(w.map((x) => (x - mid) * (x - mid))));
+  const upper = mid + k * sd;
+  const lower = mid - k * sd;
+  const last = w[w.length - 1];
+  const width = upper - lower;
+  return {
+    mid,
+    upper,
+    lower,
+    pctB: width > 0 ? (last - lower) / width : 0.5,
+    bandwidthPct: mid > 0 ? (width / mid) * 100 : 0,
+  };
+}
+
+export interface VwapBands {
+  vwap: number;
+  /** Standard deviation of typical prices around VWAP (same weights as the VWAP). */
+  sigma: number;
+  /** (price − VWAP) / sigma, clamped to ±5; 0 with fewer than 6 bars or no dispersion. */
+  z: number;
+}
+
+const VWAP_BANDS_MIN_BARS = 6;
+
+/**
+ * VWAP and its standard-deviation bands for the session bars. Volume-weighted when the bars carry
+ * volume, equal-weighted otherwise (Yahoo reports zero volume on index bars).
+ */
+export function vwapBands(candles: Candle[], price: number): VwapBands {
+  if (candles.length === 0) return { vwap: 0, sigma: 0, z: 0 };
+  const volTotal = candles.reduce((s, c) => s + (Number.isFinite(c.v) && c.v > 0 ? c.v : 0), 0);
+  let wSum = 0;
+  let tpSum = 0;
+  let tp2Sum = 0;
+  for (const c of candles) {
+    const w = volTotal > 0 ? (Number.isFinite(c.v) && c.v > 0 ? c.v : 0) : 1;
+    const tp = typicalPrice(c);
+    wSum += w;
+    tpSum += w * tp;
+    tp2Sum += w * tp * tp;
+  }
+  const vw = wSum > 0 ? tpSum / wSum : 0;
+  const variance = wSum > 0 ? tp2Sum / wSum - vw * vw : 0;
+  const sigma = variance > 0 ? Math.sqrt(variance) : 0;
+  const usable = candles.length >= VWAP_BANDS_MIN_BARS && sigma > 0 && Number.isFinite(price) && price > 0;
+  const z = usable ? Math.max(-5, Math.min(5, (price - vw) / sigma)) : 0;
+  return { vwap: vw, sigma, z };
+}

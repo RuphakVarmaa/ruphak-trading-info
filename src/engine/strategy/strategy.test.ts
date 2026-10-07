@@ -3,12 +3,14 @@ import { computeCharges, roundTripChargesPerUnit, scheduleFor } from "../broker/
 import { limitFill, marketableLimit, marketFill, quoteProblem } from "../broker/fillModel";
 import { istAt } from "../clock";
 import { DEFAULT_CONFIG, makeConfig } from "../config";
-import type { Conviction, EventPressure, MarketFeatures, OptionContract, Position, Quote, ScoredEvent, SignalPerformance } from "../types";
+import { NEUTRAL_INDICATORS } from "../market/features";
+import type { Conviction, EventPressure, Indicators, MarketFeatures, OpeningRange, OptionContract, Position, Quote, ScoredEvent, SignalPerformance } from "../types";
 import { combineConviction, dominantSource, effectiveWeight, attributionShares } from "./conviction";
+import type { RawComponent } from "./signals";
 import { evaluateExits, markPosition, trailPrice } from "./exits";
 import { evaluateEdge } from "./gates";
 import { classifyRegime } from "./regime";
-import { gapSignal, globalBetaSignal, momentumSignal, rawComponents, relativeValueSignal, volRegimeSignal } from "./signals";
+import { eventSignal, gapSignal, globalBetaSignal, meanReversionSignal, momentumSignal, orbSignal, rawComponents, relativeValueSignal, trendSignal, volRegimeSignal } from "./signals";
 import { kellyFraction, sizePosition } from "./sizing";
 import { defaultSettings } from "../settings";
 
@@ -27,7 +29,7 @@ export function features(over: Partial<MarketFeatures> = {}): MarketFeatures {
     retFromOpen: 0,
     vwapDistPct: 0,
     barsSameSideOfVwap: 0,
-    openingRange: { high: 22650, low: 22550, state: "INSIDE" },
+    openingRange: { high: 22650, low: 22550, state: "INSIDE", strengthAtr: 0, barsOutside: 0, lastBreak: null, barsSinceReentry: 0 },
     efficiencyRatio60m: 0.3,
     atrPct5m: 0.08,
     atrPctile20d: 50,
@@ -47,8 +49,20 @@ export function features(over: Partial<MarketFeatures> = {}): MarketFeatures {
     tradingDaysToExpiry: 4,
     nextScheduledEvent: null,
     recentScheduledEvent: null,
+    indicators: { ...NEUTRAL_INDICATORS, ema9: 22600, ema21: 22600, prevDayClose: 22650 },
     ...over,
   };
+}
+
+/** A complete opening range for tests. */
+function orState(state: OpeningRange["state"], over: Partial<OpeningRange> = {}): OpeningRange {
+  return { high: 22650, low: 22550, state, strengthAtr: 0, barsOutside: 0, lastBreak: null, barsSinceReentry: 0, ...over };
+}
+
+/** Features with some indicator values overridden. */
+function withInd(ind: Partial<Indicators>, over: Partial<MarketFeatures> = {}): MarketFeatures {
+  const base = features(over);
+  return { ...base, indicators: { ...base.indicators, ...ind } };
 }
 
 const contract: OptionContract = {
@@ -208,8 +222,8 @@ describe("exits", () => {
 
 describe("signals", () => {
   it("momentum follows vol-normalized returns, VWAP and the opening range", () => {
-    const up = momentumSignal(features({ ret15m: 0.3, ret60m: 0.6, barsSameSideOfVwap: 8, openingRange: { high: 1, low: 0, state: "BROKE_UP" } }), cfg);
-    const down = momentumSignal(features({ ret15m: -0.3, ret60m: -0.6, barsSameSideOfVwap: -8, openingRange: { high: 1, low: 0, state: "BROKE_DOWN" } }), cfg);
+    const up = momentumSignal(features({ ret15m: 0.3, ret60m: 0.6, barsSameSideOfVwap: 8, openingRange: orState("BROKE_UP") }), cfg);
+    const down = momentumSignal(features({ ret15m: -0.3, ret60m: -0.6, barsSameSideOfVwap: -8, openingRange: orState("BROKE_DOWN") }), cfg);
     expect(up.value).toBeGreaterThan(0.7);
     expect(down.value).toBeLessThan(-0.7);
     expect(momentumSignal(features({ minutesSinceOpen: 2, ret15m: 1 }), cfg).value).toBe(0);
@@ -233,6 +247,73 @@ describe("signals", () => {
     expect(relativeValueSignal(features({ divergence: { vsOtherIndexZ: 1, vsBankNiftyZ: 1, otherIndexRet30m: 0, bankNiftyRet15m: 0, selfRet30m: 0 } })).value).toBe(0);
   });
 
+  it("global beta fades out by 11:45 and abstains without data", () => {
+    const g = { ES: 1.5, NQ: 1.5, CL: -2, BZ: -2, GC: 0, DXY: -0.5, USDINR: -0.3, US10Y: -5, VIXUS: -5, N225: 1, HSI: 1, SSE: 0.5 };
+    const morning = globalBetaSignal(features({ global: g, gapPct: 0.1, minutesSinceOpen: 60 }), cfg).value;
+    const late = globalBetaSignal(features({ global: g, gapPct: 0.1, minutesSinceOpen: 120 }), cfg).value;
+    expect(late).toBeCloseTo(morning / 2, 9);
+    const after = globalBetaSignal(features({ global: g, gapPct: 0.1, minutesSinceOpen: 150 }), cfg);
+    expect(after.abstain).toBe(true);
+    expect(after.value).toBe(0);
+  });
+
+  it("not-applicable branches abstain instead of voting zero", () => {
+    expect(gapSignal(features({ gapPct: 0.1 })).abstain).toBe(true);
+    expect(gapSignal(features({ gapPct: 0.6, retFromOpen: 0.02, minutesSinceOpen: 20 })).abstain).toBe(true);
+    expect(momentumSignal(features({ minutesSinceOpen: 3 }), cfg).abstain).toBe(true);
+    expect(relativeValueSignal(features()).abstain).toBe(true);
+    expect(eventSignal(null).abstain).toBe(true);
+    const balanced: EventPressure = { index: "NIFTY", t: T, epi: 0.05, absPressure: 0.3, activeClusters: 3, freshestEventAgeMin: 10, topContributors: [] };
+    expect(eventSignal(balanced).abstain).toBe(true);
+    expect(rawComponents(features(), null, cfg, { noEvents: true })[0]).toMatchObject({ source: "EVENT", abstain: true });
+  });
+
+  it("momentum no longer counts the opening-range break (ORB does)", () => {
+    const base = { ret15m: 0.1, ret60m: 0.2, barsSameSideOfVwap: 2 };
+    expect(momentumSignal(features({ ...base, openingRange: orState("BROKE_UP") }), cfg).value).toBe(momentumSignal(features({ ...base, openingRange: orState("INSIDE") }), cfg).value);
+  });
+
+  it("trend follows EMA, Supertrend and DI agreement scaled by ADX", () => {
+    const up = { ema9: 22620, ema21: 22580, supertrendDir: 1, plusDi14: 30, minusDi14: 12, adx14: 30, dailyBias: 1 };
+    expect(trendSignal(withInd(up)).value).toBeCloseTo(1, 9);
+    expect(trendSignal(withInd({ ...up, adx14: 20 })).value).toBeCloseTo(1 / 3, 9);
+    expect(trendSignal(withInd({ ...up, supertrendDir: -1 })).value).toBeCloseTo(1 / 3, 9); // 2 of 3 agree
+    const down = { ema9: 22580, ema21: 22620, supertrendDir: -1, plusDi14: 12, minusDi14: 30, adx14: 30, dailyBias: 1 };
+    expect(trendSignal(withInd(down)).value).toBeCloseTo(-0.6, 9); // against the daily uptrend
+    expect(trendSignal(withInd({ ...down, dailyBias: -1 })).value).toBeCloseTo(-1, 9);
+    expect(trendSignal(withInd({ ...up, adx14: 12 })).abstain).toBe(true);
+    expect(trendSignal(withInd(up, { minutesSinceOpen: 15 })).abstain).toBe(true);
+    expect(trendSignal(withInd({ ...up, ema21: 0 })).abstain).toBe(true);
+  });
+
+  it("ORB trades confirmed breaks, fades failed ones and goes quiet after 14:00", () => {
+    const broke = orState("BROKE_UP", { strengthAtr: 1, barsOutside: 2, lastBreak: "UP" });
+    expect(orbSignal(features({ openingRange: broke, vwapDistPct: 0.2 })).value).toBeCloseTo(0.7, 9);
+    expect(orbSignal(features({ openingRange: { ...broke, barsOutside: 1 }, vwapDistPct: 0.2 })).value).toBeCloseTo(0.56, 9);
+    expect(orbSignal(features({ openingRange: broke, vwapDistPct: -0.1 })).value).toBeCloseTo(0.21, 9); // wrong side of VWAP
+    const down = orState("BROKE_DOWN", { strengthAtr: 3, barsOutside: 4, lastBreak: "DOWN" });
+    expect(orbSignal(features({ openingRange: down, vwapDistPct: -0.3 })).value).toBeCloseTo(-1, 9);
+    // 13:15 is halfway through the fade (12:30 -> 14:00).
+    expect(orbSignal(features({ openingRange: down, vwapDistPct: -0.3, minutesSinceOpen: 240 })).value).toBeCloseTo(-0.5, 9);
+    expect(orbSignal(features({ openingRange: down, minutesSinceOpen: 290 })).abstain).toBe(true);
+    expect(orbSignal(features({ openingRange: orState("BROKE_UP", { strengthAtr: 0.05, barsOutside: 1, lastBreak: "UP" }), vwapDistPct: 0.1 })).abstain).toBe(true);
+    expect(orbSignal(features({ openingRange: orState("INSIDE") })).abstain).toBe(true);
+    expect(orbSignal(features({ openingRange: orState("FORMING"), minutesSinceOpen: 10 })).abstain).toBe(true);
+    const failed = orbSignal(features({ openingRange: orState("INSIDE", { lastBreak: "UP", barsSinceReentry: 2 }) }));
+    expect(failed.value).toBeCloseTo(-0.5, 9);
+    expect(orbSignal(features({ openingRange: orState("INSIDE", { lastBreak: "UP", barsSinceReentry: 5 }) })).abstain).toBe(true);
+  });
+
+  it("mean reversion fades stretches from VWAP only when oscillators agree and there is no trend", () => {
+    const stretchedDown = { vwapZ: -2, rsi14: 25, bbPctB: -0.1, adx14: 14 };
+    expect(meanReversionSignal(withInd(stretchedDown)).value).toBeCloseTo(0.55, 9);
+    expect(meanReversionSignal(withInd({ ...stretchedDown, rsi14: 40 })).value).toBeCloseTo(0.44, 9); // %B only
+    expect(meanReversionSignal(withInd({ vwapZ: 3.5, rsi14: 80, bbPctB: 1.2, adx14: 10 })).value).toBeCloseTo(-1, 9);
+    expect(meanReversionSignal(withInd({ ...stretchedDown, adx14: 30 })).abstain).toBe(true);
+    expect(meanReversionSignal(withInd({ ...stretchedDown, rsi14: 40, bbPctB: 0.2 })).abstain).toBe(true);
+    expect(meanReversionSignal(withInd({ ...stretchedDown, vwapZ: -1 })).abstain).toBe(true);
+  });
+
   it("vol regime only modifies thresholds and size", () => {
     const cheap = volRegimeSignal(features({ rvIvRatio: 1.4 }));
     expect(cheap.value).toBe(0);
@@ -252,17 +333,59 @@ describe("regime", () => {
     expect(classifyRegime(features({ ret60m: -0.5, efficiencyRatio60m: 0.7, barsSameSideOfVwap: -8 }), null, cfg.regime).regime).toBe("TREND_DOWN");
     expect(classifyRegime(features(), null, cfg.regime).regime).toBe("RANGE");
   });
+
+  it("also calls a trend on a strong ADX when the tape agrees", () => {
+    const strong = { adx14: 30, plusDi14: 28, minusDi14: 10 };
+    expect(classifyRegime(withInd(strong, { ret60m: 0.2, barsSameSideOfVwap: 4 }), null, cfg.regime).regime).toBe("TREND_UP");
+    expect(classifyRegime(withInd({ adx14: 30, plusDi14: 10, minusDi14: 28 }, { ret60m: -0.2, barsSameSideOfVwap: -4 }), null, cfg.regime).regime).toBe("TREND_DOWN");
+    expect(classifyRegime(withInd(strong, { ret60m: -0.2, barsSameSideOfVwap: 4 }), null, cfg.regime).regime).toBe("RANGE"); // tape disagrees
+    expect(classifyRegime(withInd({ ...strong, adx14: 20 }, { ret60m: 0.2, barsSameSideOfVwap: 4 }), null, cfg.regime).regime).toBe("RANGE");
+    expect(classifyRegime(withInd(strong, { ret60m: 0.2, barsSameSideOfVwap: 4, minutesSinceOpen: 10 }), null, cfg.regime).regime).toBe("RANGE");
+  });
 });
 
 describe("conviction", () => {
   it("shrinks weights toward the prior and zeroes disabled sources", () => {
-    expect(effectiveWeight("EVENT", undefined, cfg.conviction).weight).toBe(0.35);
+    expect(effectiveWeight("EVENT", undefined, cfg.conviction).weight).toBe(0.3);
     const good = { windowTrades: 30, expectancyPct: 20, enabled: true } as SignalPerformance;
-    expect(effectiveWeight("EVENT", good, cfg.conviction).weight).toBeCloseTo((30 * 0.7 + 30 * 0.35) / 60, 6);
+    expect(effectiveWeight("EVENT", good, cfg.conviction).weight).toBeCloseTo((30 * 0.6 + 30 * 0.3) / 60, 6);
     expect(effectiveWeight("EVENT", { ...good, enabled: false }, cfg.conviction)).toEqual({ weight: 0, enabled: false });
   });
 
-  it("lets only event and gap vote in the EVENT regime", () => {
+  it("leaves abstainers out of the mean and needs news or two signals", () => {
+    const comp = (source: RawComponent["source"], value: number, abstain = false): RawComponent => ({ source, value, horizonMin: 60, ...(abstain ? { abstain } : {}) });
+    const silent: RawComponent[] = [comp("EVENT", 0, true), comp("MOMENTUM", 0, true), comp("GAP", 0, true)];
+    // TREND alone (weight 0.20) is below the 0.30 minimum.
+    const alone = combineConviction("NIFTY", T, [...silent, comp("TREND", 0.8)], "TREND_UP", [], cfg);
+    expect(alone.score).toBe(0);
+    expect(alone.activeWeight).toBeCloseTo(0.2, 9);
+    expect(alone.note).toMatch(/0\.20 of signal weight/);
+    // TREND + ORB (0.35) votes; the silent EVENT (0.30) no longer dilutes it.
+    const pair = combineConviction("NIFTY", T, [...silent, comp("TREND", 0.8), comp("ORB", 0.6)], "TREND_UP", [], cfg);
+    expect(pair.score).toBeCloseTo(Math.tanh((1.2 * (0.2 * 0.8 + 0.15 * 0.6)) / 0.35), 9);
+    expect(pair.passes).toBe(true);
+    expect(pair.note).toBeUndefined();
+    // News alone (0.30) can trade.
+    const news = combineConviction("NIFTY", T, [comp("EVENT", -0.7), comp("TREND", 0, true)], "RANGE", [], cfg);
+    expect(news.score).toBeCloseTo(Math.tanh(1.2 * -0.7), 9);
+    // A zero vote from a source with a view still dilutes.
+    const neutral = combineConviction("NIFTY", T, [comp("TREND", 0.8), comp("ORB", 0.6), comp("MOMENTUM", 0)], "TREND_UP", [], cfg);
+    expect(neutral.score).toBeCloseTo(Math.tanh((1.2 * (0.16 + 0.09)) / 0.5), 9);
+  });
+
+  it("lets mean reversion vote only in a range", () => {
+    const comps: RawComponent[] = [{ source: "MEAN_REVERSION", value: -0.6, horizonMin: 60 }, { source: "ORB", value: -0.5, horizonMin: 90 }, { source: "MOMENTUM", value: -0.3, horizonMin: 60 }];
+    const inRange = combineConviction("NIFTY", T, comps, "RANGE", [], cfg);
+    expect(inRange.components.find((c) => c.source === "MEAN_REVERSION")!.weight).toBe(0.1);
+    const inTrend = combineConviction("NIFTY", T, comps, "TREND_DOWN", [], cfg);
+    const mr = inTrend.components.find((c) => c.source === "MEAN_REVERSION")!;
+    expect(mr.weight).toBe(0);
+    expect(mr.abstain).toBe(true);
+    expect(mr.value).toBe(-0.6); // the view is kept for the dashboard and shadow stats
+    expect(inTrend.activeWeight).toBeCloseTo(0.3, 9);
+  });
+
+  it("lets only event, gap and trend vote in the EVENT regime", () => {
     const p: EventPressure = { index: "NIFTY", t: T, epi: -0.6, absPressure: 0.6, activeClusters: 1, freshestEventAgeMin: 10, topContributors: [] };
     const f = features({ ret15m: 0.5, ret60m: 1, barsSameSideOfVwap: 10 });
     const ev = combineConviction("NIFTY", T, rawComponents(f, p, cfg), "EVENT", [], cfg);
@@ -287,7 +410,7 @@ describe("theta gate", () => {
   const base = { spot: 25_000, contract: { ...contract, strike: 25_000 }, tYears: (3 * 375) / (252 * 375), vol: 0.14, horizonMin: 120, t: T };
   it("passes a strong conviction and rejects a weak one (design worked example)", () => {
     const strong = evaluateEdge({ ...base, premium: 153, bid: 152.6, score: 0.6 }, cfg);
-    const weak = evaluateEdge({ ...base, premium: 153, bid: 152.6, score: 0.4 }, cfg);
+    const weak = evaluateEdge({ ...base, premium: 153, bid: 152.6, score: 0.3 }, cfg);
     expect(strong.delta).toBeGreaterThan(0.45);
     expect(strong.edgeRatio).toBeGreaterThan(weak.edgeRatio);
     expect(strong.edgeRatio).toBeGreaterThan(cfg.gates.minEdgeRatio);

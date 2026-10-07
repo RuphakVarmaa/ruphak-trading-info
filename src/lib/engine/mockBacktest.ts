@@ -20,11 +20,14 @@ import { isMockHoliday, isMockTradingDay, LOT_SIZE, optionCharges, STRIKE_STEP }
 import { clamp, gauss, hashString, mulberry32, round2 } from "./random";
 
 const PRIOR_WEIGHTS: Record<SignalSource, number> = {
-  EVENT: 0.35,
-  MOMENTUM: 0.25,
-  GAP: 0.15,
-  RELATIVE_VALUE: 0.1,
-  GLOBAL_BETA: 0.15,
+  EVENT: 0.3,
+  TREND: 0.2,
+  ORB: 0.15,
+  MOMENTUM: 0.15,
+  GAP: 0.1,
+  MEAN_REVERSION: 0.1,
+  RELATIVE_VALUE: 0.05,
+  GLOBAL_BETA: 0.05,
   VOL_REGIME: 0,
 };
 

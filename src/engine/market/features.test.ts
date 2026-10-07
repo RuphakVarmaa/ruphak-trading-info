@@ -13,7 +13,7 @@ import {
 } from "../__fixtures__/market/loadFixtures";
 import { barsOnDate, sessionBars } from "./candles";
 import { globalMoves } from "./crossAsset";
-import { computeFeatures, NO_DATA_AGE_SEC } from "./features";
+import { computeFeatures, NEUTRAL_OPENING_RANGE, NO_DATA_AGE_SEC } from "./features";
 import { ReplayMarketDataSource } from "./replayMarketData";
 
 const cal = new TradingCalendar();
@@ -67,6 +67,36 @@ describe("computeFeatures on recorded data (2026-10-07, RBI policy day)", () => 
     expect(f.openingRange.high).toBe(Math.max(...or.map((c) => c.h)));
     expect(f.openingRange.low).toBe(Math.min(...or.map((c) => c.l)));
     expect(f.openingRange.state).toBe("BROKE_UP");
+    // The 10:55 bar is the first close above the range after an earlier downside break.
+    expect(f.openingRange.lastBreak).toBe("UP");
+    expect(f.openingRange.barsOutside).toBe(1);
+    expect(f.openingRange.barsSinceReentry).toBe(0);
+    expect(f.openingRange.strengthAtr).toBeGreaterThan(0.3);
+    expect(f.openingRange.strengthAtr).toBeLessThan(0.6);
+  });
+
+  it("computes the classic indicators across sessions", () => {
+    const ind = f.indicators;
+    expect(ind.rsi14).toBeGreaterThan(50);
+    expect(ind.rsi14).toBeLessThan(70);
+    expect(ind.adx14).toBeGreaterThan(10);
+    expect(ind.adx14).toBeLessThan(25);
+    expect(ind.supertrendDir).toBe(1);
+    expect(ind.ema9).toBeGreaterThan(ind.ema21);
+    expect(ind.ema21).toBeGreaterThan(22500);
+    expect(ind.vwap).toBeGreaterThan(0);
+    expect(ind.vwap).toBeLessThan(f.spot);
+    expect(ind.vwapZ).toBeGreaterThan(2); // stretched above VWAP after the RBI rally
+    expect(ind.bbPctB).toBeGreaterThan(0.9);
+    expect(ind.dailyBias).toBe(-1); // the daily EMA20 is below the EMA50 on the 3-month fixture
+    expect(ind.prevDayClose).toBeCloseTo(22776.1, 0);
+    expect(ind.prevDayHigh).toBeGreaterThan(ind.prevDayLow);
+    expect(ind.prevDayLow).toBeGreaterThan(0);
+  });
+
+  it("tracks a failed break back into the range", () => {
+    const later = computeFeatures("NIFTY", fixture.snapshotSync(istAt("2026-10-07", "11:20")), cal, cfg);
+    expect(later.openingRange).toMatchObject({ state: "INSIDE", lastBreak: "UP", barsOutside: 0, barsSinceReentry: 1, strengthAtr: 0 });
   });
 
   it("explains the gap with overnight global moves", () => {
@@ -129,7 +159,9 @@ describe("computeFeatures before the first bar closes", () => {
     expect(f.gapPct).toBe(0);
     expect(f.gapResidualPct).toBe(0);
     expect(f.expectedGapPct).toBeCloseTo(0.294804422192102, 6);
-    expect(f.openingRange).toEqual({ high: 0, low: 0, state: "FORMING" });
+    expect(f.openingRange).toEqual(NEUTRAL_OPENING_RANGE);
+    expect(f.indicators.vwapZ).toBe(0); // no session bars yet
+    expect(f.indicators.adx14).toBeGreaterThan(0); // carried over from the previous session's bars
     expect(f.spot).toBeCloseTo(22776.1, 1); // previous close
     expect(f.vixChangePct).toBe(0);
     expect(f.nextScheduledEvent).toMatchObject({ id: "rbi-2026-10", minutesAway: 44 });
@@ -243,7 +275,8 @@ describe("opening range, efficiency and short returns (synthetic)", () => {
     expect(at0925.openingRange.state).toBe("FORMING");
     expect(at0925.openingRange.high).toBeCloseTo(101.05, 12);
     const at0935 = computeFeatures("NIFTY", src.snapshotSync(istAt(TODAY, "09:35")), cal, cfg);
-    expect(at0935.openingRange).toEqual({ high: 101.05, low: 99.95, state: "BROKE_UP" });
+    expect(at0935.openingRange).toMatchObject({ high: 101.05, low: 99.95, state: "BROKE_UP", lastBreak: "UP", barsOutside: 1, barsSinceReentry: 0 });
+    expect(at0935.openingRange.strengthAtr).toBeGreaterThan(0);
     const at0930 = computeFeatures("NIFTY", src.snapshotSync(istAt(TODAY, "09:30")), cal, cfg);
     expect(at0930.openingRange.state).toBe("INSIDE");
   });

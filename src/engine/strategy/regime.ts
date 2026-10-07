@@ -29,5 +29,12 @@ export function classifyRegime(f: MarketFeatures, p: EventPressure | null, cfg: 
   const trendDown = f.ret60m <= -cfg.trendRet60mPct && f.efficiencyRatio60m >= cfg.trendEfficiency && f.barsSameSideOfVwap <= -cfg.trendVwapBars;
   if (trendUp) return { regime: "TREND_UP", reason: `60m +${f.ret60m.toFixed(2)}%, efficiency ${f.efficiencyRatio60m.toFixed(2)}` };
   if (trendDown) return { regime: "TREND_DOWN", reason: `60m ${f.ret60m.toFixed(2)}%, efficiency ${f.efficiencyRatio60m.toFixed(2)}` };
+  // A strong ADX with the tape agreeing (DI direction, 60-minute return, VWAP side) is also a trend.
+  const ind = f.indicators;
+  if (f.minutesSinceOpen >= 20 && ind.adx14 >= cfg.trendAdx) {
+    const adx = `ADX ${ind.adx14.toFixed(0)} (+DI ${ind.plusDi14.toFixed(0)} / −DI ${ind.minusDi14.toFixed(0)})`;
+    if (ind.plusDi14 > ind.minusDi14 && f.ret60m > 0 && f.barsSameSideOfVwap >= 3) return { regime: "TREND_UP", reason: `${adx}, above VWAP` };
+    if (ind.minusDi14 > ind.plusDi14 && f.ret60m < 0 && f.barsSameSideOfVwap <= -3) return { regime: "TREND_DOWN", reason: `${adx}, below VWAP` };
+  }
   return { regime: "RANGE", reason: "no trend, volatility or event condition" };
 }

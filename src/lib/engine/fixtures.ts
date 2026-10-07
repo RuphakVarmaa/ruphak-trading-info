@@ -16,6 +16,7 @@ import {
   type ImpactLevel,
   type ImpactView,
   type IndexId,
+  type IndicatorView,
   type OptionType,
   type OrderView,
   type Regime,
@@ -159,6 +160,7 @@ export interface SignalSeed {
   rationale: string;
   /** Static gates; the mock re-derives DATA_AGE, KILL_SWITCH and CONVICTION each call. */
   gates: { gate: string; label: string; passed: boolean | null; detail: string }[];
+  indicators: IndicatorView;
 }
 
 export interface PositionSeed {
@@ -664,6 +666,9 @@ const component = (
   enabled = true,
 ): SignalComponentView => ({ source, value, weight, enabled, notes });
 
+/** A source with no view right now: shown, but left out of the conviction. */
+const silent = (source: SignalSource, weight: number, notes: string): SignalComponentView => ({ source, value: 0, weight, enabled: true, notes, abstain: true });
+
 /** Builds the whole mock session for IST trading date `A`; `t0` is the simulated "now" at seed time. */
 export function buildSeed(A: string, t0: number): MockSeed {
   const P = prevTradingDay(A, isMockHoliday);
@@ -739,11 +744,14 @@ export function buildSeed(A: string, t0: number): MockSeed {
       regime: "TREND_UP",
       impliedMovePct: 0.61,
       components: [
-        component("EVENT", 0.62, 0.35, "EPI +0.41 · 9 active clusters"),
-        component("MOMENTUM", 0.66, 0.27, "60m +0.42% · efficiency 0.71 · 9 bars above VWAP"),
-        component("GAP", 0.1, 0.15, "Gap −0.18% vs expected −0.31% (residual +0.13%)"),
+        component("EVENT", 0.62, 0.3, "EPI +0.41 · 9 active clusters"),
+        component("TREND", 0.73, 0.2, "ADX 26 (+DI 29 / −DI 14), EMA9 > EMA21, Supertrend up"),
+        component("ORB", 0.55, 0.15, "above 22510–22585 by 0.5 ATR, 6 bars outside"),
+        component("MOMENTUM", 0.66, 0.16, "z15 0.41, z60 1.12, VWAP bars 9"),
+        silent("GAP", 0.1, "no material gap"),
+        component("GLOBAL_BETA", 0.25, 0.05, "globals imply +0.31%, India +0.12%"),
+        silent("MEAN_REVERSION", 0.1, "0.8σ from VWAP: not stretched"),
         component("RELATIVE_VALUE", -0.2, 0, "Disabled: decayed edge (shadow only)", false),
-        component("GLOBAL_BETA", 0.25, 0.16, "ES +0.31% · DXY −0.22% since 15:30 yesterday"),
         component("VOL_REGIME", 0, 0, "VIX 13.9 · RV/IV 0.82 → size ×1.0"),
       ],
       contributors: [
@@ -761,10 +769,34 @@ export function buildSeed(A: string, t0: number): MockSeed {
         { gate: "KILL_SWITCH", label: "Kill switch", passed: true, detail: "" },
         { gate: "EVENT_BLACKOUT", label: "Event blackout", passed: true, detail: "No HIGH/MED event within 15 min" },
         { gate: "CONVICTION", label: "Conviction", passed: true, detail: "" },
-        { gate: "THETA", label: "Theta gate", passed: true, detail: "Edge 0.21 ≥ 0.15 · EM 0.38% vs IM 0.61%" },
+        { gate: "THETA", label: "Theta gate", passed: true, detail: "Edge 0.21 ≥ 0.10 · EM 0.38% vs IM 0.61%" },
         { gate: "LIQUIDITY", label: "Liquidity", passed: true, detail: "Spread 0.42% · OI 41.8 L" },
         { gate: "EXPOSURE", label: "Exposure", passed: true, detail: "1/1 position (this plan) · 2/4 trades today" },
       ],
+      indicators: {
+        spot: 22646.35,
+        atrPct5m: 0.09,
+        vwapDistPct: 0.21,
+        openingRange: { high: 22585, low: 22510, state: "BROKE_UP", strengthAtr: 0.52, barsOutside: 6, lastBreak: "UP", barsSinceReentry: 0 },
+        rsi14: 63.4,
+        adx14: 26.1,
+        plusDi14: 29.2,
+        minusDi14: 14.3,
+        ema9: 22628.4,
+        ema21: 22597.9,
+        ema9SlopePct: 0.05,
+        supertrendDir: 1,
+        supertrendLine: 22561.2,
+        bbPctB: 0.84,
+        bbWidthPct: 0.62,
+        vwap: 22598.7,
+        vwapZ: 1.12,
+        dailyBias: 1,
+        dailyEmaGapPct: 0.41,
+        prevDayHigh: 22601.5,
+        prevDayLow: 22402.8,
+        prevDayClose: 22518.1,
+      },
     },
     {
       index: "SENSEX",
@@ -774,11 +806,14 @@ export function buildSeed(A: string, t0: number): MockSeed {
       regime: "RANGE",
       impliedMovePct: 0.58,
       components: [
-        component("EVENT", 0.01, 0.35, "EPI −0.02 · RBI hit to financials offsets global tailwind"),
-        component("MOMENTUM", 0.05, 0.27, "60m +0.09% · efficiency 0.28 · choppy around VWAP"),
-        component("GAP", 0.1, 0.15, "Gap −0.21% vs expected −0.29% (residual +0.08%)"),
+        silent("EVENT", 0.3, "6 live stories, no net direction (EPI −0.02)"),
+        silent("TREND", 0.2, "ADX 13: no trend"),
+        silent("ORB", 0.15, "inside the opening range 72480–72710"),
+        component("MOMENTUM", 0.05, 0.16, "z15 0.08, z60 0.19, VWAP bars 1"),
+        silent("GAP", 0.1, "no material gap"),
+        component("GLOBAL_BETA", 0.15, 0.05, "globals imply +0.30%, India +0.18%"),
+        component("MEAN_REVERSION", -0.4, 0.1, "1.6σ above VWAP, RSI 71, %B 1.04: fade toward VWAP"),
         component("RELATIVE_VALUE", 0.3, 0, "Disabled: decayed edge (shadow +0.30 catch-up vs NIFTY)", false),
-        component("GLOBAL_BETA", 0.15, 0.16, "ES +0.31% · DXY −0.22% since 15:30 yesterday"),
         component("VOL_REGIME", 0, 0, "VIX 13.9 · RV/IV 0.79 → size ×1.0"),
       ],
       contributors: [
@@ -800,6 +835,30 @@ export function buildSeed(A: string, t0: number): MockSeed {
         { gate: "LIQUIDITY", label: "Liquidity", passed: null, detail: "Not evaluated (below threshold)" },
         { gate: "EXPOSURE", label: "Exposure", passed: false, detail: "1/1 position slots used (NIFTY)" },
       ],
+      indicators: {
+        spot: 72640.8,
+        atrPct5m: 0.08,
+        vwapDistPct: 0.14,
+        openingRange: { high: 72710, low: 72480, state: "INSIDE", strengthAtr: 0, barsOutside: 0, lastBreak: null, barsSinceReentry: 0 },
+        rsi14: 71.2,
+        adx14: 13.4,
+        plusDi14: 21.8,
+        minusDi14: 18.9,
+        ema9: 72611.7,
+        ema21: 72589.2,
+        ema9SlopePct: 0.02,
+        supertrendDir: 1,
+        supertrendLine: 72398.5,
+        bbPctB: 1.04,
+        bbWidthPct: 0.48,
+        vwap: 72539.3,
+        vwapZ: 1.61,
+        dailyBias: 1,
+        dailyEmaGapPct: 0.36,
+        prevDayHigh: 72455.2,
+        prevDayLow: 72011.6,
+        prevDayClose: 72301.45,
+      },
     },
   ];
 

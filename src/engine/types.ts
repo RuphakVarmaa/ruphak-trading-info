@@ -304,6 +304,50 @@ export interface ScheduledEvent {
 // Features and regime
 // ---------------------------------------------------------------------------
 
+/** Classic intraday indicators for one index (5-minute bars unless noted). */
+export interface Indicators {
+  /** Wilder RSI(14) over the last ~120 closed bars (crosses sessions so it exists at the open). */
+  rsi14: number;
+  /** Wilder ADX(14) and directional indicators. */
+  adx14: number;
+  plusDi14: number;
+  minusDi14: number;
+  ema9: number;
+  /** 0 until 21 bars exist. */
+  ema21: number;
+  /** Change of EMA9 over the last 3 bars, percent. */
+  ema9SlopePct: number;
+  /** Supertrend(10, 3): +1 up, −1 down, 0 while warming up. */
+  supertrendDir: number;
+  supertrendLine: number;
+  /** Bollinger(20, 2) position of the last close (0 lower band, 1 upper band) and width in % of the middle band. */
+  bbPctB: number;
+  bbWidthPct: number;
+  /** Today's VWAP and the spot's distance from it in standard deviations of the session's typical prices. */
+  vwap: number;
+  vwapZ: number;
+  /** +1 when the daily EMA20 is above the EMA50, −1 below, 0 with fewer than 50 daily closes. */
+  dailyBias: number;
+  dailyEmaGapPct: number;
+  prevDayHigh: number;
+  prevDayLow: number;
+  prevDayClose: number;
+}
+
+export interface OpeningRange {
+  high: number;
+  low: number;
+  state: "FORMING" | "INSIDE" | "BROKE_UP" | "BROKE_DOWN";
+  /** Distance of the last close beyond the range, in 5-minute ATRs (0 when inside or forming). */
+  strengthAtr: number;
+  /** Consecutive closed bars outside the range on the current side. */
+  barsOutside: number;
+  /** Side of the most recent close outside the range today, if any. */
+  lastBreak: "UP" | "DOWN" | null;
+  /** Closed bars back inside the range since the last close outside it (0 when outside or never broken). */
+  barsSinceReentry: number;
+}
+
 export interface MarketFeatures {
   index: IndexId;
   t: number;
@@ -317,7 +361,7 @@ export interface MarketFeatures {
   vwapDistPct: number;
   /** Signed count: +n bars closed above VWAP in a row, -n below. */
   barsSameSideOfVwap: number;
-  openingRange: { high: number; low: number; state: "FORMING" | "INSIDE" | "BROKE_UP" | "BROKE_DOWN" };
+  openingRange: OpeningRange;
   efficiencyRatio60m: number;
   atrPct5m: number;
   /** Percentile (0-100) of today's ATR% versus the trailing 20 sessions. */
@@ -352,18 +396,31 @@ export interface MarketFeatures {
   nextScheduledEvent: { id: string; name: string; impact: ImpactLevel; minutesAway: number } | null;
   /** Most recent scheduled event in the past 30 minutes, if any. */
   recentScheduledEvent: { id: string; name: string; impact: ImpactLevel; minutesAgo: number } | null;
+  indicators: Indicators;
 }
+
+/** The indicator readings a decision was made on, as shown on the dashboard. */
+export type IndicatorView = Indicators & { spot: number; atrPct5m: number; vwapDistPct: number; openingRange: OpeningRange };
 
 // ---------------------------------------------------------------------------
 // Strategy
 // ---------------------------------------------------------------------------
 
-export type SignalSource = "EVENT" | "MOMENTUM" | "GAP" | "RELATIVE_VALUE" | "GLOBAL_BETA" | "VOL_REGIME";
+export type SignalSource =
+  | "EVENT"
+  | "TREND"
+  | "ORB"
+  | "MOMENTUM"
+  | "GAP"
+  | "MEAN_REVERSION"
+  | "RELATIVE_VALUE"
+  | "GLOBAL_BETA"
+  | "VOL_REGIME";
 export const SIGNAL_SOURCES: readonly SignalSource[] = [
-  "EVENT", "MOMENTUM", "GAP", "RELATIVE_VALUE", "GLOBAL_BETA", "VOL_REGIME",
+  "EVENT", "TREND", "ORB", "MOMENTUM", "GAP", "MEAN_REVERSION", "RELATIVE_VALUE", "GLOBAL_BETA", "VOL_REGIME",
 ] as const;
 /** Sources that vote on direction (VOL_REGIME only modifies thresholds and size). */
-export const DIRECTIONAL_SOURCES: readonly SignalSource[] = ["EVENT", "MOMENTUM", "GAP", "RELATIVE_VALUE", "GLOBAL_BETA"] as const;
+export const DIRECTIONAL_SOURCES: readonly SignalSource[] = SIGNAL_SOURCES.filter((s) => s !== "VOL_REGIME");
 
 export interface SignalComponent {
   source: SignalSource;
@@ -375,6 +432,8 @@ export interface SignalComponent {
   enabled: boolean;
   modifiers?: { thresholdDelta?: number; sizeMult?: number };
   notes?: string;
+  /** True when the source has no view right now (not applicable, or not used in this regime): it is left out of the weighted mean. */
+  abstain?: boolean;
 }
 
 export interface Conviction {
@@ -388,6 +447,10 @@ export interface Conviction {
   passes: boolean;
   sizeMult: number;
   stance: Stance;
+  /** Total weight of the sources that voted (abstainers excluded). */
+  activeWeight?: number;
+  /** Why the score was forced to 0, if it was. */
+  note?: string;
 }
 
 export interface GateResult {
@@ -454,6 +517,8 @@ export interface PlanDecision {
   impliedMovePct: number | null;
   edgeRatio: number | null;
   noPlanReason: string | null;
+  /** Indicator readings at decision time (for the dashboard). */
+  indicators?: IndicatorView;
 }
 
 export type OrderReason =

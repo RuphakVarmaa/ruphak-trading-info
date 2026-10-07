@@ -39,20 +39,32 @@ export function combineConviction(
   perf: SignalPerformance[],
   cfg: EngineConfig,
 ): Conviction {
-  const masked = regime === "EVENT" ? new Set(cfg.conviction.eventRegimeSources) : null;
+  const eventOnly = regime === "EVENT" ? new Set(cfg.conviction.eventRegimeSources) : null;
   const components: SignalComponent[] = raw.map((c) => {
     const { weight, enabled } = effectiveWeight(c.source, findPerf(perf, c.source, index), cfg.conviction);
-    const votes = c.source !== "VOL_REGIME" && (!masked || masked.has(c.source));
-    return { ...c, weight: votes ? weight : 0, enabled };
+    if (c.source === "VOL_REGIME") return { ...c, weight: 0, enabled };
+    const allowed = cfg.conviction.regimeMask[c.source];
+    const inRegime = (!eventOnly || eventOnly.has(c.source)) && (!allowed || allowed.includes(regime));
+    if (!inRegime) {
+      const notes = c.abstain || !c.notes ? c.notes : `${c.notes} (not used in the ${regime} regime)`;
+      return { ...c, weight: 0, enabled, abstain: true, notes: notes ?? `not used in the ${regime} regime` };
+    }
+    return { ...c, weight, enabled };
   });
+  // Weighted mean over the sources that have a view; abstainers neither add nor dilute.
   let num = 0;
   let den = 0;
   for (const c of components) {
-    if (c.weight <= 0) continue;
+    if (c.weight <= 0 || c.abstain) continue;
     num += c.weight * c.value;
     den += c.weight;
   }
-  const score = den > 0 ? Math.tanh(cfg.conviction.gain * (num / den)) : 0;
+  const minActive = cfg.conviction.minActiveWeight;
+  let score = 0;
+  let note: string | undefined;
+  if (den <= 0) note = "no signal has a view";
+  else if (den < minActive - 1e-9) note = `only ${den.toFixed(2)} of signal weight has a view (need ${minActive.toFixed(2)}: news, or two signals)`;
+  else score = Math.tanh(cfg.conviction.gain * (num / den));
   let threshold = cfg.conviction.thresholds[regime];
   let sizeMult = 1;
   for (const c of components) {
@@ -74,6 +86,8 @@ export function combineConviction(
     passes: Math.abs(score) >= threshold,
     sizeMult,
     stance: stanceOf(score, threshold),
+    activeWeight: den,
+    ...(note ? { note } : {}),
   };
 }
 

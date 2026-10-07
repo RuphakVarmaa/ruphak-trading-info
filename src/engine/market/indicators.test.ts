@@ -4,17 +4,23 @@ import { mulberry32, normalSampler, sessionFromCloses } from "../__fixtures__/ma
 import {
   atr,
   barsSameSideOfVwap,
+  bollinger,
+  dmi,
   efficiencyRatio,
   ema,
   logReturnsPct,
   olsBeta,
   realizedVolPct,
   ridgeRegression,
+  rsi,
   solveLinearSystem,
+  supertrend,
   trueRanges,
   typicalPrice,
   vwap,
+  vwapBands,
   vwapSeries,
+  wilderSmooth,
   zScore,
 } from "./indicators";
 
@@ -182,5 +188,75 @@ describe("ridge regression", () => {
     const b = Array.from({ length: 6 }, () => rnd());
     const sol = solveLinearSystem(B, b);
     B.forEach((row, i) => expect(row.reduce((s, v, j) => s + v * sol[j], 0)).toBeCloseTo(b[i], 9));
+  });
+});
+
+describe("classic indicators", () => {
+  // A steady uptrend: every bar is 1 point higher, with a 1-point range and the close mid-bar.
+  const ramp = (n: number, start = 0): Candle[] => Array.from({ length: n }, (_, i) => bar(99.5 + start + i, 100 + start + i, 99 + start + i, 99.5 + start + i));
+
+  it("wilderSmooth seeds with the mean and then smooths", () => {
+    expect(wilderSmooth([1, 2, 3, 4], 2)).toEqual([1.5, 2.25, 3.125]);
+    expect(wilderSmooth([1], 2)).toEqual([]);
+  });
+
+  it("rsi matches a hand computation and handles one-way or short series", () => {
+    // gains [1, 0, 2] -> 0.5, 1.25; losses [0, 1, 0] -> 0.5, 0.25; RS 5
+    expect(rsi([10, 11, 10, 12], 2)).toBeCloseTo(100 - 100 / 6, 9);
+    expect(rsi([1, 2, 3, 4, 5], 3)).toBe(100);
+    expect(rsi([5, 4, 3, 2, 1], 3)).toBe(0);
+    expect(rsi([1, 1, 1, 1], 2)).toBe(50);
+    expect(rsi([1, 2], 14)).toBe(50);
+  });
+
+  it("dmi reads a clean uptrend as +DI 66.7, −DI 0, ADX 100 and a flat tape as 0", () => {
+    // up move 1, down move −1, true range 1.5 (high vs prior close)
+    const d = dmi(ramp(40), 14);
+    expect(d.plusDi).toBeCloseTo(200 / 3, 9);
+    expect(d.minusDi).toBe(0);
+    expect(d.adx).toBeCloseTo(100, 9);
+    expect(dmi(Array.from({ length: 40 }, () => bar(100, 100, 100, 100)), 14)).toEqual({ adx: 0, plusDi: 0, minusDi: 0 });
+    expect(dmi(ramp(10), 14)).toEqual({ adx: 0, plusDi: 0, minusDi: 0 });
+    const short = dmi(ramp(20), 14); // DI available, ADX still warming up
+    expect(short.plusDi).toBeCloseTo(200 / 3, 9);
+    expect(short.adx).toBe(0);
+  });
+
+  it("supertrend follows an uptrend and flips on a crash", () => {
+    const up = supertrend(ramp(30), 10, 3);
+    expect(up.dir).toBe(1);
+    expect(up.line).toBeLessThan(ramp(30).at(-1)!.c);
+    const crash = [...ramp(30), ...Array.from({ length: 5 }, (_, i) => bar(120 - 10 * i, 121 - 10 * i, 109 - 10 * i, 110 - 10 * i))];
+    const down = supertrend(crash, 10, 3);
+    expect(down.dir).toBe(-1);
+    expect(down.line).toBeGreaterThan(crash.at(-1)!.c);
+    expect(supertrend(ramp(5), 10, 3)).toEqual({ dir: 0, line: 0 });
+  });
+
+  it("bollinger uses the population deviation", () => {
+    const b = bollinger(Array.from({ length: 20 }, (_, i) => i + 1), 20, 2);
+    const sd = Math.sqrt(399 / 12);
+    expect(b.mid).toBe(10.5);
+    expect(b.upper).toBeCloseTo(10.5 + 2 * sd, 9);
+    expect(b.pctB).toBeCloseTo((20 - (10.5 - 2 * sd)) / (4 * sd), 9);
+    expect(b.pctB).toBeCloseTo(0.912, 3);
+    expect(b.bandwidthPct).toBeCloseTo(((4 * sd) / 10.5) * 100, 9);
+    expect(bollinger([1, 2, 3], 20)).toEqual({ mid: 0, upper: 0, lower: 0, pctB: 0.5, bandwidthPct: 0 });
+    expect(bollinger(Array.from({ length: 20 }, () => 7), 20).pctB).toBe(0.5);
+  });
+
+  it("vwapBands measures the distance from VWAP in standard deviations", () => {
+    const flat = (tp: number) => bar(tp, tp, tp, tp);
+    const bars = [10, 12, 14, 10, 12, 14].map(flat);
+    const b = vwapBands(bars, 14);
+    expect(b.vwap).toBeCloseTo(12, 12);
+    expect(b.sigma).toBeCloseTo(Math.sqrt(8 / 3), 12);
+    expect(b.z).toBeCloseTo(2 / Math.sqrt(8 / 3), 12);
+    expect(vwapBands(bars.slice(0, 5), 14).z).toBe(0); // too few bars
+    expect(vwapBands([...bars, flat(1000)], 1e6).z).toBe(5); // clamped
+    expect(vwapBands([], 14)).toEqual({ vwap: 0, sigma: 0, z: 0 });
+    // Volume-weighted when volume is present: all the volume sits on the 10s.
+    const weighted = vwapBands([bar(10, 10, 10, 10, 5), bar(20, 20, 20, 20, 0), ...[10, 10, 10, 10].map((x) => bar(x, x, x, x, 5))], 12);
+    expect(weighted.vwap).toBe(10);
   });
 });

@@ -11,6 +11,7 @@ import type {
   GateResult,
   ImpactLevel,
   IndexId,
+  IndicatorView,
   OptionType,
   OrderReason,
   OrderStatus,
@@ -32,6 +33,7 @@ export type {
   GateResult,
   ImpactLevel,
   IndexId,
+  IndicatorView,
   OptionType,
   OrderReason,
   OrderStatus,
@@ -199,6 +201,8 @@ export interface SignalComponentView {
   weight: number;
   enabled: boolean;
   notes?: string;
+  /** No view right now (not applicable, or not used in this regime): left out of the conviction. */
+  abstain?: boolean;
 }
 
 export interface SignalView {
@@ -212,6 +216,8 @@ export interface SignalView {
   expectedMovePct: number | null;
   impliedMovePct: number | null;
   edgeRatio: number | null;
+  /** Minimum edge ratio the theta gate requires. */
+  minEdgeRatio: number;
   gates: GateResult[];
   allGatesPassed: boolean;
   contract: SuggestedContract | null;
@@ -221,6 +227,8 @@ export interface SignalView {
   /** Plain-language explanation built from the top contributors and gates. */
   rationale: string;
   position: PositionView | null;
+  /** Indicator readings the decision was made on (null for decisions stored before indicators existed). */
+  indicators: IndicatorView | null;
 }
 
 // ---------------------------------------------------------------------------
@@ -504,6 +512,9 @@ export function contractLabel(c: { index: IndexId; expiry: string; strike: numbe
 
 export const SIGNAL_SOURCE_LABELS: Record<SignalSource, string> = {
   EVENT: "Event pressure",
+  TREND: "Trend (EMA 9/21, Supertrend, ADX)",
+  ORB: "Opening-range breakout",
+  MEAN_REVERSION: "VWAP mean reversion",
   MOMENTUM: "Intraday momentum",
   GAP: "Opening gap",
   RELATIVE_VALUE: "Relative value",

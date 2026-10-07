@@ -4,10 +4,10 @@ import { DEFAULT_CONFIG, makeConfig, type EngineConfig } from "../config";
 import { toNumeric } from "../events/taxonomy";
 import { loadMarketFixtures } from "../testing/fixtures";
 import { createReplayDeps } from "../testing/replayHarness";
-import type { Conviction, IndexId, ScoredEvent } from "../types";
+import type { Conviction, IndexId, Quote, ScoredEvent } from "../types";
 import { runEndOfDay } from "./dayLifecycle";
-import { runPositionCycle } from "./positionCycle";
-import { runTradingCycle } from "./tradingCycle";
+import { exitPriceProblem, runPositionCycle } from "./positionCycle";
+import { runTradingCycle, type TradingCycleOptions } from "./tradingCycle";
 
 const DAY = "2026-10-07";
 const fixtures = loadMarketFixtures();
@@ -41,14 +41,14 @@ function rbiHike(t: number): ScoredEvent {
   return { ...base, numeric: { NIFTY: toNumeric(base, "NIFTY"), SENSEX: toNumeric(base, "SENSEX") } };
 }
 
-async function replayDay(cfg: EngineConfig, withEvent: boolean) {
+async function replayDay(cfg: EngineConfig, withEvent: boolean, opts: TradingCycleOptions = {}) {
   const start = istAt(DAY, "09:15");
   const deps = createReplayDeps({ cfg, startMs: start, candles: fixtures.candles, daily: fixtures.daily });
   const entries: { t: number; index: IndexId }[] = [];
   for (let t = start; t <= istAt(DAY, "15:30"); t += 5 * MINUTE_MS) {
     deps.clock.set(t);
     if (withEvent && t === istAt(DAY, "10:05")) await deps.repo.events.upsertMany([rbiHike(t)]);
-    const r = await runTradingCycle(deps);
+    const r = await runTradingCycle(deps, opts);
     for (const e of r.entries) if (e.positionId) entries.push({ t, index: (await deps.repo.positions.get(e.positionId))!.index });
     await runPositionCycle(deps, { convictions: r.convictions as Partial<Record<IndexId, Conviction>> });
   }
@@ -104,6 +104,29 @@ describe("trading cycle replay of 7 Oct 2026", () => {
     for (const p of plans) if (p?.dominantSource === "EVENT") expect(p.contract.type).toBe("PE");
   });
 
+  it("trades on the indicator signals alone when there is no news", async () => {
+    const { deps, entries } = await replayDay(DEFAULT_CONFIG, false, { noEvents: true });
+    expect(entries.length).toBeGreaterThanOrEqual(1);
+    expect(entries.length).toBeLessThanOrEqual(DEFAULT_CONFIG.sizing.maxTradesPerDay);
+    expect(await deps.repo.positions.open("BACKTEST")).toEqual([]);
+    const orders = await deps.repo.orders.between(istAt(DAY, "09:00"), istAt(DAY, "16:00"), "BACKTEST");
+    const plans = await Promise.all(orders.filter((o) => o.reason === "ENTRY").map((o) => deps.repo.plans.get(o.planId!)));
+    for (const p of plans) {
+      expect(p).toBeTruthy();
+      expect(["TREND", "ORB", "MOMENTUM", "MEAN_REVERSION", "GAP", "GLOBAL_BETA", "RELATIVE_VALUE"]).toContain(p!.dominantSource);
+    }
+    const decisions = await deps.repo.decisions.between(istAt(DAY, "09:00"), istAt(DAY, "16:00"));
+    const planned = decisions.filter((d) => d.plan);
+    expect(planned.length).toBeGreaterThanOrEqual(entries.length);
+    for (const d of planned) {
+      // News is switched off: EVENT abstains and the score comes from at least two technical signals.
+      expect(d.conviction.components.find((c) => c.source === "EVENT")!.abstain).toBe(true);
+      expect(d.conviction.activeWeight).toBeGreaterThanOrEqual(DEFAULT_CONFIG.conviction.minActiveWeight);
+      expect(d.indicators).toBeDefined();
+      expect(d.indicators!.adx14).toBeGreaterThan(0);
+    }
+  });
+
   it("never trades when the kill switch is engaged", async () => {
     const cfg = makeConfig({
       conviction: { thresholds: { TREND_UP: 0.05, TREND_DOWN: 0.05, RANGE: 0.05, HIGH_VOL: 0.05, EVENT: 0.05 } },
@@ -118,5 +141,16 @@ describe("trading cycle replay of 7 Oct 2026", () => {
       expect(r.entries).toEqual([]);
       expect(r.halted).toBe("test");
     }
+  });
+});
+
+describe("exit price guard", () => {
+  const q = (over: Partial<Quote> = {}): Quote => ({ symbol: "X", t: 0, ltp: 100, bid: 99, ask: 101, bidQty: 100, askQty: 100, source: "synthetic", ...over });
+  it("refuses synthetic prices without spot or VIX and quotes without a bid or last price", () => {
+    expect(exitPriceProblem({ spot: 22600, vix: 14, t: 0 }, q())).toBeNull();
+    expect(exitPriceProblem({ spot: 0, vix: 14, t: 0 }, q())).toMatch(/no market data/);
+    expect(exitPriceProblem({ spot: 22600, vix: 0, t: 0 }, q())).toMatch(/no market data/);
+    expect(exitPriceProblem({ spot: 0, vix: 0, t: 0 }, q({ source: "groww" }))).toBeNull(); // a broker quote stands on its own
+    expect(exitPriceProblem({ spot: 22600, vix: 14, t: 0 }, q({ bid: 0, ltp: 0 }))).toMatch(/no bid/);
   });
 });

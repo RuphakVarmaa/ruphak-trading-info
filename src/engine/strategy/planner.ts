@@ -25,6 +25,7 @@ import type {
 import { riskGates } from "../risk/limits";
 import { attributionShares, dominantSource, findPerf } from "./conviction";
 import { convictionGate, edgeGates, evaluateEdge, eventFreshnessGate, liquidityGates, sessionGates, squareOffMs, type EdgeResult } from "./gates";
+import { indicatorView } from "../market/features";
 import { chooseContract } from "./optionSelect";
 import { sizePosition } from "./sizing";
 
@@ -68,6 +69,7 @@ export async function planEntry(a: PlanArgs, ctx: PlanContext): Promise<PlanDeci
     impliedMovePct: null,
     edgeRatio: null,
     noPlanReason: null,
+    indicators: indicatorView(f),
   };
   const gates: GateResult[] = [convictionGate(c), ...sessionGates(f, t, ctx.calendar, cfg)];
   const side = c.score >= 0 ? "BULL" : "BEAR";
