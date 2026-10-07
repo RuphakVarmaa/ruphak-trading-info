@@ -9,7 +9,9 @@ export function validateParams(p: BacktestParams): string | null {
   if (p.from > p.to) return "from must not be after to";
   if (!["NIFTY", "SENSEX", "BOTH"].includes(p.index)) return "index must be NIFTY, SENSEX or BOTH";
   if (!Number.isFinite(p.thresholdDelta) || Math.abs(p.thresholdDelta) > 0.5) return "thresholdDelta must be within ±0.5";
-  if (!(p.stopPct > 0 && p.stopPct <= 90) || !(p.targetPct > 0 && p.targetPct <= 500)) return "stopPct must be 1-90 and targetPct 1-500";
+  // The dashboard sends the stop as a negative percent (-30); scripts may send 30. Both mean -30%.
+  const stop = Math.abs(Number(p.stopPct));
+  if (!(stop >= 1 && stop <= 90) || !(Number(p.targetPct) > 0 && Number(p.targetPct) <= 500)) return "stopPct must be between -90 and -1 and targetPct between 1 and 500";
   return null;
 }
 

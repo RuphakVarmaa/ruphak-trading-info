@@ -14,7 +14,7 @@ const eslintConfig = defineConfig([
     "next-env.d.ts",
     // Generated or separately linted code.
     ".open-next/**",
-    ".wrangler/**",
+    "**/.wrangler/**",
     "relay/**",
     "**/worker-configuration.d.ts",
     "cloudflare-env.d.ts",

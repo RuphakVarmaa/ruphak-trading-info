@@ -1,36 +1,267 @@
-This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
+# Ruphak Trading Info: Event-Driven India Index Desk
 
-## Getting Started
+Ruphak Trading Info reads global and Indian news, turns each story into a structured, time-decaying view on **NIFTY 50** and **SENSEX**, combines it with market signals, and generates **BUY CE / BUY PE** trades on weekly index options. It paper-trades by default. Live orders go through Groww, only after several explicit switches are turned on.
 
-First, run the development server:
+The original metals and geopolitics terminal is still on the page, below the new India Index Desk.
 
-```bash
-npm run dev
-# or
-yarn dev
-# or
-pnpm dev
-# or
-bun dev
+> **Read this first.** This is a research and trading tool, not investment advice. The authors are not SEBI-registered advisers. Buying options can lose the entire premium, and most intraday option buyers lose money after costs. Nothing here has a proven edge yet. Run it in paper mode, measure it, and decide for yourself. Live trading is off unless you deliberately enable it, and every live order is your responsibility.
+
+## What "Jane Street style" means here
+
+A retail desk cannot copy a market maker's co-location, latency or balance sheet. What it **can** copy is their process:
+
+- **Structured judgement, not vibes.** Every story cluster is scored once by Claude against a fixed, versioned rubric. The rubric asks for direction, magnitude bucket, confidence, horizon, half-life, affected sectors, novelty and how much is already priced in. Scores are enums, so they never carry false precision.
+- **Several weak, different signals instead of one strong opinion.** Event pressure, intraday momentum, the opening gap against global cues, NIFTY/SENSEX/BANKNIFTY relative value and a global-beta residual are combined with shrinkage weights. A volatility regime filter decides how much agreement is needed.
+- **Risk before return.** Every trade must pass the theta gate: the expected move over the holding period has to beat the option's implied move plus time decay plus round-trip costs. Positions are sized by fractional Kelly under hard caps, with daily and weekly loss limits, a kill switch and a forced 15:05 IST square-off.
+- **One code path.** Backtest, paper and live run the same `runTradingCycle` and `runPositionCycle` with different injected data sources and brokers.
+- **Measure every signal and turn off the ones that stop working.** Each signal source has its own measured edge, and decayed sources are disabled automatically.
+
+## How it works
+
+```
+ Google News RSS ┐                                   ┌─ Yahoo 5m/daily (indices, VIX, crude, ES, DXY, USDINR, yields, Asia)
+ GNews           ├─ IngestDO ─ normalize ─ dedupe ─ cluster ─┐   └─ Groww LTP (decision-time spot), option quotes with depth
+ GDELT (spaced)  ┘                                 │         │
+                                                   ▼         ▼
+                          Queue: events-to-score ─ Claude (structured outputs, cached rubric) ─ lexicon fallback
+                                                   │
+                                   Event Pressure Index per index (decaying, coverage-saturated)
+                                                   │
+ TradingEngineDO (every 30 s in market hours) ─ features ─ regime ─ 6 signal components ─ conviction
+                                                   │
+                     gates (session, data age, events, liquidity, theta/edge, risk) ─ ATM weekly CE/PE ─ sizing
+                                                   │
+             PaperBroker (simulated fills on real quotes)  or  GrowwBroker ─ HMAC ─ static-IP relay ─ Groww
+                                                   │
+                        D1 (orders, fills, positions, ledger, performance) ─ EngineAdmin RPC ─ dashboard
 ```
 
-Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
+### From news to a number
 
-You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
+1. **Ingest** runs every 10 minutes around the clock, plus every 2 minutes on market days. It pulls Google News RSS queries, GNews when a key is set, and GDELT at most one request per 5.5 s because GDELT rate-limits per IP. Only market-relevant headlines are kept.
+2. **Clustering** groups articles about the same story. It uses canonical URLs, normalized and stemmed titles, shingle Jaccard and entity overlap, and Claude's story key for anything still left over. Pressure is computed per story, never per article: 50 articles about one RBI decision count as about 1.3 times 10 articles, not 5 times.
+3. **Scoring.** Claude scores up to 10 clusters per request with structured outputs, with the rubric in a cached system prompt. A daily token budget caps cost. Over budget, or without an API key, a keyword lexicon scores instead. Its scores are always low confidence and are tagged `fallback`.
+4. **Event Pressure Index (EPI).** For each index, EPI = tanh(Σ numeric × coverage × 2^(−age/half-life)) over live stories. Here numeric = (0.7 × direction × magnitude × confidence + 0.3 × sector-weighted view) × novelty × priced-in × India relevance.
 
-This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
+### From numbers to a trade
 
-## Learn More
+| Step | Default |
+|---|---|
+| Regime | EVENT if a high-impact scheduled event is within −15/+30 min, a fresh event's pressure is ≥ 0.5, or VIX is up ≥ 8%. HIGH_VOL if VIX ≥ 18 or realized/implied vol ≥ 1.5. TREND if the 60-min move is ≥ 0.35% with efficiency ≥ 0.6. Otherwise RANGE. |
+| Signals and prior weights | EVENT 0.35, MOMENTUM 0.25, GAP 0.15, GLOBAL_BETA 0.15, RELATIVE_VALUE 0.10. VOL_REGIME only modifies thresholds and size. |
+| Conviction | tanh(1.5 × weighted mean). Weights shrink from the priors toward each source's measured edge (30 pseudo-trades). In the EVENT regime only EVENT and GAP vote. |
+| Thresholds | TREND 0.35, EVENT 0.45, HIGH_VOL 0.50, RANGE 0.55. Counter-trend trades need 0.60. |
+| Theta gate | Edge = Δ × expected move − θ over the horizon − round-trip charges. Trade only if edge / premium ≥ 0.15 and the expected move ≥ 0.5 × the implied move. |
+| Contract | ATM strike. Nearest weekly expiry unless it is today's: NIFTY on Tuesday, SENSEX on Thursday, holiday-shifted. Symbols always come from Groww's instrument master. |
+| Entry window | 09:25 to 14:30 IST. No entries in the last 90 min of expiry day or 15 min before a high-impact event. |
+| Sizing | 0.75% of capital at risk per trade, then 0.25 × Kelly after 20 trades, capped at 1%. Max 4% of capital in premium per trade, one position per index, 4 trades a day, no opposite NIFTY/SENSEX positions. |
+| Exits, in priority order | Kill switch or loss cap, 15:05 square-off, stop −30%, target +50%, trailing stop (activates at +30%, gives back 50%), time stop, signal flip, and event invalidation when the story that drove the entry is re-scored neutral. |
+| Risk | Daily loss cap 3%, weekly 6%, halt after 2 consecutive losses, 30-min cooldown after a stop-out. |
+| Costs | Groww schedule from 1 Apr 2026: ₹20 per order, STT 0.15% on sells, NSE 0.03503% or BSE 0.0325%, SEBI fee, stamp duty 0.003% on buys, IPFT and 18% GST. One NIFTY lot at ₹150 costs about ₹28 to buy and ₹42 to sell. |
 
-To learn more about Next.js, take a look at the following resources:
+Every decision is stored with all its gate results, so the dashboard can always explain why it did not trade.
 
-- [Next.js Documentation](https://nextjs.org/docs) - learn about Next.js features and API.
-- [Learn Next.js](https://nextjs.org/learn) - an interactive Next.js tutorial.
+## Safety: paper by default, four keys for live
 
-You can check out [the Next.js GitHub repository](https://github.com/vercel/next.js) - your feedback and contributions are welcome!
+A live order needs **all** of the following:
 
-## Deploy on Vercel
+1. `LIVE_TRADING="true"` on the engine Worker. This is a deploy-time variable and defaults to `"false"`.
+2. Engine mode **LIVE**, set from the dashboard by typing `LIVE` to confirm.
+3. **ARM** from the dashboard. Arming lasts until 15:30 IST that day and requires a healthy relay.
+4. `RELAY_LIVE=true` on the order relay.
 
-The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
+If any key is missing, orders go to the **PaperBroker**, which simulates fills on real quotes with depth walking, slippage and real charges. Further protections:
 
-Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.
+- The **kill switch** works from the dashboard or Telegram `/kill`. It also trips on the daily loss cap and on two reconciliation mismatches in a row. It cancels and market-exits everything, and for live positions it also asks the relay to cancel all orders and square off.
+- Caps are enforced twice, in the engine and again in the relay, which refuses shorts, oversized lots, non-MIS products and orders outside its trading window.
+- Orders are idempotent. Groww's `order_reference_id` is the engine's ref id, and an ambiguous outcome is looked up by reference, never resent.
+- If 5 ticks fail in a row, the engine goes DEGRADED and only manages exits.
+- The dashboard's read routes are public by default: anyone with the URL can see positions and P&L. Admin routes need the admin token. Put the dashboard behind **Cloudflare Access** (Zero Trust, a self-hosted application on its hostname) if it should be private.
+
+## Repository layout
+
+```
+src/engine/            pure TypeScript engine: runs in Workers, Node scripts and tests
+  types.ts config.ts clock.ts calendar/ settings.ts ports.ts api-types.ts
+  events/              lexicon, geo, normalize, cluster, taxonomy, LLM rubric/schema/digest/scorer, pressure, sources
+  market/              Yahoo client, candles, indicators, cross-asset moves, features, live and replay data sources
+  pricing/             Black-Scholes, trading-time to expiry, synthetic option quotes
+  instruments/         Groww instrument.csv parser and resolver, synthetic rows for expired contracts
+  strategy/            regime, signals, conviction, gates, option selection, sizing, exits, planner
+  broker/              charges, fill model, PaperBroker, groww/ (TOTP, HTTP, data, relay client, live broker)
+  risk/ evaluation/    loss limits, per-signal performance and decay, outcome grading, scorer evaluation
+  pipeline/            ingest, scoring, trading, position and end-of-day cycles
+  backtest/            day-by-day replay, metrics, walk-forward, Yahoo history loader
+  api/readModel.ts     repository state -> dashboard DTOs
+workers/engine/        engine Worker: TradingEngineDO, IngestDO, BacktestDO, crons, queue consumer, EngineAdmin RPC, D1 repository
+migrations/            D1 schema (drizzle-kit)
+relay/                 static-IP order relay (Node 22 + Hono), see relay/README.md
+scripts/               backtest, fetch-history, bootstrap-events, score-batch, trigger-cron
+src/app, src/components, src/lib, src/hooks   Next.js dashboard (India Index Desk, blotter, /backtest, /events)
+docs/RESEARCH.md       survey of public algo-trading projects, the Groww wire contract, charges and pitfalls
+```
+
+## Local development
+
+Requirements: Node 22 and npm. No Cloudflare account is needed locally.
+
+```bash
+npm install
+cp .env.example .env.local        # ENGINE_MOCK=1: the desk runs on built-in simulated data
+npm run dev                       # http://localhost:3000
+```
+
+To run the real engine locally (Wrangler simulates D1, KV, Queues, R2 and Durable Objects):
+
+```bash
+cp .dev.vars.example workers/engine/.dev.vars   # ADMIN_TOKEN=dev; every other key is optional
+npm run db:migrate:local
+npm run dev:engine                               # http://localhost:8787
+
+curl -X POST -H "Authorization: Bearer dev" localhost:8787/ops/ingest   # fetch, cluster, queue for scoring
+curl -X POST -H "Authorization: Bearer dev" localhost:8787/ops/tick     # one trading-loop tick
+curl -X POST -H "Authorization: Bearer dev" localhost:8787/ops/status
+npm run cron:local -- "* 3-10 * * 1-5"                                  # fire a cron by expression
+```
+
+Then set `ENGINE_MOCK=0` in `.env.local` and restart `npm run dev`. The dashboard then reads the local engine through its `ENGINE` service binding. Other ops endpoints are `/ops/token`, `/ops/instruments`, `/ops/premarket` and `/ops/eod`.
+
+Without keys the engine still runs end to end. It paper-trades on synthetic option quotes priced from India VIX and scores news with the lexicon fallback.
+
+Checks (CI runs the same ones):
+
+```bash
+npm run typecheck && npm run lint && npm test && npm run build
+cd relay && npm ci && npm run typecheck && npm test
+```
+
+## Deploying on Cloudflare
+
+Both Workers fit the Workers Paid plan's included usage. See [Costs](#costs).
+
+1. Create the resources and paste the printed IDs into `workers/engine/wrangler.jsonc` (D1 `database_id` and KV `id`):
+
+   ```bash
+   npx wrangler login
+   npx wrangler d1 create ruphak-trading
+   npx wrangler kv namespace create KV
+   npx wrangler queues create events-to-score
+   npx wrangler queues create events-to-score-dlq
+   npx wrangler r2 bucket create ruphak-data
+   npx wrangler r2 bucket create ruphak-next-cache
+   ```
+
+2. Set the engine secrets. Only `ADMIN_TOKEN` is required for paper trading.
+
+   ```bash
+   for s in ADMIN_TOKEN ANTHROPIC_API_KEY GNEWS_API_KEY GROWW_API_KEY GROWW_TOTP_SECRET TELEGRAM_BOT_TOKEN TELEGRAM_CHAT_ID TELEGRAM_WEBHOOK_SECRET; do
+     npx wrangler secret put $s --config workers/engine/wrangler.jsonc
+   done
+   npx wrangler secret put ADMIN_TOKEN    # dashboard Worker, same value
+   ```
+
+3. Migrate and deploy. The engine goes first, because the dashboard's service binding points at it.
+
+   ```bash
+   npm run db:migrate:remote
+   npm run deploy:engine
+   npm run deploy:dashboard
+   ```
+
+4. To deploy from CI, add `CLOUDFLARE_API_TOKEN` and `CLOUDFLARE_ACCOUNT_ID` as repository secrets. Pushes to `main` then migrate D1 and deploy both Workers after the checks pass.
+
+`npm run deploy:engine:preview` deploys a separate preview environment with its own resources and a single 30-minute cron.
+
+### Cron schedule (UTC; IST = UTC + 5:30)
+
+| IST | Cron | Job |
+|---|---|---|
+| every 10 min, 24×7 | `*/10 * * * *` | News ingest |
+| every 2 min, 08:31–16:29 on trading days | `1-59/2 3-10 * * 1-5` | Extra ingest during market hours |
+| every minute, 08:30–16:29 on trading days | `* 3-10 * * 1-5` | Re-arms a missing alarm and alerts on a stale heartbeat |
+| 08:00 | `30 2 * * 1-5` | Groww token (tokens expire at 06:00) |
+| 08:10 | `40 2 * * 1-5` | Instrument master: Groww `instrument.csv` to KV and R2 |
+| 08:30 | `0 3 * * 1-5` | Pre-market ingest, market snapshot, relay health |
+| 16:00 | `30 10 * * 1-5` | End of day: grade decisions, update signal performance, Telegram summary |
+| 20:00 | `30 14 * * *` | Prune old D1 rows |
+
+## Going live with Groww (only after the go/no-go below)
+
+1. Subscribe to the **Groww Trade API** (₹499 + GST a month). Create an API key of type **TOTP** and keep its TOTP secret. The relay's research found that the docs may also require a daily approval for TOTP keys. If so, approve it before 08:00. The 08:00 job alerts on failure.
+2. Set `GROWW_API_KEY` and `GROWW_TOTP_SECRET` on the engine. The engine then uses Groww's LTP for decision-time spot and real option quotes with depth. Paper fills use these real quotes.
+3. Deploy the **order relay** on a machine with a static IP (a Mumbai VPS, about ₹300–800 a month). Whitelist that IP on Groww, and put the relay behind a Cloudflare Tunnel with an Access service token. Follow [`relay/README.md`](relay/README.md) step by step. Set `RELAY_URL`, `RELAY_HMAC_SECRET` (at least 32 characters), `CF_ACCESS_CLIENT_ID` and `CF_ACCESS_CLIENT_SECRET` on the engine.
+4. Run the relay with `RELAY_LIVE=false` (shadow mode) for at least a week while paper trading. Then follow its verification checklist.
+5. Redeploy the engine with `LIVE_TRADING="true"`. In the dashboard switch the mode to LIVE, ARM it, and start at 1 lot with caps at their minimum.
+
+### Telegram
+
+Create a bot with @BotFather and set `TELEGRAM_BOT_TOKEN` and `TELEGRAM_CHAT_ID`. Alerts cover entries, exits, kill trips, DEGRADED state, stale heartbeats, token and instrument failures, LLM budget exhaustion and the daily summary.
+
+The `/status`, `/kill [reason]` and `/disarm` commands need a public URL for the engine. Either set `workers_dev: true` or add a route in `workers/engine/wrangler.jsonc`, set `TELEGRAM_WEBHOOK_SECRET`, then register the webhook:
+
+```bash
+curl "https://api.telegram.org/bot<TOKEN>/setWebhook?url=https://<engine-host>/telegram/webhook&secret_token=<TELEGRAM_WEBHOOK_SECRET>"
+```
+
+Only the configured chat id is obeyed.
+
+## Research workflow
+
+```bash
+npm run backtest -- --from 2026-08-10 --to 2026-10-07              # Yahoo keeps ~60 days of 5-minute bars
+npm run backtest -- --from 2026-08-10 --to 2026-10-07 --placebo    # + no-events and shuffled-event-time baselines
+npm run backtest -- --from 2026-01-01 --to 2026-10-07 --walk-forward   # out-of-sample folds (slow)
+
+npm run fetch-history -- --from 2024-01-01 --to 2026-10-07          # Groww 5-minute index history (needs Groww keys)
+npm run bootstrap-events -- --from 2026-07-01 --to 2026-10-07       # GDELT crawl -> clusters (resumable, hours)
+npm run score-batch -- --dry-run                                     # request count and token estimate
+npm run score-batch -- --submit && npm run score-batch -- --collect --wait   # Claude Batches API (50% price)
+npm run score-batch -- --lexicon                                     # free baseline
+npm run eval:scorer                                                  # Claude scorer vs the labelled seed set (costs credits)
+```
+
+Reports are written to `reports/` and caches to `.cache/`; both are gitignored. The dashboard's **/backtest** page runs the same engine in a Durable Object, a few days per alarm, on Yahoo history.
+
+**First result (1 Sep – 7 Oct 2026, 25 sessions, default settings, no scored events):** the engine took one trade and lost about ₹2,456, stopped out. Without event scores and with the theta gate at 0.15 it almost never trades. The event layer is meant to provide the edge, and it is still unmeasured.
+
+**Paper to live go/no-go:**
+
+- Out-of-sample Sharpe ≥ 0.8 with at least 60 out-of-sample trades.
+- Profit factor ≥ 1.3 after costs.
+- The shuffled-events placebo is close to zero.
+- The scorer evaluation passes.
+- **At least 6 weeks of forward paper trading** that agrees with the backtest.
+
+## Limitations
+
+- **Backtest option prices are synthetic.** They use Black-Scholes on India VIX with a modelled spread. Real Groww option candles are not wired into the replay yet, and every report says so.
+- Backtests decide on closed 5-minute bars with a 90 s data lag, and they check exits at the same cadence. Stops can therefore fill beyond −30%.
+- **Hindsight leakage.** A model scoring 2026 headlines may know what happened next, so backtested event edge is optimistic. Forward paper trading is the real test.
+- The labelled scorer set (`src/engine/evaluation/eval/headlines.json`) is a 39-story seed set labelled by economic logic, not by observed returns. Grow it to 200–300 stories with next-day returns before trusting it.
+- Yahoo data is unofficial and delayed by about 1–2 minutes (CME futures by about 10 minutes). GDELT often rate-limits shared cloud IPs, so it is best-effort only.
+- Groww details that are still unverified are listed in `relay/README.md` (Groww assumptions) and in `docs/RESEARCH.md`. They include IP restrictions on read endpoints, the MIS square-off time and fee, and the token expiry format.
+- The 2026 NSE/BSE holiday list is in `src/engine/calendar/holidays.json`. Check it against exchange circulars every year; the dashboard can add overrides.
+
+## Costs
+
+| Item | Estimate |
+|---|---|
+| Cloudflare (Workers Paid, Durable Objects, D1, KV, Queues, R2) | about $5 a month, mostly within included usage |
+| Claude event scoring | Depends on story volume. Roughly $200–280 a month on Opus 5.5 at about 200 calls a day. Set `LLM_MODEL` for a cheaper model and `LLM_DAILY_*_TOKEN_BUDGET` to cap spend. |
+| Groww Trade API | ₹499 + GST a month (live data and live trading) |
+| Relay VPS | ₹300–800 a month (live only) |
+| Yahoo, Google News, GDELT, Telegram | free |
+
+## Configuration reference
+
+Engine Worker variables (`workers/engine/wrangler.jsonc`):
+
+| Variable | Default | Meaning |
+|---|---|---|
+| `LIVE_TRADING` | `"false"` | First key for live orders |
+| `GROWW_DATA_VIA_RELAY` | `"false"` | Route Groww data calls through the relay if Cloudflare egress is blocked |
+| `LLM_MODEL`, `LLM_EFFORT` | `claude-opus-5-5`, `medium` | Event scorer model and effort |
+| `LLM_DAILY_INPUT_TOKEN_BUDGET`, `LLM_DAILY_OUTPUT_TOKEN_BUDGET` | 3,000,000 / 600,000 | Daily cap. The lexicon scores once the cap is reached. |
+| `CAPITAL_INR` | 500000 | Capital used for sizing and loss caps |
+
+Secrets: see `.dev.vars.example`. Every strategy parameter lives in `src/engine/config.ts`, and backtests and live trading read the same values.
