@@ -3,6 +3,9 @@
 // Enhanced with gold-api.com, COMEX data, Stack Tracker
 // ============================================
 
+import { classifyCategory, classifySeverity, extractTags } from "@/engine/events/lexicon";
+import { extractLocation } from "@/engine/events/geo";
+
 // ------ Types ------
 
 export interface IntelItem {
@@ -76,86 +79,33 @@ export interface StackSummary {
   }[];
 }
 
-// ------ Geolocation Data for News Parsing ------
+// ------ Classifiers (shared with the trading engine) ------
 
-const GEOLOCATION_KEYWORDS: Record<string, { lat: number; lng: number; name: string }> = {
-  'hormuz': { lat: 26.5, lng: 56.3, name: 'Strait of Hormuz' },
-  'red sea': { lat: 20.0, lng: 38.0, name: 'Red Sea' },
-  'suez': { lat: 30.0, lng: 32.5, name: 'Suez Canal' },
-  'panama': { lat: 9.0, lng: -79.5, name: 'Panama Canal' },
-  'malacca': { lat: 2.5, lng: 101.5, name: 'Strait of Malacca' },
-  'taiwan': { lat: 23.5, lng: 121.0, name: 'Taiwan Strait' },
-  'black sea': { lat: 43.0, lng: 34.0, name: 'Black Sea' },
-  'baltic': { lat: 58.0, lng: 20.0, name: 'Baltic Sea' },
-  'congo': { lat: -4.3, lng: 15.3, name: 'Congo' },
-  'ukraine': { lat: 48.4, lng: 31.2, name: 'Ukraine' },
-  'russia': { lat: 55.8, lng: 37.6, name: 'Russia' },
-  'iran': { lat: 32.4, lng: 53.7, name: 'Iran' },
-  'china': { lat: 35.9, lng: 104.2, name: 'China' },
-  'saudi': { lat: 23.9, lng: 45.1, name: 'Saudi Arabia' },
-  'qatar': { lat: 25.3, lng: 51.2, name: 'Qatar' },
-  'india': { lat: 20.6, lng: 79.0, name: 'India' },
-  'south africa': { lat: -30.6, lng: 22.9, name: 'South Africa' },
-  'australia': { lat: -25.3, lng: 133.8, name: 'Australia' },
-  'chile': { lat: -35.7, lng: -71.5, name: 'Chile' },
-  'peru': { lat: -9.2, lng: -75.0, name: 'Peru' },
-  'brazil': { lat: -14.2, lng: -51.9, name: 'Brazil' },
-  'indonesia': { lat: -0.8, lng: 113.9, name: 'Indonesia' },
-  'philippines': { lat: 12.9, lng: 121.8, name: 'Philippines' },
-  'yemen': { lat: 15.6, lng: 48.5, name: 'Yemen' },
-  'houthi': { lat: 15.4, lng: 44.2, name: 'Yemen (Houthi)' },
-  'libya': { lat: 26.3, lng: 17.2, name: 'Libya' },
-  'nigeria': { lat: 9.1, lng: 8.7, name: 'Nigeria' },
-  'iraq': { lat: 33.2, lng: 43.7, name: 'Iraq' },
-  'gold': { lat: -30.6, lng: 22.9, name: 'South Africa' },
-  'copper': { lat: -35.7, lng: -71.5, name: 'Chile' },
-  'silver': { lat: 23.6, lng: -102.6, name: 'Mexico' },
-  'lithium': { lat: -22.3, lng: -65.0, name: 'Bolivia' },
-};
-
-// ------ Category Classifier ------
-
-function classifyCategory(text: string): IntelItem['category'] {
-  const lower = text.toLowerCase();
-  if (/mine|mining|ore|mineral|lithium|cobalt|copper|gold|silver|platinum/.test(lower)) return 'MINING';
-  if (/oil|gas|energy|petroleum|opec|refiner|lng|crude|fuel/.test(lower)) return 'ENERGY';
-  if (/military|navy|army|missile|weapon|war|conflict|defense|troops|drone|strike/.test(lower)) return 'MILITARY';
-  if (/ship|maritime|port|vessel|tanker|cargo|strait|canal|chokepoint|pirate|blockade/.test(lower)) return 'MARITIME';
-  return 'ENERGY';
-}
-
-function classifySeverity(text: string): IntelItem['severity'] {
-  const lower = text.toLowerCase();
-  if (/breaking|urgent|critical|attack|explosion|war|strike|block/.test(lower)) return 'FLASH';
-  if (/warning|risk|threat|disruption|sanction|escalat/.test(lower)) return 'ALERT';
-  return 'UPDATE';
-}
-
-function extractLocation(text: string): { lat: number; lng: number; name: string } | undefined {
-  const lower = text.toLowerCase();
-  for (const [keyword, loc] of Object.entries(GEOLOCATION_KEYWORDS)) {
-    if (lower.includes(keyword)) return loc;
-  }
-  return undefined;
-}
-
-function extractTags(text: string): string[] {
-  const tags: string[] = [];
-  const lower = text.toLowerCase();
-  if (/gold/.test(lower)) tags.push('Gold');
-  if (/silver/.test(lower)) tags.push('Silver');
-  if (/copper/.test(lower)) tags.push('Copper');
-  if (/oil|crude|petroleum/.test(lower)) tags.push('Oil');
-  if (/uranium/.test(lower)) tags.push('Uranium');
-  if (/lithium/.test(lower)) tags.push('Lithium');
-  if (/treasur/.test(lower)) tags.push('Treasuries');
-  if (/usd|dollar/.test(lower)) tags.push('USD');
-  if (/platinum/.test(lower)) tags.push('Platinum');
-  if (/palladium/.test(lower)) tags.push('Palladium');
-  return tags.length > 0 ? tags : ['Geopolitics'];
-}
+export { classifyCategory, classifySeverity, extractTags, extractLocation };
+export { GEOLOCATION_KEYWORDS } from "@/engine/events/geo";
 
 // ------ GNews / RSS Fallback ------
+
+interface GNewsResponse {
+  articles?: { title: string; description?: string; url: string; publishedAt: string; source?: { name?: string } }[];
+}
+
+interface Rss2JsonResponse {
+  status?: string;
+  feed?: { title?: string };
+  items?: { title: string; description?: string; link: string; pubDate: string; author?: string }[];
+}
+
+interface YahooQuote {
+  symbol: string;
+  shortName?: string;
+  regularMarketPrice?: number;
+  regularMarketChange?: number;
+  regularMarketChangePercent?: number;
+  regularMarketPreviousClose?: number;
+  regularMarketDayHigh?: number;
+  regularMarketDayLow?: number;
+}
 
 const GNEWS_API_KEY = process.env.NEXT_PUBLIC_GNEWS_API_KEY || '';
 
@@ -181,7 +131,7 @@ export async function fetchIntelFeed(): Promise<IntelItem[]> {
       const res = await fetch(url, { next: { revalidate: 300 } });
       if (!res.ok) return [];
       const data = await res.json();
-      return (data.articles || []).map((article: any, idx: number) => {
+      return ((data as GNewsResponse).articles || []).map((article, idx: number) => {
         const fullText = `${article.title} ${article.description || ''}`;
         return {
           id: `gnews-${q.slice(0, 10)}-${idx}`,
@@ -234,7 +184,7 @@ async function fetchFallbackNews(): Promise<IntelItem[]> {
       const data = await res.json();
       if (data.status !== 'ok') continue;
 
-      (data.items || []).forEach((item: any, idx: number) => {
+      ((data as Rss2JsonResponse).items || []).forEach((item, idx: number) => {
         const fullText = `${item.title} ${item.description || ''}`;
         allItems.push({
           id: `rss-${idx}-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
@@ -329,8 +279,8 @@ export async function fetchCommodityPrices(): Promise<CommodityPrice[]> {
     if (res.ok) {
       const data = await res.json();
       const quotes = data?.quoteResponse?.result || [];
-      return quotes.map((q: any, i: number) => ({
-        name: names[i] || q.shortName,
+      return (quotes as YahooQuote[]).map((q, i: number) => ({
+        name: names[i] || q.shortName || q.symbol,
         symbol: q.symbol,
         price: q.regularMarketPrice || 0,
         change: q.regularMarketChange || 0,
