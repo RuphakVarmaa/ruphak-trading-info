@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useEffect } from 'react';
+import { useState, useSyncExternalStore } from 'react';
 import type { CommodityPrice, StackHolding } from '@/utils/api';
 import { calculateStackSummary } from '@/utils/api';
 
@@ -8,17 +8,45 @@ function generateId(): string {
   return Date.now().toString(36) + Math.random().toString(36).slice(2, 6);
 }
 
+// Holdings live in localStorage, read through useSyncExternalStore: the server render and
+// hydration see an empty list, then the stored holdings appear (no effect needed).
+const STORAGE_KEY = 'ruphak-stack-holdings';
+const EMPTY_HOLDINGS: StackHolding[] = [];
+const holdingsListeners = new Set<() => void>();
+let cachedRaw: string | null | undefined;
+let cachedHoldings: StackHolding[] = EMPTY_HOLDINGS;
+
 function loadHoldings(): StackHolding[] {
-  if (typeof window === 'undefined') return [];
+  let raw: string | null = null;
   try {
-    const raw = localStorage.getItem('ruphak-stack-holdings');
-    return raw ? JSON.parse(raw) : [];
-  } catch { return []; }
+    raw = localStorage.getItem(STORAGE_KEY);
+  } catch { raw = null; }
+  if (raw !== cachedRaw) {
+    cachedRaw = raw;
+    try {
+      const parsed = raw ? JSON.parse(raw) : [];
+      cachedHoldings = Array.isArray(parsed) ? parsed : EMPTY_HOLDINGS;
+    } catch { cachedHoldings = EMPTY_HOLDINGS; }
+  }
+  return cachedHoldings;
+}
+
+const serverHoldings = () => EMPTY_HOLDINGS;
+
+function subscribeHoldings(cb: () => void) {
+  holdingsListeners.add(cb);
+  const onStorage = (e: StorageEvent) => { if (e.key === STORAGE_KEY || e.key === null) cb(); };
+  window.addEventListener('storage', onStorage);
+  return () => {
+    holdingsListeners.delete(cb);
+    window.removeEventListener('storage', onStorage);
+  };
 }
 
 function saveHoldings(holdings: StackHolding[]) {
   if (typeof window === 'undefined') return;
-  localStorage.setItem('ruphak-stack-holdings', JSON.stringify(holdings));
+  localStorage.setItem(STORAGE_KEY, JSON.stringify(holdings));
+  holdingsListeners.forEach((l) => l());
 }
 
 interface StackTrackerProps {
@@ -26,11 +54,9 @@ interface StackTrackerProps {
 }
 
 export default function StackTracker({ prices }: StackTrackerProps) {
-  const [holdings, setHoldings] = useState<StackHolding[]>([]);
+  const holdings = useSyncExternalStore(subscribeHoldings, loadHoldings, serverHoldings);
   const [showForm, setShowForm] = useState(false);
   const [form, setForm] = useState({ metal: 'gold', type: 'bar', weight: '', weightUnit: 'oz' as const, purchasePrice: '', purchaseDate: '', notes: '' });
-
-  useEffect(() => { setHoldings(loadHoldings()); }, []);
 
   const summary = calculateStackSummary(holdings, prices);
 
@@ -46,17 +72,13 @@ export default function StackTracker({ prices }: StackTrackerProps) {
       purchaseDate: form.purchaseDate || new Date().toISOString().split('T')[0],
       notes: form.notes,
     };
-    const updated = [...holdings, h];
-    setHoldings(updated);
-    saveHoldings(updated);
+    saveHoldings([...holdings, h]);
     setForm({ metal: 'gold', type: 'bar', weight: '', weightUnit: 'oz', purchasePrice: '', purchaseDate: '', notes: '' });
     setShowForm(false);
   };
 
   const removeHolding = (id: string) => {
-    const updated = holdings.filter(h => h.id !== id);
-    setHoldings(updated);
-    saveHoldings(updated);
+    saveHoldings(holdings.filter(h => h.id !== id));
   };
 
   return (
@@ -74,7 +96,7 @@ export default function StackTracker({ prices }: StackTrackerProps) {
       </p>
 
       {/* Summary Cards */}
-      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 12, marginBottom: 20 }}>
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(150px, 1fr))', gap: 12, marginBottom: 20 }}>
         <div style={{ background: '#111', border: '1px solid #222', borderRadius: 8, padding: 16 }}>
           <div style={{ fontSize: 9, color: '#666', textTransform: 'uppercase', letterSpacing: '0.06em', marginBottom: 6 }}>Total Value</div>
           <div style={{ fontSize: 22, fontWeight: 700, color: '#ffb300', fontFamily: 'monospace' }}>

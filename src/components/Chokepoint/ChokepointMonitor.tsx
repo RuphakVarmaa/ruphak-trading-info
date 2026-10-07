@@ -1,6 +1,7 @@
 'use client';
 
 import type { ChokepointStatus } from '@/utils/api';
+import { useUtcTime } from '@/components/shared/UtcClock';
 
 function getStatusColor(status: ChokepointStatus['status']): string {
   if (status === 'CRITICAL') return '#f44336';
@@ -26,6 +27,7 @@ export default function ChokepointMonitor({
   onSelect,
 }: ChokepointMonitorProps) {
   const selected = chokepoints.find((c) => c.name === selectedChokepoint) || chokepoints[0];
+  const utcTime = useUtcTime();
 
   return (
     <div style={{ height: '100%', display: 'flex', flexDirection: 'column', background: '#0d0d0d', padding: '10px 14px' }}>
@@ -40,7 +42,7 @@ export default function ChokepointMonitor({
           </span>
         </div>
         <span style={{ fontSize: 9, color: '#555', fontFamily: 'monospace' }}>
-          {new Date().toUTCString().slice(17, 25)} UTC
+          {utcTime} UTC
         </span>
       </div>
 

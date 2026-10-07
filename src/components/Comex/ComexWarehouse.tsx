@@ -29,7 +29,7 @@ export default function ComexWarehouse({ data }: ComexWarehouseProps) {
       </p>
 
       {/* Cards Grid */}
-      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 16 }}>
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(260px, 1fr))', gap: 16 }}>
         {data.map((item) => (
           <div
             key={item.metal}

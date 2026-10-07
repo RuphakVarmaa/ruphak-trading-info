@@ -1,14 +1,8 @@
 'use client';
 
 import type { CommodityPrice } from '@/utils/api';
-
-function getPriceColor(direction: 'up' | 'down'): string {
-  return direction === 'up' ? '#4caf50' : '#f44336';
-}
-
-function getArrow(direction: 'up' | 'down'): string {
-  return direction === 'up' ? '▲' : '▼';
-}
+import { getArrow, getPriceColor } from '@/components/shared/format';
+import { useUtcTime } from '@/components/shared/UtcClock';
 
 interface CommodityTickerProps {
   prices: CommodityPrice[];
@@ -23,6 +17,7 @@ export default function CommodityTicker({
   highRiskMines,
   seismicEvents,
 }: CommodityTickerProps) {
+  const utcTime = useUtcTime();
   return (
     <div
       style={{
@@ -69,7 +64,7 @@ export default function CommodityTicker({
         ))}
         {/* Clock */}
         <span style={{ color: '#555', fontSize: 10 }}>
-          ⏱ {new Date().toUTCString().slice(17, 25)} UTC
+          ⏱ {utcTime} UTC
         </span>
       </div>
     </div>

@@ -2,33 +2,9 @@
 
 import { useState } from 'react';
 import type { IntelItem } from '@/utils/api';
-
-function timeAgo(dateStr: string): string {
-  const now = new Date();
-  const then = new Date(dateStr);
-  const diffMs = now.getTime() - then.getTime();
-  const diffMin = Math.floor(diffMs / 60000);
-  if (diffMin < 1) return 'NOW';
-  if (diffMin < 60) return `${diffMin}m ago`;
-  const diffHr = Math.floor(diffMin / 60);
-  if (diffHr < 24) return `${diffHr}h ago`;
-  const diffDay = Math.floor(diffHr / 24);
-  return `${diffDay}d ago`;
-}
-
-function getSeverityColor(severity: IntelItem['severity']): string {
-  if (severity === 'FLASH') return '#f44336';
-  if (severity === 'ALERT') return '#ff9800';
-  return '#2196f3';
-}
-
-function getCategoryColor(category: IntelItem['category']): string {
-  if (category === 'MINING') return '#ffb300';
-  if (category === 'ENERGY') return '#e87940';
-  if (category === 'MILITARY') return '#f44336';
-  if (category === 'MARITIME') return '#2196f3';
-  return '#888';
-}
+import { timeAgo } from '@/components/shared/format';
+import { useClientNow } from '@/hooks/useEngineState';
+import { getCategoryColor, getSeverityColor } from '@/components/shared/colors';
 
 const TABS = ['ALL', 'MINING', 'ENERGY', 'MILITARY', 'MARITIME'] as const;
 
@@ -38,6 +14,8 @@ interface IntelFeedProps {
 
 export default function IntelFeed({ items }: IntelFeedProps) {
   const [activeTab, setActiveTab] = useState<string>('ALL');
+  // Relative times need the browser clock: render them after hydration only.
+  const now = useClientNow();
 
   const filteredItems =
     activeTab === 'ALL'
@@ -184,7 +162,7 @@ export default function IntelFeed({ items }: IntelFeedProps) {
                   ⚡ {item.category}
                 </span>
               </div>
-              <span style={{ color: '#555' }}>{timeAgo(item.publishedAt)}</span>
+              <span style={{ color: '#555' }}>{now == null ? '' : timeAgo(item.publishedAt, now)}</span>
             </div>
 
             {/* Title / Description */}

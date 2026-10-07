@@ -22,7 +22,7 @@
 body {
   color: var(--foreground);
   background: var(--background);
-  font-family: 'Inter', Arial, Helvetica, sans-serif;
+  font-family: var(--font-inter), 'Inter', Arial, Helvetica, sans-serif;
   margin: 0;
   padding: 0;
   overflow-x: hidden;
@@ -88,4 +88,118 @@ body {
 @keyframes glow {
   0%, 100% { box-shadow: 0 0 4px rgba(255,179,0,0.3); }
   50% { box-shadow: 0 0 12px rgba(255,179,0,0.6); }
+}
+
+/* ---------------------------------------------------------------------------
+   India Index Desk: animation helpers and layout-only responsive classes.
+   Components keep their inline styles; these rules only restack layouts on
+   narrow screens (they need !important to override inline sizes).
+   --------------------------------------------------------------------------- */
+
+.tnum {
+  font-variant-numeric: tabular-nums;
+}
+
+@keyframes live-pulse {
+  0%, 100% { box-shadow: 0 0 0 0 rgba(244, 67, 54, 0.55); }
+  50% { box-shadow: 0 0 0 5px rgba(244, 67, 54, 0); }
+}
+
+.live-pulse {
+  animation: live-pulse 1.6s ease-in-out infinite;
+}
+
+@keyframes skeleton-pulse {
+  0%, 100% { opacity: 0.45; }
+  50% { opacity: 0.9; }
+}
+
+dialog::backdrop {
+  background: rgba(0, 0, 0, 0.72);
+  backdrop-filter: blur(2px);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .live-pulse { animation: none; }
+}
+
+@media (max-width: 1100px) {
+  .desk-core {
+    flex-direction: column;
+    height: auto !important;
+  }
+  .desk-core > :first-child {
+    border-right: none !important;
+    border-bottom: 1px solid #222;
+  }
+  .desk-feed {
+    width: 100% !important;
+    height: 560px;
+  }
+  .blotter-grid {
+    grid-template-columns: minmax(0, 1fr) !important;
+  }
+}
+
+@media (max-width: 900px) {
+  .signal-grid {
+    grid-template-columns: minmax(0, 1fr) !important;
+    grid-template-rows: auto !important;
+  }
+  .signal-grid > * + * {
+    border-left: none !important;
+    border-top: 1px solid #222;
+  }
+  .controls-bar {
+    gap: 10px !important;
+  }
+  .controls-bar > span[aria-hidden="true"] {
+    display: none;
+  }
+  .ticker-row {
+    flex-wrap: wrap;
+    gap: 8px 14px !important;
+  }
+  .ticker-row > :last-child {
+    margin-left: 0 !important;
+    flex-wrap: wrap;
+    gap: 6px 14px !important;
+  }
+  .legacy-core {
+    flex-direction: column;
+    height: auto !important;
+  }
+  .legacy-core > :first-child {
+    height: auto !important;
+    flex: none !important;
+    border-right: none !important;
+    border-bottom: 1px solid #222;
+  }
+  /* the map itself gets a fixed height; the chokepoint panel below it grows */
+  .legacy-core > :first-child > :first-child {
+    height: 400px;
+    flex: none !important;
+  }
+  .legacy-core > :last-child {
+    width: 100% !important;
+    height: 480px;
+  }
+  /* chokepoint panel under the map grows with its wrapped tabs */
+  .legacy-core > :first-child > :last-child {
+    height: auto !important;
+  }
+  /* metals ticker bar (before the grid) scrolls sideways; status bar (after it) wraps */
+  div:has(+ .legacy-core) {
+    overflow-x: auto !important;
+  }
+  .legacy-core + div {
+    height: auto !important;
+    flex-wrap: wrap;
+    gap: 4px 12px;
+    padding: 6px 14px !important;
+  }
+  .legacy-core + div > :first-child {
+    flex-wrap: wrap;
+    row-gap: 2px;
+  }
 }

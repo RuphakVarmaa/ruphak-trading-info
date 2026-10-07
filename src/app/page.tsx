@@ -1,10 +1,16 @@
 import { fetchIntelFeed, fetchCommodityPrices, getChokepointStatuses, deriveMapMarkers, getComexWarehouseData } from '@/utils/api';
+import { getInitialEngineSnapshot } from '@/lib/engine/snapshot';
 import DashboardClient from '@/components/DashboardClient';
 
+// Engine state changes every few seconds; render per request (the news and metals
+// fetches keep their own revalidate windows in the data cache).
+export const dynamic = 'force-dynamic';
+
 export default async function Home() {
-  const [intelItems, commodityPrices] = await Promise.all([
+  const [intelItems, commodityPrices, engineInitial] = await Promise.all([
     fetchIntelFeed(),
     fetchCommodityPrices(),
+    getInitialEngineSnapshot(),
   ]);
 
   const chokepoints = getChokepointStatuses();
@@ -18,6 +24,7 @@ export default async function Home() {
       chokepoints={chokepoints}
       mapMarkers={mapMarkers}
       comexData={comexData}
+      engineInitial={engineInitial}
     />
   );
 }
