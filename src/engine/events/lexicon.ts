@@ -52,15 +52,23 @@ export function isMarketRelevant(text: string): boolean {
 }
 
 export const BULLISH_TERMS =
-  /\b(rate cut|cuts? rates?|eases?|easing|stimulus|ceasefire|truce|peace (deal|talks)|deal (signed|reached)|record (high|inflows?)|inflows?|upgrade[sd]?|beats? (estimates|expectations)|surges?|rall(y|ies)|soars?|jumps?|cools?|slows? (inflation)?|dovish|reform|tax cut|boost)\b/i;
+  /\b(rate cuts?|cuts? (the )?(repo |key |policy |interest )?rates?|eases?|easing|stimulus|ceasefire|truce|peace (deal|talks)|deal (signed|reached)|record (high|inflows?)|inflows?|upgrade[sd]?|beats? (estimates|expectations)|surges?|rall(y|ies)|soars?|jumps?|cools?|slows? (inflation)?|dovish|reform|tax cut|boost)\b/i;
 
 export const BEARISH_TERMS =
-  /\b(war|attack(s|ed)?|missile|strikes? on|invasion|sanctions?|blockade|rate hike|hikes? rates?|hawkish|outflows?|sell-?off|downgrade[sd]?|misses? (estimates|expectations)|crash(es)?|plunges?|slumps?|tumbles?|recession|default|crisis|surges? in (oil|crude)|oil (spikes?|surges?)|tariffs? (hike|raised|imposed)|escalat(es|ion)|terror)\b/i;
+  /\b(war|attack(s|ed)?|missile|strikes? on|invasion|sanctions?|blockade|rate hikes?|hawkish|outflows?|sell-?off|hikes? (the )?(repo |key |policy |interest )?rates?|raises? (the )?(repo |key |policy |interest )?rates?|downgrade[sd]?|misses? (estimates|expectations)|crash(es)?|plunges?|slumps?|tumbles?|recession|default|crisis|surges? in (oil|crude)|oil (spikes?|surges?)|tariffs? (hike|raised|imposed)|escalat(es|ion)|terror)\b/i;
+
+/** India imports most of its oil: rising crude is bearish for the indices, falling crude bullish. */
+const OIL_UP = /\b(oil|crude|brent|wti)\b[^.;]{0,40}?\b(jumps?|surges?|soars?|spikes?|rises?|climbs?|rall(y|ies)|hits? (a )?(\d+-\w+ )?high)\b/gi;
+const OIL_DOWN = /\b(oil|crude|brent|wti)\b[^.;]{0,40}?\b(falls?|drops?|slumps?|plunges?|tumbles?|slides?|eases?|cools?)\b/gi;
 
 /** -1, 0 or +1 from polarity keywords; ties resolve to 0. */
 export function lexiconPolarity(text: string): -1 | 0 | 1 {
-  const bull = (text.match(new RegExp(BULLISH_TERMS.source, "gi")) ?? []).length;
-  const bear = (text.match(new RegExp(BEARISH_TERMS.source, "gi")) ?? []).length;
+  const oilUp = (text.match(OIL_UP) ?? []).length;
+  const oilDown = (text.match(OIL_DOWN) ?? []).length;
+  // Remove the oil phrases so their generic verbs ("jumps", "eases") are not double counted.
+  const rest = text.replace(OIL_UP, " ").replace(OIL_DOWN, " ");
+  const bull = (rest.match(new RegExp(BULLISH_TERMS.source, "gi")) ?? []).length + oilDown * 2;
+  const bear = (rest.match(new RegExp(BEARISH_TERMS.source, "gi")) ?? []).length + oilUp * 2;
   if (bull > bear) return 1;
   if (bear > bull) return -1;
   return 0;

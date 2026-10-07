@@ -212,6 +212,10 @@ export interface ArticleCluster {
   scoredArticleCount?: number;
   /** toneMean at the time of the last score. */
   scoredToneMean?: number;
+  /** When the cluster was last scored. */
+  scoredAtMs?: number;
+  /** LLM attempts that failed; after 3 the lexicon score is kept. */
+  scoreAttempts?: number;
   /** Location hint from the geo lexicon, used by the map. */
   locationName?: string;
 }

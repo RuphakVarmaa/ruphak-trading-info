@@ -24,8 +24,10 @@ export interface ChargeSchedule {
 }
 
 /**
- * Index option charges. Budget 2026 raised STT on option sales from 0.1% to 0.15% of premium
- * from 1 April 2026. Brokerage is Groww's flat Rs 20 per executed F&O order.
+ * Index option charges as Groww publishes them (exchange charges are passed through).
+ * Budget 2026 raised STT on option sales from 0.1% to 0.15% of premium from 1 April 2026.
+ * Brokerage is Groww's flat Rs 20 per executed F&O order. Sources: Groww pricing page,
+ * Zerodha charges page (docs/RESEARCH.md).
  */
 export const CHARGE_SCHEDULES: readonly ChargeSchedule[] = [
   {
@@ -35,17 +37,17 @@ export const CHARGE_SCHEDULES: readonly ChargeSchedule[] = [
     exchangeTxnPct: { NSE: 0.03503, BSE: 0.0325 },
     sebiPct: 0.0001,
     stampBuyPct: 0.003,
-    ipftPct: 0.0000001,
+    ipftPct: 0.0005,
     gstPct: 18,
   },
   {
     effectiveFrom: "2026-04-01",
     brokeragePerOrder: 20,
     sttSellPct: 0.15,
-    exchangeTxnPct: { NSE: 0.03553, BSE: 0.0325 },
+    exchangeTxnPct: { NSE: 0.03503, BSE: 0.0325 },
     sebiPct: 0.0001,
     stampBuyPct: 0.003,
-    ipftPct: 0.0000001,
+    ipftPct: 0.0005,
     gstPct: 18,
   },
 ] as const;
@@ -281,7 +283,7 @@ export const DEFAULT_CONFIG: EngineConfig = {
     knownClusterWindowHours: 72,
     jaccardThreshold: 0.45,
     entityOverlapThreshold: 0.6,
-    entityJaccardFloor: 0.2,
+    entityJaccardFloor: 0.3,
   },
   features: {
     gapBetas: { ES: 0.45, NQ: 0.1, CL: -0.08, DXY: -0.15, USDINR: -1.5, US10Y: -0.01, N225: 0.1, HSI: 0.1, SSE: 0.05 },
