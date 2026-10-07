@@ -54,7 +54,8 @@ describe.runIf(runLlm)(`LLM scorer on ${provider} (RUN_LLM_EVAL=1, costs API cre
     const first = await scoreLabeled(labels, llm, cfg, T);
     expect(first.errors).toEqual([]);
     const r = evaluate(labels, first.events);
-    console.log(JSON.stringify({ model: cfg.llm.model, directionAccuracy: r.directionAccuracy, neutralRate: r.neutralRate, misses: r.misses, usage: first.usage }, null, 2));
+    const mode = llm instanceof WorkersAiLlmClient ? llm.currentMode : undefined;
+    console.log(JSON.stringify({ model: cfg.llm.model, mode, directionAccuracy: r.directionAccuracy, neutralRate: r.neutralRate, misses: r.misses, usage: first.usage }, null, 2));
     expect(r.directionAccuracy).toBeGreaterThanOrEqual(0.65);
     expect(r.neutralRate).toBeGreaterThanOrEqual(0.6);
     if (process.env.RUN_LLM_EVAL_SELF === "1") {
