@@ -62,11 +62,13 @@ const RPC_METHODS = [
  * which the DTO contract guarantees is lossless.
  */
 function plainRpc(stub: EngineApi): EngineApi {
+  // Call methods directly on the stub: on an RPC stub every property access (even `.apply`)
+  // becomes part of the remote call path, so the method must never be detached.
+  const target = stub as unknown as Record<string, (...args: unknown[]) => PromiseLike<unknown>>;
   const out: Record<string, unknown> = {};
   for (const name of RPC_METHODS) {
-    const call = stub[name] as unknown as (...args: unknown[]) => PromiseLike<unknown>;
     out[name] = async (...args: unknown[]) => {
-      const value = await call.apply(stub, args);
+      const value = await target[name](...args);
       return value === undefined || value === null ? value : JSON.parse(JSON.stringify(value));
     };
   }
