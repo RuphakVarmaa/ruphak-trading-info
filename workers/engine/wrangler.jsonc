@@ -25,10 +25,14 @@
   "durable_objects": {
     "bindings": [
       { "name": "ENGINE_DO", "class_name": "TradingEngineDO" },
-      { "name": "INGEST_DO", "class_name": "IngestDO" }
+      { "name": "INGEST_DO", "class_name": "IngestDO" },
+      { "name": "BACKTEST_DO", "class_name": "BacktestDO" }
     ]
   },
-  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["TradingEngineDO", "IngestDO"] }],
+  "migrations": [
+    { "tag": "v1", "new_sqlite_classes": ["TradingEngineDO", "IngestDO"] },
+    { "tag": "v2", "new_sqlite_classes": ["BacktestDO"] }
+  ],
   "d1_databases": [
     {
       "binding": "DB",
@@ -48,7 +52,9 @@
         "max_retries": 3,
         "max_concurrency": 2,
         "dead_letter_queue": "events-to-score-dlq"
-      }
+      },
+      // Messages that failed 3 times are scored with the lexicon scorer only.
+      { "queue": "events-to-score-dlq", "max_batch_size": 10, "max_batch_timeout": 30, "max_retries": 1 }
     ]
   },
   "r2_buckets": [{ "binding": "R2", "bucket_name": "ruphak-data" }],
@@ -93,14 +99,16 @@
             "max_batch_timeout": 20,
             "max_retries": 3,
             "dead_letter_queue": "events-to-score-preview-dlq"
-          }
+          },
+          { "queue": "events-to-score-preview-dlq", "max_batch_size": 10, "max_batch_timeout": 30, "max_retries": 1 }
         ]
       },
       "r2_buckets": [{ "binding": "R2", "bucket_name": "ruphak-data-preview" }],
       "durable_objects": {
         "bindings": [
           { "name": "ENGINE_DO", "class_name": "TradingEngineDO" },
-          { "name": "INGEST_DO", "class_name": "IngestDO" }
+          { "name": "INGEST_DO", "class_name": "IngestDO" },
+          { "name": "BACKTEST_DO", "class_name": "BacktestDO" }
         ]
       },
       "triggers": { "crons": ["*/30 * * * *"] }

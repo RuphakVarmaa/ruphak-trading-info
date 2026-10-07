@@ -2,7 +2,7 @@
  * One tick of the trading loop. Identical in backtest, paper and live: only the injected
  * dependencies (clock, market data, quotes, broker, repository) differ.
  */
-import { HOUR_MS, MINUTE_MS } from "../clock";
+import { HOUR_MS, MINUTE_MS, istDate } from "../clock";
 import { computePressure } from "../events/pressure";
 import { computeFeatures } from "../market/features";
 import type { EngineDeps } from "../ports";
@@ -37,6 +37,8 @@ export interface TradingCycleOptions {
   snapshotEveryMs?: number;
   /** Pre-loaded events (backtests); otherwise read from the repository. */
   events?: ScoredEvent[];
+  /** Evaluate and persist decisions but submit no entries (DEGRADED engine, unhealthy relay). */
+  noEntries?: string | null;
 }
 
 export interface CycleReport {
@@ -72,16 +74,18 @@ export function quoteRows(snap: MarketSnapshot): QuoteRow[] {
     const ltp = r.key === "NIFTY" || r.key === "SENSEX" || r.key === "BANKNIFTY" ? snap.ltp[r.key as "NIFTY"] : undefined;
     const price = ltp ?? last?.c ?? daily[daily.length - 1]?.c;
     if (price === undefined) continue;
-    // Previous close: the last daily bar strictly before the latest intraday bar's day.
+    // Previous close: the last daily bar from an IST date before the latest observation's date.
+    const obsDate = istDate(last ? last.t : snap.t);
     let prev: number | undefined;
     for (let i = daily.length - 1; i >= 0; i--) {
-      if (!last || daily[i].t < last.t - 6 * HOUR_MS) {
+      if (istDate(daily[i].t) < obsDate) {
         prev = daily[i].c;
         break;
       }
     }
     const change = prev !== undefined ? price - prev : 0;
-    out.push({ key: r.key, label: r.label, price, change, changePct: prev ? (change / prev) * 100 : 0, asOf: ltp !== undefined ? snap.t : last ? last.t + 5 * MINUTE_MS : snap.t });
+    const asOf = last ? Math.min(snap.t, last.t + 5 * MINUTE_MS) : snap.t;
+    out.push({ key: r.key, label: r.label, price, change, changePct: prev ? (change / prev) * 100 : 0, asOf });
   }
   return out;
 }
@@ -109,7 +113,7 @@ export async function runTradingCycle(deps: EngineDeps, opts: TradingCycleOption
   const perf = await repo.perf.all(deps.mode);
   const risk = await loadRiskState(repo, cfg, settings, now, deps.mode);
   const halt = haltReason(risk, cfg);
-  report.halted = halt?.detail ?? null;
+  report.halted = halt?.detail ?? opts.noEntries ?? null;
   const regimes: Partial<Record<IndexId, Regime>> = {};
 
   for (const index of cfg.indices) {
@@ -127,7 +131,7 @@ export async function runTradingCycle(deps: EngineDeps, opts: TradingCycleOption
       report.decisions.push(decision);
       if (await shouldPersistDecision(deps, decision, opts.decisionEveryMs ?? 5 * MINUTE_MS)) await repo.decisions.append(decision);
 
-      if (decision.plan && phase === "OPEN" && !halt) {
+      if (decision.plan && phase === "OPEN" && !halt && !opts.noEntries) {
         const { order, position } = await submitEntry(deps, decision.plan, p);
         report.entries.push({ planId: decision.plan.id, orderId: order.id, status: order.status, positionId: position?.id ?? null });
         risk.ordersToday += 1;
