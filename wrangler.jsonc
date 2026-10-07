@@ -16,7 +16,7 @@
     { "binding": "ENGINE", "service": "ruphak-engine", "entrypoint": "EngineAdmin" }
   ],
   // Next data cache (fetch revalidate windows) and ISR output.
-  "kv_namespaces": [{ "binding": "NEXT_INC_CACHE_KV", "id": "00000000000000000000000000000002" }],
+  "kv_namespaces": [{ "binding": "NEXT_INC_CACHE_KV", "id": "0bdf8faf64e44f72be87b81bcb7ef00b" }],
   "vars": {
     "ENGINE_MOCK": "0"
   }

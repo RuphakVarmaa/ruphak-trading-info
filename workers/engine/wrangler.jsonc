@@ -37,11 +37,11 @@
     {
       "binding": "DB",
       "database_name": "ruphak-trading",
-      "database_id": "00000000-0000-0000-0000-000000000000",
+      "database_id": "caa9f5cb-a414-414a-8ec3-e68e11fa1137",
       "migrations_dir": "../../migrations"
     }
   ],
-  "kv_namespaces": [{ "binding": "KV", "id": "00000000000000000000000000000000" }],
+  "kv_namespaces": [{ "binding": "KV", "id": "4e99b0bc3d9d4dfb83ddc4edcddcdccc" }],
   "queues": {
     "producers": [{ "binding": "SCORE_QUEUE", "queue": "events-to-score" }],
     "consumers": [
