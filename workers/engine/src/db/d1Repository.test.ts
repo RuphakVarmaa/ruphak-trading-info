@@ -23,7 +23,8 @@ const migrationSql = readdirSync(migrationsDir)
 const TABLES = ["articles", "clusters", "event_scores", "pressure", "snapshots", "decisions", "outcomes", "plans", "orders", "fills", "positions", "trades", "performance", "ledger", "settings", "kv_state", "audit", "heartbeat"];
 
 beforeAll(async () => {
-  proxy = await getPlatformProxy<{ DB: D1Database }>({ configPath: "workers/engine/wrangler.jsonc", persist: false });
+  // remoteBindings: false keeps the Workers AI binding from opening a remote session (needs Cloudflare auth).
+  proxy = await getPlatformProxy<{ DB: D1Database }>({ configPath: "workers/engine/wrangler.jsonc", persist: false, remoteBindings: false });
   const statements = migrationSql
     .split("--> statement-breakpoint")
     .map((x) => x.trim())

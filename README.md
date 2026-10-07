@@ -10,7 +10,7 @@ The original metals and geopolitics terminal is still on the page, below the new
 
 A retail desk cannot copy a market maker's co-location, latency or balance sheet. What it **can** copy is their process:
 
-- **Structured judgement, not vibes.** Every story cluster is scored once by Claude against a fixed, versioned rubric. The rubric asks for direction, magnitude bucket, confidence, horizon, half-life, affected sectors, novelty and how much is already priced in. Scores are enums, so they never carry false precision.
+- **Structured judgement, not vibes.** Every story cluster is scored once by a language model against a fixed, versioned rubric. By default that is GLM-5.3 on Cloudflare Workers AI; Claude is a configuration switch away. The rubric asks for direction, magnitude bucket, confidence, horizon, half-life, affected sectors, novelty and how much is already priced in. Scores are enums, so they never carry false precision.
 - **Several weak, different signals instead of one strong opinion.** Event pressure, intraday momentum, the opening gap against global cues, NIFTY/SENSEX/BANKNIFTY relative value and a global-beta residual are combined with shrinkage weights. A volatility regime filter decides how much agreement is needed.
 - **Risk before return.** Every trade must pass the theta gate: the expected move over the holding period has to beat the option's implied move plus time decay plus round-trip costs. Positions are sized by fractional Kelly under hard caps, with daily and weekly loss limits, a kill switch and a forced 15:05 IST square-off.
 - **One code path.** Backtest, paper and live run the same `runTradingCycle` and `runPositionCycle` with different injected data sources and brokers.
@@ -23,7 +23,7 @@ A retail desk cannot copy a market maker's co-location, latency or balance sheet
  GNews           ├─ IngestDO ─ normalize ─ dedupe ─ cluster ─┐   └─ Groww LTP (decision-time spot), option quotes with depth
  GDELT (spaced)  ┘                                 │         │
                                                    ▼         ▼
-                          Queue: events-to-score ─ Claude (structured outputs, cached rubric) ─ lexicon fallback
+                          Queue: events-to-score ─ GLM-5.3 on Workers AI or Claude (structured output, rubric) ─ lexicon fallback
                                                    │
                                    Event Pressure Index per index (decaying, coverage-saturated)
                                                    │
@@ -39,8 +39,8 @@ A retail desk cannot copy a market maker's co-location, latency or balance sheet
 ### From news to a number
 
 1. **Ingest** runs every 10 minutes around the clock, plus every 2 minutes on market days. It pulls Google News RSS queries, GNews when a key is set, and GDELT at most one request per 5.5 s because GDELT rate-limits per IP. Only market-relevant headlines are kept.
-2. **Clustering** groups articles about the same story. It uses canonical URLs, normalized and stemmed titles, shingle Jaccard and entity overlap, and Claude's story key for anything still left over. Pressure is computed per story, never per article: 50 articles about one RBI decision count as about 1.3 times 10 articles, not 5 times.
-3. **Scoring.** Claude scores up to 10 clusters per request with structured outputs, with the rubric in a cached system prompt. A daily token budget caps cost. Over budget, or without an API key, a keyword lexicon scores instead. Its scores are always low confidence and are tagged `fallback`.
+2. **Clustering** groups articles about the same story. It uses canonical URLs, normalized and stemmed titles, shingle Jaccard and entity overlap, and the model's story key for anything still left over. Pressure is computed per story, never per article: 50 articles about one RBI decision count as about 1.3 times 10 articles, not 5 times.
+3. **Scoring.** The model scores up to 10 clusters per request and must return JSON that matches the score schema. The default is Z.ai GLM-5.3 (`@cf/zai-org/glm-5.3`) through the Worker's Workers AI binding, so no API key is needed inside Cloudflare. Answers are validated, and a bad answer gets one corrective retry. `LLM_PROVIDER=anthropic` switches to Claude with the `ANTHROPIC_API_KEY` secret. A daily token budget caps cost. Over budget, or when the model is unavailable, a keyword lexicon scores instead. Its scores are always low confidence and are tagged `fallback`.
 4. **Event Pressure Index (EPI).** For each index, EPI = tanh(Σ numeric × coverage × 2^(−age/half-life)) over live stories. Here numeric = (0.7 × direction × magnitude × confidence + 0.3 × sector-weighted view) × novelty × priced-in × India relevance.
 
 ### From numbers to a trade
@@ -126,7 +126,7 @@ npm run cron:local -- "* 3-10 * * 1-5"                                  # fire a
 
 Then set `ENGINE_MOCK=0` in `.env.local` and restart `npm run dev`. The dashboard then reads the local engine through its `ENGINE` service binding. Other ops endpoints are `/ops/token`, `/ops/instruments`, `/ops/premarket` and `/ops/eod`.
 
-Without keys the engine still runs end to end. It paper-trades on synthetic option quotes priced from India VIX and scores news with the lexicon fallback.
+Without keys the engine still runs end to end. It paper-trades on synthetic option quotes priced from India VIX, and `npm run dev:engine` scores news with the lexicon fallback. The Workers AI binding only runs remotely, so to score with GLM-5.3 locally, log in with `npx wrangler login` and use `npm run dev:engine:ai`, which bills your Cloudflare account.
 
 Checks (CI runs the same ones):
 
@@ -137,7 +137,16 @@ cd relay && npm ci && npm run typecheck && npm test
 
 ## Deploying on Cloudflare
 
-Both Workers fit the Workers Paid plan's included usage. See [Costs](#costs).
+Both Workers fit the Workers Paid plan's included usage. See [Costs](#costs). Workers Paid is required: the engine uses Queues, a 60-second CPU limit and Workers AI.
+
+**One command for paper trading.** With Wrangler logged in, or `CLOUDFLARE_API_TOKEN` and `CLOUDFLARE_ACCOUNT_ID` set, run:
+
+```bash
+export ENGINE_ADMIN_TOKEN="$(openssl rand -hex 24)"   # keep a copy: the dashboard's Admin button asks for it
+npm run deploy:paper                                   # add -- --dry-run to see the steps first
+```
+
+It creates the resources and fills in their IDs, migrates D1, deploys the engine, sets its secrets from `ENGINE_`-prefixed variables, deploys the dashboard, and checks that the dashboard reads the engine. Optional variables: `ENGINE_GNEWS_API_KEY`, `ENGINE_TELEGRAM_BOT_TOKEN`, `ENGINE_TELEGRAM_CHAT_ID`, `ENGINE_GROWW_API_KEY`, `ENGINE_GROWW_TOTP_SECRET`. The API token needs these account permissions: Workers Scripts Edit, Workers KV Storage Edit, D1 Edit, Queues Edit, Workers R2 Storage Edit, Workers AI Edit and Account Settings Read. It also needs the user permissions User Details Read and Memberships Read. The steps below do the same thing by hand.
 
 1. Create the resources. From a machine where Wrangler is logged in (`npx wrangler login`), run:
 
@@ -150,7 +159,7 @@ Both Workers fit the Workers Paid plan's included usage. See [Costs](#costs).
 2. Set the engine secrets. Only `ADMIN_TOKEN` is required for paper trading.
 
    ```bash
-   for s in ADMIN_TOKEN ANTHROPIC_API_KEY GNEWS_API_KEY GROWW_API_KEY GROWW_TOTP_SECRET TELEGRAM_BOT_TOKEN TELEGRAM_CHAT_ID TELEGRAM_WEBHOOK_SECRET; do
+   for s in ADMIN_TOKEN GNEWS_API_KEY GROWW_API_KEY GROWW_TOTP_SECRET TELEGRAM_BOT_TOKEN TELEGRAM_CHAT_ID TELEGRAM_WEBHOOK_SECRET; do
      npx wrangler secret put $s --config workers/engine/wrangler.jsonc
    done
    npx wrangler secret put ADMIN_TOKEN    # dashboard Worker, same value
@@ -211,9 +220,10 @@ npm run backtest -- --from 2026-01-01 --to 2026-10-07 --walk-forward   # out-of-
 npm run fetch-history -- --from 2024-01-01 --to 2026-10-07          # Groww 5-minute index history (needs Groww keys)
 npm run bootstrap-events -- --from 2026-07-01 --to 2026-10-07       # GDELT crawl -> clusters (resumable, hours)
 npm run score-batch -- --dry-run                                     # request count and token estimate
-npm run score-batch -- --submit && npm run score-batch -- --collect --wait   # Claude Batches API (50% price)
+npm run score-batch -- --provider workers-ai                        # GLM-5.3 on Workers AI (needs CLOUDFLARE_ACCOUNT_ID + CLOUDFLARE_API_TOKEN)
+npm run score-batch -- --submit && npm run score-batch -- --collect --wait   # or the Claude Batches API (50% price)
 npm run score-batch -- --lexicon                                     # free baseline
-npm run eval:scorer                                                  # Claude scorer vs the labelled seed set (costs credits)
+npm run eval:scorer                                                  # live scorer vs the labelled seed set (costs credits; LLM_PROVIDER picks the model)
 ```
 
 Reports are written to `reports/` and caches to `.cache/`; both are gitignored. The dashboard's **/backtest** page runs the same engine in a Durable Object, a few days per alarm, on Yahoo history.
@@ -243,7 +253,8 @@ Reports are written to `reports/` and caches to `.cache/`; both are gitignored. 
 | Item | Estimate |
 |---|---|
 | Cloudflare (Workers Paid, Durable Objects, D1, KV, Queues, R2) | about $5 a month, mostly within included usage |
-| Claude event scoring | Depends on story volume. Roughly $200–280 a month on Opus 5.5 at about 200 calls a day. Set `LLM_MODEL` for a cheaper model and `LLM_DAILY_*_TOKEN_BUDGET` to cap spend. |
+| News scoring, GLM-5.3 on Workers AI | $1.40 per million input tokens and $4.40 per million output tokens, billed to the Cloudflare account. The default daily caps limit spend to about $8.60 a day; reasoning tokens count as output. |
+| News scoring with Claude (optional) | Roughly $200–280 a month on Opus 5.5 at about 200 calls a day; set `LLM_PROVIDER=anthropic`. |
 | Groww Trade API | ₹499 + GST a month (live data and live trading) |
 | Relay VPS | ₹300–800 a month (live only) |
 | Yahoo, Google News, GDELT, Telegram | free |
@@ -256,8 +267,9 @@ Engine Worker variables (`workers/engine/wrangler.jsonc`):
 |---|---|---|
 | `LIVE_TRADING` | `"false"` | First key for live orders |
 | `GROWW_DATA_VIA_RELAY` | `"false"` | Route Groww data calls through the relay if Cloudflare egress is blocked |
-| `LLM_MODEL`, `LLM_EFFORT` | `claude-opus-5-5`, `medium` | Event scorer model and effort |
-| `LLM_DAILY_INPUT_TOKEN_BUDGET`, `LLM_DAILY_OUTPUT_TOKEN_BUDGET` | 3,000,000 / 600,000 | Daily cap. The lexicon scores once the cap is reached. |
+| `LLM_PROVIDER` | `workers-ai` | News scorer: `workers-ai` (AI binding) or `anthropic` (needs the `ANTHROPIC_API_KEY` secret) |
+| `LLM_MODEL`, `LLM_EFFORT` | `@cf/zai-org/glm-5.3`, `low` | Scorer model and reasoning effort (low, medium or high; GLM maps them to low, high and max) |
+| `LLM_DAILY_INPUT_TOKEN_BUDGET`, `LLM_DAILY_OUTPUT_TOKEN_BUDGET` | 3,000,000 / 1,000,000 | Daily cap. The lexicon scores once the cap is reached. |
 | `CAPITAL_INR` | 500000 | Capital used for sizing and loss caps |
 
 Secrets: see `.dev.vars.example`. Every strategy parameter lives in `src/engine/config.ts`, and backtests and live trading read the same values.

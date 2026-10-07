@@ -2,6 +2,8 @@ import { describe, expect, it } from "vitest";
 import { istAt } from "../clock";
 import { DEFAULT_CONFIG, makeConfig } from "../config";
 import { AnthropicLlmClient } from "../events/llm/anthropicClient";
+import { DEFAULT_WORKERS_AI_MODEL, WorkersAiLlmClient, workersAiRestRunner } from "../events/llm/workersAiClient";
+import type { LlmClient } from "../ports";
 import labelsFile from "./eval/headlines.json";
 import { evaluate, scoreLabeled, selfAgreement, spearman, type LabeledCluster } from "./scorerEval";
 
@@ -33,12 +35,22 @@ describe("scorer evaluation metrics", () => {
   });
 });
 
-const runLlm = process.env.RUN_LLM_EVAL === "1" && Boolean(process.env.ANTHROPIC_API_KEY);
+// Provider: LLM_PROVIDER=workers-ai (CLOUDFLARE_ACCOUNT_ID + CLOUDFLARE_API_TOKEN) or anthropic (ANTHROPIC_API_KEY).
+const env = process.env;
+const provider = env.LLM_PROVIDER === "anthropic" ? "anthropic" : env.LLM_PROVIDER === "workers-ai" || (env.CLOUDFLARE_ACCOUNT_ID && env.CLOUDFLARE_API_TOKEN) ? "workers-ai" : "anthropic";
+const hasCredentials = provider === "workers-ai" ? Boolean(env.CLOUDFLARE_ACCOUNT_ID && env.CLOUDFLARE_API_TOKEN) : Boolean(env.ANTHROPIC_API_KEY);
+const runLlm = env.RUN_LLM_EVAL === "1" && hasCredentials;
 
-describe.runIf(runLlm)("LLM scorer (RUN_LLM_EVAL=1, costs API credits)", () => {
+function evalClient(): LlmClient {
+  if (provider === "workers-ai") return new WorkersAiLlmClient({ run: workersAiRestRunner({ accountId: env.CLOUDFLARE_ACCOUNT_ID!, apiToken: env.CLOUDFLARE_API_TOKEN! }), log: (m, d) => console.log(m, d ?? "") });
+  return new AnthropicLlmClient({ apiKey: env.ANTHROPIC_API_KEY! });
+}
+
+describe.runIf(runLlm)(`LLM scorer on ${provider} (RUN_LLM_EVAL=1, costs API credits)`, () => {
   it("meets the accuracy and neutrality thresholds", async () => {
-    const cfg = makeConfig({ llm: { enabled: true, model: process.env.LLM_MODEL || DEFAULT_CONFIG.llm.model } });
-    const llm = new AnthropicLlmClient({ apiKey: process.env.ANTHROPIC_API_KEY! });
+    const model = env.LLM_MODEL || (provider === "workers-ai" ? DEFAULT_WORKERS_AI_MODEL : DEFAULT_CONFIG.llm.model);
+    const cfg = makeConfig({ llm: { enabled: true, model, effort: provider === "workers-ai" ? "low" : DEFAULT_CONFIG.llm.effort } });
+    const llm = evalClient();
     const first = await scoreLabeled(labels, llm, cfg, T);
     expect(first.errors).toEqual([]);
     const r = evaluate(labels, first.events);

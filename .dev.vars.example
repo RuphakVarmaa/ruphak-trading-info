@@ -6,7 +6,9 @@
 # Dashboard admin actions (arm, kill switch, mode) and /ops/* endpoints.
 ADMIN_TOKEN=dev
 
-# Claude event scoring (falls back to the lexicon scorer when empty).
+# News scoring uses Workers AI (GLM-5.3) through the AI binding in production. `npm run dev:engine`
+# runs locally with the lexicon scorer; `npm run dev:engine:ai` uses GLM-5.3 (needs `npx wrangler login`).
+# Claude instead: set LLM_PROVIDER=anthropic in workers/engine/wrangler.jsonc and this key.
 ANTHROPIC_API_KEY=
 # GNews (optional extra news source; Google News RSS needs no key).
 GNEWS_API_KEY=

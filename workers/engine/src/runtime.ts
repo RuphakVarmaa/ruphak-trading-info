@@ -6,6 +6,7 @@
 import { TradingCalendar, defaultCalendar } from "../../../src/engine/calendar/calendar";
 import { makeConfig, type EngineConfig } from "../../../src/engine/config";
 import { AnthropicLlmClient } from "../../../src/engine/events/llm/anthropicClient";
+import { DEFAULT_WORKERS_AI_MODEL, WorkersAiLlmClient, type ResponseFormatMode } from "../../../src/engine/events/llm/workersAiClient";
 import type { LlmClient, Logger } from "../../../src/engine/ports";
 import { GrowwDataClient, GrowwHttp, RelayClient, type GrowwTransport, type TokenSource } from "../../../src/engine/broker/groww";
 import { D1Repository } from "./db/d1Repository";
@@ -30,13 +31,32 @@ const num = (v: string | undefined, fallback: number): number => {
   return v !== undefined && v.trim() !== "" && Number.isFinite(n) ? n : fallback;
 };
 
+export type LlmProvider = "workers-ai" | "anthropic" | "lexicon";
+
+/**
+ * News scorer provider: Workers AI (default, through the AI binding), Anthropic, or "lexicon"
+ * (no model at all; `npm run dev:engine` uses it because the AI binding only runs remotely).
+ */
+export function llmProvider(env: Env): LlmProvider {
+  if (env.LLM_PROVIDER === "anthropic") return "anthropic";
+  if (env.LLM_PROVIDER === "lexicon" || env.LLM_PROVIDER === "none") return "lexicon";
+  return "workers-ai";
+}
+
+function llmAvailable(env: Env): boolean {
+  const provider = llmProvider(env);
+  if (provider === "lexicon") return false;
+  return provider === "anthropic" ? Boolean(env.ANTHROPIC_API_KEY) : Boolean(env.AI);
+}
+
 export function engineConfig(env: Env): EngineConfig {
   const effort = env.LLM_EFFORT === "low" || env.LLM_EFFORT === "high" ? env.LLM_EFFORT : "medium";
+  const provider = llmProvider(env);
   return makeConfig({
     capitalRupees: num(env.CAPITAL_INR, 500_000),
     llm: {
-      enabled: Boolean(env.ANTHROPIC_API_KEY),
-      model: env.LLM_MODEL || "claude-opus-5-5",
+      enabled: llmAvailable(env),
+      model: env.LLM_MODEL || (provider === "anthropic" ? "claude-opus-5-5" : DEFAULT_WORKERS_AI_MODEL),
       effort,
     },
   });
@@ -93,9 +113,16 @@ export function growwDataClient(env: Env, tokens: TokenSource | null): GrowwData
   return transport ? new GrowwDataClient(transport) : null;
 }
 
-export function llmClient(env: Env): LlmClient | null {
-  if (!env.ANTHROPIC_API_KEY) return null;
-  return new AnthropicLlmClient({ apiKey: env.ANTHROPIC_API_KEY, timeoutMs: 90_000, maxRetries: 1 });
+export function llmClient(env: Env, logger?: Logger, opts: { mode?: ResponseFormatMode } = {}): LlmClient | null {
+  if (llmProvider(env) === "lexicon") return null;
+  if (llmProvider(env) === "anthropic") {
+    if (!env.ANTHROPIC_API_KEY) return null;
+    return new AnthropicLlmClient({ apiKey: env.ANTHROPIC_API_KEY, timeoutMs: 90_000, maxRetries: 1 });
+  }
+  const ai = env.AI as unknown as { run(model: string, input: Record<string, unknown>): Promise<unknown> } | undefined;
+  if (!ai) return null;
+  // Call run() on the binding itself: a detached method loses its binding.
+  return new WorkersAiLlmClient({ run: (model, input) => ai.run(model, input), mode: opts.mode, log: logger ? (m, d) => logger.warn(m, d) : undefined });
 }
 
 export function errorMessage(err: unknown): string {

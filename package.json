@@ -4,7 +4,8 @@
   "private": true,
   "scripts": {
     "dev": "next dev",
-    "dev:engine": "wrangler dev --config workers/engine/wrangler.jsonc --persist-to .wrangler/state --test-scheduled",
+    "dev:engine": "wrangler dev --local --var LLM_PROVIDER:lexicon --config workers/engine/wrangler.jsonc --persist-to .wrangler/state --test-scheduled",
+    "dev:engine:ai": "wrangler dev --config workers/engine/wrangler.jsonc --persist-to .wrangler/state --test-scheduled",
     "build": "next build",
     "start": "next start",
     "lint": "eslint",
@@ -17,6 +18,7 @@
     "db:migrate:remote": "wrangler d1 migrations apply ruphak-trading --remote --config workers/engine/wrangler.jsonc",
     "cron:local": "node scripts/trigger-cron.mjs",
     "cf:setup": "node scripts/cloudflare-setup.mjs",
+    "deploy:paper": "node scripts/deploy-paper.mjs",
     "backtest": "tsx scripts/backtest.ts",
     "fetch-history": "tsx scripts/fetch-history.ts",
     "bootstrap-events": "tsx scripts/bootstrap-events.ts",

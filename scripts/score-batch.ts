@@ -5,6 +5,7 @@
  *   npm run score-batch -- --lexicon          # free baseline: lexicon scorer only
  *   npm run score-batch -- --submit           # Claude Message Batches API (50% price), same rubric and schema as live
  *   npm run score-batch -- --collect --wait   # poll until the batch ends, then write .cache/events/scored.json
+ *   npm run score-batch -- --provider workers-ai   # GLM-5.3 on Workers AI (CLOUDFLARE_ACCOUNT_ID + CLOUDFLARE_API_TOKEN)
  *
  * Caveat: a model scoring 2026 headlines may know what happened next (hindsight leakage). Treat
  * backtest event edge as optimistic; forward paper trading is the real test.
@@ -18,7 +19,8 @@ import { scoreFallback } from "../src/engine/events/fallbackScorer";
 import { buildDigest, type ScoringContext } from "../src/engine/events/llm/digest";
 import { RUBRIC_SYSTEM_PROMPT } from "../src/engine/events/llm/rubric";
 import { EventScoreBatchS, type EventScoreBatchOut } from "../src/engine/events/llm/schema";
-import { fromLlmScore } from "../src/engine/events/llm/scorer";
+import { fromLlmScore, scoreClusters } from "../src/engine/events/llm/scorer";
+import { DEFAULT_WORKERS_AI_MODEL, WorkersAiLlmClient, workersAiRestRunner } from "../src/engine/events/llm/workersAiClient";
 import type { ArticleCluster, ScoredEvent } from "../src/engine/types";
 import { fail, loadEnvFiles, parseArgs, readJson, sleep, str, writeJson } from "./lib/node";
 
@@ -35,7 +37,13 @@ interface BatchMeta {
 
 loadEnvFiles();
 const args = parseArgs();
-const cfg = makeConfig({ llm: { model: str(args, "model", process.env.LLM_MODEL || DEFAULT_CONFIG.llm.model)! } });
+const provider = str(args, "provider", process.env.LLM_PROVIDER || "anthropic") === "workers-ai" ? "workers-ai" : "anthropic";
+const cfg = makeConfig({
+  llm: {
+    model: str(args, "model", process.env.LLM_MODEL || (provider === "workers-ai" ? DEFAULT_WORKERS_AI_MODEL : DEFAULT_CONFIG.llm.model))!,
+    effort: provider === "workers-ai" ? "low" : DEFAULT_CONFIG.llm.effort,
+  },
+});
 const format = betaZodOutputFormat(EventScoreBatchS);
 
 function loadClusters(): ArticleCluster[] {
@@ -79,7 +87,36 @@ async function main() {
     const userChars = groups.reduce((s, b) => s + buildDigest(b, context(b)).length, 0);
     const inTok = Math.round(userChars / 3.5 + (groups.length * RUBRIC_SYSTEM_PROMPT.length) / 3.5);
     console.log(`${groups.length} requests (${cfg.llm.batchSize} clusters each) on ${cfg.llm.model}; ~${inTok.toLocaleString()} input tokens before caching, output ~${(groups.length * 2500).toLocaleString()} tokens.`);
-    console.log("Batches are billed at 50% of standard prices; check current pricing before submitting.");
+    if (provider === "workers-ai") {
+      const usd = (inTok / 1e6) * 1.4 + ((groups.length * 2500) / 1e6) * 4.4;
+      console.log(`Workers AI GLM-5.3 at $1.40/M input and $4.40/M output: about $${usd.toFixed(2)} (reasoning tokens add to output).`);
+    } else console.log("Batches are billed at 50% of standard prices; check current pricing before submitting.");
+    return;
+  }
+
+  if (provider === "workers-ai") {
+    const accountId = process.env.CLOUDFLARE_ACCOUNT_ID;
+    const apiToken = process.env.CLOUDFLARE_API_TOKEN;
+    if (!accountId || !apiToken) fail("Set CLOUDFLARE_ACCOUNT_ID and CLOUDFLARE_API_TOKEN (token with Workers AI permission).");
+    const llm = new WorkersAiLlmClient({ run: workersAiRestRunner({ accountId, apiToken }), log: (m, d) => console.log(m, d ?? "") });
+    const groups = batches(loadClusters());
+    const events: ScoredEvent[] = [];
+    let llmScored = 0;
+    let next = 0;
+    // Two requests in flight at a time; each group is one model call of up to 10 clusters.
+    const worker = async () => {
+      while (next < groups.length) {
+        const b = groups[next++];
+        const res = await scoreClusters(b, context(b), llm, makeConfig({ ...cfg, llm: { ...cfg.llm, enabled: true } }));
+        events.push(...res.events);
+        llmScored += res.llmScored;
+        process.stdout.write(`\r${events.length} clusters scored (${llmScored} by ${cfg.llm.model}, mode ${llm.currentMode})   `);
+      }
+    };
+    await Promise.all([worker(), worker()]);
+    process.stdout.write("\n");
+    const path = mergeScored(events);
+    console.log(`${events.length} scored events (${llmScored} by the model, the rest by the lexicon) -> ${path}`);
     return;
   }
 

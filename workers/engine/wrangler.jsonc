@@ -58,14 +58,20 @@
     ]
   },
   "r2_buckets": [{ "binding": "R2", "bucket_name": "ruphak-data" }],
+  // Workers AI runs the news scorer (GLM-5.3 by default) with no API key inside the Worker.
+  "ai": { "binding": "AI" },
   "vars": {
     "ENGINE_ENV": "prod",
     "LIVE_TRADING": "false",
     "GROWW_DATA_VIA_RELAY": "false",
-    "LLM_MODEL": "claude-opus-5-5",
-    "LLM_EFFORT": "medium",
+    // News scorer: "workers-ai" (AI binding) or "anthropic" (needs the ANTHROPIC_API_KEY secret).
+    "LLM_PROVIDER": "workers-ai",
+    "LLM_MODEL": "@cf/zai-org/glm-5.3",
+    "LLM_EFFORT": "low",
+    // Daily caps; the lexicon scorer takes over when one is reached. At GLM-5.3 list prices
+    // ($1.40/M input, $4.40/M output) these cap spend at about $8.60 a day.
     "LLM_DAILY_INPUT_TOKEN_BUDGET": "3000000",
-    "LLM_DAILY_OUTPUT_TOKEN_BUDGET": "600000",
+    "LLM_DAILY_OUTPUT_TOKEN_BUDGET": "1000000",
     "CAPITAL_INR": "500000"
   },
   "env": {
@@ -75,10 +81,11 @@
         "ENGINE_ENV": "preview",
         "LIVE_TRADING": "false",
         "GROWW_DATA_VIA_RELAY": "false",
-        "LLM_MODEL": "claude-opus-5-5",
+        "LLM_PROVIDER": "workers-ai",
+        "LLM_MODEL": "@cf/zai-org/glm-5.3",
         "LLM_EFFORT": "low",
         "LLM_DAILY_INPUT_TOKEN_BUDGET": "300000",
-        "LLM_DAILY_OUTPUT_TOKEN_BUDGET": "60000",
+        "LLM_DAILY_OUTPUT_TOKEN_BUDGET": "100000",
         "CAPITAL_INR": "500000"
       },
       "d1_databases": [
@@ -104,6 +111,7 @@
         ]
       },
       "r2_buckets": [{ "binding": "R2", "bucket_name": "ruphak-data-preview" }],
+      "ai": { "binding": "AI" },
       "durable_objects": {
         "bindings": [
           { "name": "ENGINE_DO", "class_name": "TradingEngineDO" },
