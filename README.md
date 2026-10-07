@@ -139,17 +139,13 @@ cd relay && npm ci && npm run typecheck && npm test
 
 Both Workers fit the Workers Paid plan's included usage. See [Costs](#costs).
 
-1. Create the resources and paste the printed IDs into `workers/engine/wrangler.jsonc` (D1 `database_id` and KV `id`):
+1. Create the resources. From a machine where Wrangler is logged in (`npx wrangler login`), run:
 
    ```bash
-   npx wrangler login
-   npx wrangler d1 create ruphak-trading
-   npx wrangler kv namespace create KV
-   npx wrangler queues create events-to-score
-   npx wrangler queues create events-to-score-dlq
-   npx wrangler r2 bucket create ruphak-data
-   npx wrangler r2 bucket create ruphak-next-cache
+   npm run cf:setup              # add -- --preview for the preview environment
    ```
+
+   It creates the D1 database, KV namespace, queues and R2 buckets, reusing any that exist. It then writes the D1 and KV IDs into `workers/engine/wrangler.jsonc`. Commit that file; the IDs are not secrets. The script also accepts `CLOUDFLARE_API_TOKEN` and `CLOUDFLARE_ACCOUNT_ID` instead of a login.
 
 2. Set the engine secrets. Only `ADMIN_TOKEN` is required for paper trading.
 
@@ -168,7 +164,7 @@ Both Workers fit the Workers Paid plan's included usage. See [Costs](#costs).
    npm run deploy:dashboard
    ```
 
-4. To deploy from CI, add `CLOUDFLARE_API_TOKEN` and `CLOUDFLARE_ACCOUNT_ID` as repository secrets. Pushes to `main` then migrate D1 and deploy both Workers after the checks pass.
+4. To deploy from CI, create an API token at dash.cloudflare.com/profile/api-tokens. Start from the "Edit Cloudflare Workers" template and add D1 Edit, Queues Edit and Workers R2 Storage Edit. Add it to the GitHub repository as the Actions secret `CLOUDFLARE_API_TOKEN`, with your account ID as `CLOUDFLARE_ACCOUNT_ID`. Pushes to `main` then migrate D1 and deploy both Workers after the checks pass.
 
 `npm run deploy:engine:preview` deploys a separate preview environment with its own resources and a single 30-minute cron.
 

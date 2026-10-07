@@ -16,6 +16,7 @@
     "db:migrate:local": "wrangler d1 migrations apply ruphak-trading --local --config workers/engine/wrangler.jsonc --persist-to .wrangler/state",
     "db:migrate:remote": "wrangler d1 migrations apply ruphak-trading --remote --config workers/engine/wrangler.jsonc",
     "cron:local": "node scripts/trigger-cron.mjs",
+    "cf:setup": "node scripts/cloudflare-setup.mjs",
     "backtest": "tsx scripts/backtest.ts",
     "fetch-history": "tsx scripts/fetch-history.ts",
     "bootstrap-events": "tsx scripts/bootstrap-events.ts",
