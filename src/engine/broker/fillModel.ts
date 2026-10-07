@@ -54,7 +54,7 @@ export function marketFill(side: Side, qty: number, q: Quote, p: FillParams): Fi
 }
 
 /** A limit order fills (fully, at its limit or better touch) only when the opposite side reaches it. */
-export function limitFill(side: Side, qty: number, limit: number, q: Quote, p: FillParams): FillResult {
+export function limitFill(side: Side, qty: number, limit: number, q: Quote): FillResult {
   if (side === "BUY" && q.ask > 0 && q.ask <= limit) return { filledQty: qty, avgPrice: q.ask, slippageTicks: 0 };
   if (side === "SELL" && q.bid > 0 && q.bid >= limit) return { filledQty: qty, avgPrice: q.bid, slippageTicks: 0 };
   return { filledQty: 0, avgPrice: 0, slippageTicks: 0, reason: "limit not reached" };

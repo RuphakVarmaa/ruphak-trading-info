@@ -98,9 +98,9 @@ describe("fill model", () => {
   });
 
   it("fills limits only when the opposite side touches", () => {
-    expect(limitFill("BUY", 65, 150.1, quote(), fp).filledQty).toBe(0);
-    expect(limitFill("BUY", 65, 150.3, quote(), fp).avgPrice).toBe(150.2);
-    expect(limitFill("SELL", 65, 149.8, quote(), fp).avgPrice).toBe(149.8);
+    expect(limitFill("BUY", 65, 150.1, quote()).filledQty).toBe(0);
+    expect(limitFill("BUY", 65, 150.3, quote()).avgPrice).toBe(150.2);
+    expect(limitFill("SELL", 65, 149.8, quote()).avgPrice).toBe(149.8);
   });
 
   it("rejects stale or one-sided quotes and builds marketable limits", () => {

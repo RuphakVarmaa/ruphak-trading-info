@@ -52,7 +52,7 @@ export class PaperBroker implements Broker {
     }
     const remaining = order.qty - order.filledQty;
     const res =
-      order.type === "MARKET" ? marketFill(order.side, remaining, q, fp) : limitFill(order.side, remaining, order.limitPrice ?? 0, q, fp);
+      order.type === "MARKET" ? marketFill(order.side, remaining, q, fp) : limitFill(order.side, remaining, order.limitPrice ?? 0, q);
     if (res.filledQty <= 0) return { order: { ...order, status: "OPEN", updatedMs: now }, fills: [] };
     const fill: Fill = {
       id: this.o.newId(),
