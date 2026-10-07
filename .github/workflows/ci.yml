@@ -1,0 +1,61 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npm run typecheck
+      - run: npm run lint
+      - run: npm test
+      - run: npm run build
+      - name: Bundle engine Worker (dry run)
+        run: npx wrangler deploy --config workers/engine/wrangler.jsonc --dry-run --outdir .wrangler/dry-run
+      - name: Relay checks
+        working-directory: relay
+        run: |
+          npm ci
+          npm run typecheck
+          npm test
+
+  deploy:
+    # Deploys only when Cloudflare credentials are configured as repository secrets.
+    needs: check
+    if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+    runs-on: ubuntu-latest
+    env:
+      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+      CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - name: Skip when Cloudflare secrets are missing
+        id: guard
+        run: |
+          if [ -z "$CLOUDFLARE_API_TOKEN" ]; then echo "skip=true" >> "$GITHUB_OUTPUT"; fi
+      - name: Apply D1 migrations
+        if: steps.guard.outputs.skip != 'true'
+        run: npm run db:migrate:remote
+      - name: Deploy engine Worker
+        if: steps.guard.outputs.skip != 'true'
+        run: npm run deploy:engine
+      - name: Deploy dashboard
+        if: steps.guard.outputs.skip != 'true'
+        run: npm run deploy:dashboard

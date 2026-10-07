@@ -1,0 +1,109 @@
+// Trading engine Worker: Durable Objects (trading loop, ingestion), cron jobs, the
+// event-scoring queue consumer, and the EngineAdmin RPC entrypoint used by the dashboard.
+// Resource IDs are placeholders; see README "Cloudflare setup" for the create commands.
+{
+  "$schema": "../../node_modules/wrangler/config-schema.json",
+  "name": "ruphak-engine",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-09-30",
+  "compatibility_flags": ["nodejs_compat"],
+  "workers_dev": false,
+  "observability": { "enabled": true, "head_sampling_rate": 1 },
+  "limits": { "cpu_ms": 60000 },
+  "triggers": {
+    "crons": [
+      "*/10 * * * *",
+      "1-59/2 3-10 * * 1-5",
+      "* 3-10 * * 1-5",
+      "30 2 * * 1-5",
+      "40 2 * * 1-5",
+      "0 3 * * 1-5",
+      "30 10 * * 1-5",
+      "30 14 * * *"
+    ]
+  },
+  "durable_objects": {
+    "bindings": [
+      { "name": "ENGINE_DO", "class_name": "TradingEngineDO" },
+      { "name": "INGEST_DO", "class_name": "IngestDO" }
+    ]
+  },
+  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["TradingEngineDO", "IngestDO"] }],
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "ruphak-trading",
+      "database_id": "00000000-0000-0000-0000-000000000000",
+      "migrations_dir": "../../migrations"
+    }
+  ],
+  "kv_namespaces": [{ "binding": "KV", "id": "00000000000000000000000000000000" }],
+  "queues": {
+    "producers": [{ "binding": "SCORE_QUEUE", "queue": "events-to-score" }],
+    "consumers": [
+      {
+        "queue": "events-to-score",
+        "max_batch_size": 10,
+        "max_batch_timeout": 20,
+        "max_retries": 3,
+        "max_concurrency": 2,
+        "dead_letter_queue": "events-to-score-dlq"
+      }
+    ]
+  },
+  "r2_buckets": [{ "binding": "R2", "bucket_name": "ruphak-data" }],
+  "vars": {
+    "ENGINE_ENV": "prod",
+    "LIVE_TRADING": "false",
+    "GROWW_DATA_VIA_RELAY": "false",
+    "LLM_MODEL": "claude-opus-5-5",
+    "LLM_EFFORT": "medium",
+    "LLM_DAILY_INPUT_TOKEN_BUDGET": "3000000",
+    "LLM_DAILY_OUTPUT_TOKEN_BUDGET": "600000",
+    "CAPITAL_INR": "500000"
+  },
+  "env": {
+    "preview": {
+      "name": "ruphak-engine-preview",
+      "vars": {
+        "ENGINE_ENV": "preview",
+        "LIVE_TRADING": "false",
+        "GROWW_DATA_VIA_RELAY": "false",
+        "LLM_MODEL": "claude-opus-5-5",
+        "LLM_EFFORT": "low",
+        "LLM_DAILY_INPUT_TOKEN_BUDGET": "300000",
+        "LLM_DAILY_OUTPUT_TOKEN_BUDGET": "60000",
+        "CAPITAL_INR": "500000"
+      },
+      "d1_databases": [
+        {
+          "binding": "DB",
+          "database_name": "ruphak-trading-preview",
+          "database_id": "00000000-0000-0000-0000-000000000001",
+          "migrations_dir": "../../migrations"
+        }
+      ],
+      "kv_namespaces": [{ "binding": "KV", "id": "00000000000000000000000000000001" }],
+      "queues": {
+        "producers": [{ "binding": "SCORE_QUEUE", "queue": "events-to-score-preview" }],
+        "consumers": [
+          {
+            "queue": "events-to-score-preview",
+            "max_batch_size": 10,
+            "max_batch_timeout": 20,
+            "max_retries": 3,
+            "dead_letter_queue": "events-to-score-preview-dlq"
+          }
+        ]
+      },
+      "r2_buckets": [{ "binding": "R2", "bucket_name": "ruphak-data-preview" }],
+      "durable_objects": {
+        "bindings": [
+          { "name": "ENGINE_DO", "class_name": "TradingEngineDO" },
+          { "name": "INGEST_DO", "class_name": "IngestDO" }
+        ]
+      },
+      "triggers": { "crons": ["*/30 * * * *"] }
+    }
+  }
+}

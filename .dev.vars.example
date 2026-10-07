@@ -1,0 +1,14 @@
+# Engine Worker secrets for `npm run dev:engine`. Copy to workers/engine/.dev.vars.
+# In production set each with: npx wrangler secret put <NAME> --config workers/engine/wrangler.jsonc
+ADMIN_TOKEN=dev
+ANTHROPIC_API_KEY=
+GNEWS_API_KEY=
+GROWW_API_KEY=
+GROWW_TOTP_SECRET=
+RELAY_URL=http://localhost:8790
+RELAY_HMAC_SECRET=dev-relay-secret
+CF_ACCESS_CLIENT_ID=
+CF_ACCESS_CLIENT_SECRET=
+TELEGRAM_BOT_TOKEN=
+TELEGRAM_CHAT_ID=
+TELEGRAM_WEBHOOK_SECRET=

@@ -1,12 +1,30 @@
 {
-  "name": "geointel",
+  "name": "ruphak-trading-info",
   "version": "0.1.0",
   "private": true,
   "scripts": {
     "dev": "next dev",
+    "dev:engine": "wrangler dev --config workers/engine/wrangler.jsonc --persist-to .wrangler/state --test-scheduled",
     "build": "next build",
     "start": "next start",
-    "lint": "eslint"
+    "lint": "eslint",
+    "typecheck": "npm run cf-typegen && tsc --noEmit -p . && tsc --noEmit -p workers/engine",
+    "cf-typegen": "wrangler types --config workers/engine/wrangler.jsonc --strict-vars=false workers/engine/worker-configuration.d.ts",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "db:generate": "drizzle-kit generate",
+    "db:migrate:local": "wrangler d1 migrations apply ruphak-trading --local --config workers/engine/wrangler.jsonc --persist-to .wrangler/state",
+    "db:migrate:remote": "wrangler d1 migrations apply ruphak-trading --remote --config workers/engine/wrangler.jsonc",
+    "cron:local": "node scripts/trigger-cron.mjs",
+    "backtest": "tsx scripts/backtest.ts",
+    "fetch-history": "tsx scripts/fetch-history.ts",
+    "bootstrap-events": "tsx scripts/bootstrap-events.ts",
+    "score-batch": "tsx scripts/score-batch.ts",
+    "eval:scorer": "RUN_LLM_EVAL=1 vitest run src/engine/evaluation/scorerEval.test.ts",
+    "preview": "opennextjs-cloudflare build && opennextjs-cloudflare preview",
+    "deploy:dashboard": "opennextjs-cloudflare build && opennextjs-cloudflare deploy",
+    "deploy:engine": "wrangler deploy --config workers/engine/wrangler.jsonc",
+    "deploy:engine:preview": "wrangler deploy --config workers/engine/wrangler.jsonc --env preview"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.131.0",
@@ -14,7 +32,7 @@
     "fast-xml-parser": "^5.11.2",
     "leaflet": "^1.9.4",
     "lucide-react": "^0.577.0",
-    "next": "^16.4.0",
+    "next": "16.3.8",
     "react": "19.2.3",
     "react-dom": "19.2.3",
     "react-leaflet": "^5.0.0",
@@ -30,11 +48,14 @@
     "@types/react-dom": "^19",
     "drizzle-kit": "^0.31.11",
     "eslint": "^9",
-    "eslint-config-next": "^16.4.0",
+    "eslint-config-next": "16.3.8",
     "tailwindcss": "^4",
     "tsx": "^4.23.15",
     "typescript": "^5",
     "vitest": "^5.0.3",
     "wrangler": "^4.148.0"
+  },
+  "engines": {
+    "node": ">=22"
   }
 }
