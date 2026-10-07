@@ -22,12 +22,12 @@ const ingest = (env: Env) => env.INGEST_DO.get(env.INGEST_DO.idFromName("ingest"
 /** Cron expressions in workers/engine/wrangler.jsonc (UTC; IST = UTC+5:30). */
 export const CRONS = {
   INGEST_BASE: "*/10 * * * *",
-  INGEST_BOOST: "1-59/2 3-10 * * 1-5",
-  ENGINE_WAKE: "* 3-10 * * 1-5",
-  TOKEN: "30 2 * * 1-5",
-  INSTRUMENTS: "40 2 * * 1-5",
-  PREMARKET: "0 3 * * 1-5",
-  POSTMARKET: "30 10 * * 1-5",
+  INGEST_BOOST: "1-59/2 3-10 * * MON-FRI",
+  ENGINE_WAKE: "* 3-10 * * MON-FRI",
+  TOKEN: "30 2 * * MON-FRI",
+  INSTRUMENTS: "40 2 * * MON-FRI",
+  PREMARKET: "0 3 * * MON-FRI",
+  POSTMARKET: "30 10 * * MON-FRI",
   NIGHTLY: "30 14 * * *",
   PREVIEW: "*/30 * * * *",
 } as const;

@@ -353,31 +353,43 @@ describe("conviction", () => {
   });
 
   it("leaves abstainers out of the mean and needs news or two signals", () => {
+    // Explicit weights so the test checks the mechanism rather than the calibrated defaults.
+    const ens = makeConfig({ conviction: { gain: 1.2, priorWeights: { TREND: 0.2, ORB: 0.15, MOMENTUM: 0.15, EVENT: 0.3 } } });
     const comp = (source: RawComponent["source"], value: number, abstain = false): RawComponent => ({ source, value, horizonMin: 60, ...(abstain ? { abstain } : {}) });
     const silent: RawComponent[] = [comp("EVENT", 0, true), comp("MOMENTUM", 0, true), comp("GAP", 0, true)];
     // TREND alone (weight 0.20) is below the 0.30 minimum.
-    const alone = combineConviction("NIFTY", T, [...silent, comp("TREND", 0.8)], "TREND_UP", [], cfg);
+    const alone = combineConviction("NIFTY", T, [...silent, comp("TREND", 0.8)], "TREND_UP", [], ens);
     expect(alone.score).toBe(0);
     expect(alone.activeWeight).toBeCloseTo(0.2, 9);
     expect(alone.note).toMatch(/0\.20 of signal weight/);
     // TREND + ORB (0.35) votes; the silent EVENT (0.30) no longer dilutes it.
-    const pair = combineConviction("NIFTY", T, [...silent, comp("TREND", 0.8), comp("ORB", 0.6)], "TREND_UP", [], cfg);
+    const pair = combineConviction("NIFTY", T, [...silent, comp("TREND", 0.8), comp("ORB", 0.6)], "TREND_UP", [], ens);
     expect(pair.score).toBeCloseTo(Math.tanh((1.2 * (0.2 * 0.8 + 0.15 * 0.6)) / 0.35), 9);
     expect(pair.passes).toBe(true);
     expect(pair.note).toBeUndefined();
     // News alone (0.30) can trade.
-    const news = combineConviction("NIFTY", T, [comp("EVENT", -0.7), comp("TREND", 0, true)], "RANGE", [], cfg);
+    const news = combineConviction("NIFTY", T, [comp("EVENT", -0.7), comp("TREND", 0, true)], "RANGE", [], ens);
     expect(news.score).toBeCloseTo(Math.tanh(1.2 * -0.7), 9);
     // A zero vote from a source with a view still dilutes.
-    const neutral = combineConviction("NIFTY", T, [comp("TREND", 0.8), comp("ORB", 0.6), comp("MOMENTUM", 0)], "TREND_UP", [], cfg);
+    const neutral = combineConviction("NIFTY", T, [comp("TREND", 0.8), comp("ORB", 0.6), comp("MOMENTUM", 0)], "TREND_UP", [], ens);
     expect(neutral.score).toBeCloseTo(Math.tanh((1.2 * (0.16 + 0.09)) / 0.5), 9);
   });
 
-  it("lets mean reversion vote only in a range", () => {
+  it("gives TREND no vote by default (it lost money in the backtest) but still shows it", () => {
+    const c = combineConviction("NIFTY", T, [{ source: "TREND", value: 0.9, horizonMin: 120 }, { source: "ORB", value: 0.5, horizonMin: 90 }, { source: "MOMENTUM", value: 0.5, horizonMin: 60 }], "TREND_UP", [], cfg);
+    const trend = c.components.find((x) => x.source === "TREND")!;
+    expect(trend.weight).toBe(0);
+    expect(trend.value).toBe(0.9);
+    expect(c.activeWeight).toBeCloseTo(0.3, 9);
+    expect(c.score).toBeCloseTo(Math.tanh(cfg.conviction.gain * 0.5), 9);
+  });
+
+  it("masks sources to the regimes listed in regimeMask", () => {
+    const rangeOnly = makeConfig({ conviction: { regimeMask: { MEAN_REVERSION: ["RANGE"] } } });
     const comps: RawComponent[] = [{ source: "MEAN_REVERSION", value: -0.6, horizonMin: 60 }, { source: "ORB", value: -0.5, horizonMin: 90 }, { source: "MOMENTUM", value: -0.3, horizonMin: 60 }];
-    const inRange = combineConviction("NIFTY", T, comps, "RANGE", [], cfg);
-    expect(inRange.components.find((c) => c.source === "MEAN_REVERSION")!.weight).toBe(0.1);
-    const inTrend = combineConviction("NIFTY", T, comps, "TREND_DOWN", [], cfg);
+    const inRange = combineConviction("NIFTY", T, comps, "RANGE", [], rangeOnly);
+    expect(inRange.components.find((c) => c.source === "MEAN_REVERSION")!.weight).toBe(rangeOnly.conviction.priorWeights.MEAN_REVERSION);
+    const inTrend = combineConviction("NIFTY", T, comps, "TREND_DOWN", [], rangeOnly);
     const mr = inTrend.components.find((c) => c.source === "MEAN_REVERSION")!;
     expect(mr.weight).toBe(0);
     expect(mr.abstain).toBe(true);

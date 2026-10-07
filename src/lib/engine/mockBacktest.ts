@@ -21,11 +21,11 @@ import { clamp, gauss, hashString, mulberry32, round2 } from "./random";
 
 const PRIOR_WEIGHTS: Record<SignalSource, number> = {
   EVENT: 0.3,
-  TREND: 0.2,
+  TREND: 0,
   ORB: 0.15,
   MOMENTUM: 0.15,
   GAP: 0.1,
-  MEAN_REVERSION: 0.1,
+  MEAN_REVERSION: 0.15,
   RELATIVE_VALUE: 0.05,
   GLOBAL_BETA: 0.05,
   VOL_REGIME: 0,

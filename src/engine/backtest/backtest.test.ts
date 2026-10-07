@@ -1,12 +1,12 @@
 import { describe, expect, it } from "vitest";
 import { istAt, MINUTE_MS } from "../clock";
-import { DEFAULT_CONFIG, makeConfig } from "../config";
+import { DEFAULT_CONFIG, makeConfig, withOverrides } from "../config";
 import { toNumeric } from "../events/taxonomy";
 import { loadMarketFixtures } from "../testing/fixtures";
 import type { DayLedger, ScoredEvent, TradeRecord } from "../types";
 import { attribution, equityPath, maxDrawdown, profitFactor, summarize } from "./metrics";
 import { BacktestRun, configForParams, runBacktest, seededRandom, shuffleEventTimes, toBacktestResult } from "./runBacktest";
-import { makeFolds } from "./walkForward";
+import { defaultGrid, makeFolds } from "./walkForward";
 
 const fixtures = loadMarketFixtures();
 const permissive = makeConfig({
@@ -96,6 +96,20 @@ describe("placebo and parameters", () => {
     expect(cfg.conviction.thresholds.RANGE).toBeCloseTo(DEFAULT_CONFIG.conviction.thresholds.RANGE + 0.1);
     expect(cfg.exits.stopPct).toBe(-25);
     expect(cfg.exits.targetPct).toBe(60);
+  });
+
+  it("deep-merges walk-forward grid points onto the base config", () => {
+    const base = withOverrides(DEFAULT_CONFIG, { conviction: { minActiveWeight: 0.4, counterTrendThreshold: 0.7 }, gates: { kEM: 0.9 } });
+    const grid = defaultGrid(base);
+    expect(grid).toHaveLength(12);
+    const cfg = withOverrides(base, grid[0].overrides);
+    // Keys the grid point does not touch keep the base values instead of reverting to defaults.
+    expect(cfg.conviction.minActiveWeight).toBe(0.4);
+    expect(cfg.conviction.counterTrendThreshold).toBe(0.7);
+    expect(cfg.gates.kEM).toBe(0.9);
+    expect(cfg.conviction.gain).toBe(1.2);
+    expect(cfg.gates.minEdgeRatio).toBe(0.1);
+    expect(cfg.conviction.thresholds.RANGE).toBeCloseTo(base.conviction.thresholds.RANGE - 0.05, 9);
   });
 
   it("builds walk-forward folds without overlap", () => {

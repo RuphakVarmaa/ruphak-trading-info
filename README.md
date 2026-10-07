@@ -47,19 +47,20 @@ A retail desk cannot copy a market maker's co-location, latency or balance sheet
 
 | Step | Default |
 |---|---|
-| Regime | EVENT if a high-impact scheduled event is within −15/+30 min, a fresh event's pressure is ≥ 0.5, or VIX is up ≥ 8%. HIGH_VOL if VIX ≥ 18 or realized/implied vol ≥ 1.5. TREND if the 60-min move is ≥ 0.35% with efficiency ≥ 0.6. Otherwise RANGE. |
-| Signals and prior weights | EVENT 0.35, MOMENTUM 0.25, GAP 0.15, GLOBAL_BETA 0.15, RELATIVE_VALUE 0.10. VOL_REGIME only modifies thresholds and size. |
-| Conviction | tanh(1.5 × weighted mean). Weights shrink from the priors toward each source's measured edge (30 pseudo-trades). In the EVENT regime only EVENT and GAP vote. |
+| Indicators (5-min bars) | RSI(14), ADX(14) with +DI/−DI, EMA 9/21, Supertrend(10, 3), Bollinger(20, 2) %B, VWAP and its σ bands, the 09:15–09:30 opening range (break size in ATRs, bars outside, failed breaks), daily EMA20/50 trend, previous-day high/low/close. Computed on the last ~120 closed bars, so they exist at the open. |
+| Regime | EVENT if a high-impact scheduled event is within −15/+30 min, a fresh event's pressure is ≥ 0.5, or VIX is up ≥ 8%. HIGH_VOL if VIX ≥ 18 or realized/implied vol ≥ 1.5. TREND if the 60-min move is ≥ 0.35% with efficiency ≥ 0.6, or ADX ≥ 25 with the DI direction, 60-min return and VWAP side agreeing. Otherwise RANGE. |
+| Signals and prior weights | EVENT 0.30 (news), ORB 0.15 (opening-range breakout ≥ 0.1 ATR with VWAP confirmation, fading out by 14:00; a failed break votes the other way), MOMENTUM 0.15 (15/60-min return z-scores and VWAP side), MEAN_REVERSION 0.15 (fade ≥ 1.5σ from VWAP when RSI ≤ 30/≥ 70 or %B outside the bands, only while ADX < 20), GAP 0.10, GLOBAL_BETA 0.05 (fades out by 11:45), RELATIVE_VALUE 0.05. TREND (EMA, Supertrend, DI agreement scaled by ADX) is computed and shown but has weight 0; see [Backtest](#backtest-julyoctober-2026). VOL_REGIME only modifies thresholds and size. |
+| Conviction | tanh(1.5 × weighted mean of the signals that have a view). A signal with nothing to say abstains instead of voting 0, so it does not dilute the others. A score needs at least 0.30 of active weight: news on its own, or two signals, never one technical signal. Weights shrink from the priors toward each source's measured edge (30 pseudo-trades). In the EVENT regime only EVENT, GAP and TREND vote. |
 | Thresholds | TREND 0.35, EVENT 0.45, HIGH_VOL 0.50, RANGE 0.55. Counter-trend trades need 0.60. |
-| Theta gate | Edge = Δ × expected move − θ over the horizon − round-trip charges. Trade only if edge / premium ≥ 0.15 and the expected move ≥ 0.5 × the implied move. |
+| Theta gate | Edge = Δ × expected move − θ over the horizon − round-trip charges. Trade only if edge / premium ≥ 0.10 and the expected move ≥ 0.35 × the implied move. |
 | Contract | ATM strike. Nearest weekly expiry unless it is today's: NIFTY on Tuesday, SENSEX on Thursday, holiday-shifted. Symbols always come from Groww's instrument master. |
 | Entry window | 09:25 to 14:30 IST. No entries in the last 90 min of expiry day or 15 min before a high-impact event. |
 | Sizing | 0.75% of capital at risk per trade, then 0.25 × Kelly after 20 trades, capped at 1%. Max 4% of capital in premium per trade, one position per index, 4 trades a day, no opposite NIFTY/SENSEX positions. |
-| Exits, in priority order | Kill switch or loss cap, 15:05 square-off, stop −30%, target +50%, trailing stop (activates at +30%, gives back 50%), time stop, signal flip, and event invalidation when the story that drove the entry is re-scored neutral. |
+| Exits, in priority order | Kill switch or loss cap, 15:05 square-off, stop −30%, target +50%, trailing stop (activates at +30%, gives back 50%), time stop, signal flip, and event invalidation when the story that drove the entry is re-scored neutral. Exits pause rather than fire on a nonsense price (a synthetic quote with no spot or VIX). |
 | Risk | Daily loss cap 3%, weekly 6%, halt after 2 consecutive losses, 30-min cooldown after a stop-out. |
 | Costs | Groww schedule from 1 Apr 2026: ₹20 per order, STT 0.15% on sells, NSE 0.03503% or BSE 0.0325%, SEBI fee, stamp duty 0.003% on buys, IPFT and 18% GST. One NIFTY lot at ₹150 costs about ₹28 to buy and ₹42 to sell. |
 
-Every decision is stored with all its gate results, so the dashboard can always explain why it did not trade.
+Every decision is stored with all its gate results and indicator readings, so the dashboard can always explain why it did or did not trade. The Indian F&O rules this depends on (expiry days, lot sizes, holidays, charges, SEBI's algo framework) are in [docs/FNO.md](docs/FNO.md).
 
 ## Safety: paper by default, four keys for live
 
@@ -121,7 +122,7 @@ npm run dev:engine                               # http://localhost:8787
 curl -X POST -H "Authorization: Bearer dev" localhost:8787/ops/ingest   # fetch, cluster, queue for scoring
 curl -X POST -H "Authorization: Bearer dev" localhost:8787/ops/tick     # one trading-loop tick
 curl -X POST -H "Authorization: Bearer dev" localhost:8787/ops/status
-npm run cron:local -- "* 3-10 * * 1-5"                                  # fire a cron by expression
+npm run cron:local -- "* 3-10 * * MON-FRI"                              # fire a cron by expression
 ```
 
 Then set `ENGINE_MOCK=0` in `.env.local` and restart `npm run dev`. The dashboard then reads the local engine through its `ENGINE` service binding. Other ops endpoints are `/ops/token`, `/ops/instruments`, `/ops/premarket` and `/ops/eod`.
@@ -182,12 +183,12 @@ It creates the resources and fills in their IDs, migrates D1, deploys the engine
 | IST | Cron | Job |
 |---|---|---|
 | every 10 min, 24×7 | `*/10 * * * *` | News ingest |
-| every 2 min, 08:31–16:29 on trading days | `1-59/2 3-10 * * 1-5` | Extra ingest during market hours |
-| every minute, 08:30–16:29 on trading days | `* 3-10 * * 1-5` | Re-arms a missing alarm and alerts on a stale heartbeat |
-| 08:00 | `30 2 * * 1-5` | Groww token (tokens expire at 06:00) |
-| 08:10 | `40 2 * * 1-5` | Instrument master: Groww `instrument.csv` to KV (and the optional R2 archive) |
-| 08:30 | `0 3 * * 1-5` | Pre-market ingest, market snapshot, relay health |
-| 16:00 | `30 10 * * 1-5` | End of day: grade decisions, update signal performance, Telegram summary |
+| every 2 min, 08:31–16:29 on trading days | `1-59/2 3-10 * * MON-FRI` | Extra ingest during market hours |
+| every minute, 08:30–16:29 on trading days | `* 3-10 * * MON-FRI` | Re-arms a missing alarm and alerts on a stale heartbeat |
+| 08:00 | `30 2 * * MON-FRI` | Groww token (tokens expire at 06:00) |
+| 08:10 | `40 2 * * MON-FRI` | Instrument master: Groww `instrument.csv` to KV (and the optional R2 archive) |
+| 08:30 | `0 3 * * MON-FRI` | Pre-market ingest, market snapshot, relay health |
+| 16:00 | `30 10 * * MON-FRI` | End of day: grade decisions, update signal performance, Telegram summary |
 | 20:00 | `30 14 * * *` | Prune old D1 rows |
 
 ## Going live with Groww (only after the go/no-go below)
@@ -228,7 +229,26 @@ npm run eval:scorer                                                  # live scor
 
 Reports are written to `reports/` and caches to `.cache/`; both are gitignored. The dashboard's **/backtest** page runs the same engine in a Durable Object, a few days per alarm, on Yahoo history.
 
-**First result (1 Sep – 7 Oct 2026, 25 sessions, default settings, no scored events):** the engine took one trade and lost about ₹2,456, stopped out. Without event scores and with the theta gate at 0.15 it almost never trades. The event layer is meant to provide the edge, and it is still unmeasured.
+### Backtest, July–October 2026
+
+All runs: both indices, no scored news (the event layer is off), synthetic option prices, decisions every 5 minutes on closed bars with a 90 s data lag, Groww charges. Yahoo keeps about 60 days of 5-minute bars, so the window is 23 July – 7 October 2026 (53 sessions).
+
+| Run | Trades | Hit rate | Per trade (% of premium) | Net | Profit factor | Max drawdown |
+|---|---|---|---|---|---|---|
+| Old strategy (before the ensemble), 1 Sep – 7 Oct | 1 | 0% | — | −₹2,456 | — | — |
+| Ensemble with TREND voting, 24 Aug – 7 Oct (31 sessions) | 65 | 25% | −9.5% | −₹50,666 | 0.22 | 10.5% |
+| Shipped defaults, full window (53 sessions) | 45 | 31% | −3.9% | −₹14,787 | 0.65 | 3.1% |
+| Walk-forward, out of sample only (4 folds, 20 Aug – 7 Oct) | 54 | 33% | −5.4% | −₹25,149 | 0.39 | 5.1% |
+
+What this says:
+
+- **No edge has been demonstrated.** The best in-sample settings are about break-even after theta, spread and charges; out of sample they lose. Forward paper trading decides what happens next, and the go/no-go below is unchanged.
+- **Trend following lost money in this period.** Entering after a trend shows up on 5-minute bars (EMA 9/21, Supertrend, ADX) gave 32 trades with a 19% hit rate (t ≈ −2.7). Entries were followed by reversals: NIFTY and SENSEX mostly mean-reverted intraday. TREND therefore has weight 0; it is still computed, shown and used by the regime classifier, and the walk-forward kept it off in 3 of 4 folds.
+- **Breakouts were mixed.** ORB lost in the full window (2 wins in 18 trades) but the walk-forward kept it in every fold. MOMENTUM was close to flat (44% hit rate, −1% per trade). Mean reversion rarely fires under its strict conditions.
+- **Exits matter.** Signal-flip exits cut many trades that would have recovered within the hour. They remain on, because removing them made results worse.
+- The walk-forward chose gain 1.5 in every fold and split between minimum edge 0.10 and 0.15. The shipped defaults are those majority choices.
+
+Reproduce with `npm run backtest -- --from 2026-07-23 --to 2026-10-07 --no-events` (and `--walk-forward --train-days 28 --test-days 14`; the walk-forward grid is in `src/engine/backtest/walkForward.ts`).
 
 **Paper to live go/no-go:**
 

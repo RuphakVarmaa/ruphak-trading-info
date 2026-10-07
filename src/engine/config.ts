@@ -339,23 +339,28 @@ export const DEFAULT_CONFIG: EngineConfig = {
     trendAdx: 25,
   },
   conviction: {
+    // TREND (EMA/Supertrend/ADX) is computed and shown but has no vote: entering after a trend
+    // shows up on 5-minute bars was the worst performer in the Aug-Oct 2026 backtest (32 trades,
+    // hit rate 19%, t -2.7) because NIFTY/SENSEX mostly reverted intraday. ADX still drives the
+    // regime classifier. Mean reversion votes in every regime; its own ADX < 20 rule keeps it out
+    // of real trends.
     priorWeights: {
       EVENT: 0.3,
-      TREND: 0.2,
+      TREND: 0,
       ORB: 0.15,
       MOMENTUM: 0.15,
       GAP: 0.1,
-      MEAN_REVERSION: 0.1,
+      MEAN_REVERSION: 0.15,
       GLOBAL_BETA: 0.05,
       RELATIVE_VALUE: 0.05,
       VOL_REGIME: 0,
     },
     shrinkK: 30,
-    gain: 1.2,
+    gain: 1.5,
     thresholds: { TREND_UP: 0.35, TREND_DOWN: 0.35, RANGE: 0.55, HIGH_VOL: 0.5, EVENT: 0.45 },
     counterTrendThreshold: 0.6,
     eventRegimeSources: ["EVENT", "GAP", "TREND"],
-    regimeMask: { MEAN_REVERSION: ["RANGE"] },
+    regimeMask: {},
     minActiveWeight: 0.3,
   },
   gates: {

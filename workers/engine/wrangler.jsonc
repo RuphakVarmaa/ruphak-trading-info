@@ -7,18 +7,21 @@
   "main": "src/index.ts",
   "compatibility_date": "2026-09-30",
   "compatibility_flags": ["nodejs_compat"],
-  "workers_dev": false,
+  // Public workers.dev URL for /ops/* (POST, Bearer ADMIN_TOKEN) and GET /health (phase and heartbeat only).
+  // The Telegram webhook ignores requests without the configured secret and chat ID.
+  "workers_dev": true,
   "observability": { "enabled": true, "head_sampling_rate": 1 },
   "limits": { "cpu_ms": 60000 },
+  // Cron day-of-week: Cloudflare numbers Sunday as 1, so weekdays are spelled MON-FRI.
   "triggers": {
     "crons": [
       "*/10 * * * *",
-      "1-59/2 3-10 * * 1-5",
-      "* 3-10 * * 1-5",
-      "30 2 * * 1-5",
-      "40 2 * * 1-5",
-      "0 3 * * 1-5",
-      "30 10 * * 1-5",
+      "1-59/2 3-10 * * MON-FRI",
+      "* 3-10 * * MON-FRI",
+      "30 2 * * MON-FRI",
+      "40 2 * * MON-FRI",
+      "0 3 * * MON-FRI",
+      "30 10 * * MON-FRI",
       "30 14 * * *"
     ]
   },

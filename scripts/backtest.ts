@@ -6,6 +6,7 @@
  *   npm run backtest -- --from 2026-07-01 --to 2026-10-07 --walk-forward      # out-of-sample folds (slow)
  *   options: --index NIFTY|SENSEX|BOTH  --events .cache/events/scored.json  --no-events
  *            --threshold-delta 0.1  --stop 30  --target 50  --seed 7  --out reports/name.json
+ *            --gain 1.2  --min-edge 0.10  --min-evi 0.35  --min-active 0.30  --kem 1.0   (strategy overrides)
  *
  * History: Groww 5-minute index candles cached by `npm run fetch-history` when present (multi-year),
  * otherwise Yahoo (about 60 days of 5-minute bars). Option prices are synthetic (Black-Scholes on
@@ -17,7 +18,7 @@ import { attribution } from "../src/engine/backtest/metrics";
 import { configForParams, runBacktest, type BacktestOutput } from "../src/engine/backtest/runBacktest";
 import { makeFolds, walkForward } from "../src/engine/backtest/walkForward";
 import { addDays, istDate } from "../src/engine/clock";
-import { DEFAULT_CONFIG } from "../src/engine/config";
+import { DEFAULT_CONFIG, withOverrides } from "../src/engine/config";
 import type { Candle, ScoredEvent } from "../src/engine/types";
 import { MARKET_SYMBOLS } from "../src/engine/types";
 import { fail, num, parseArgs, readJson, str, table, writeJson } from "./lib/node";
@@ -37,7 +38,24 @@ const params: BacktestParams = {
   targetPct: num(args, "target", DEFAULT_CONFIG.exits.targetPct),
   noEvents: args["no-events"] === true,
 };
-const cfg = configForParams(DEFAULT_CONFIG, params);
+// Optional strategy overrides on top of the parameters above (deep-merged, validated).
+const opt = (name: string): number | undefined => {
+  if (args[name] === undefined) return undefined;
+  const v = num(args, name, NaN);
+  if (!Number.isFinite(v)) fail(`--${name} must be a number`);
+  return v;
+};
+const cfg = withOverrides(configForParams(DEFAULT_CONFIG, params), {
+  conviction: { gain: opt("gain"), minActiveWeight: opt("min-active") },
+  gates: { minEdgeRatio: opt("min-edge"), minExpectedVsImplied: opt("min-evi"), kEM: opt("kem") },
+});
+
+/** The strategy settings a report was produced with. */
+function strategyOf(c: typeof cfg) {
+  const { gain, minActiveWeight, thresholds, counterTrendThreshold, priorWeights } = c.conviction;
+  const { minEdgeRatio, minExpectedVsImplied, kEM } = c.gates;
+  return { gain, minActiveWeight, thresholds, counterTrendThreshold, priorWeights, minEdgeRatio, minExpectedVsImplied, kEM, stopPct: c.exits.stopPct, targetPct: c.exits.targetPct };
+}
 
 function mergeCandles(a: Candle[] = [], b: Candle[] = []): Candle[] {
   const m = new Map<number, Candle>();
@@ -107,7 +125,7 @@ async function main() {
     const wf = await walkForward(base, cfg, folds, undefined, (m) => console.log(m));
     console.log("\n=== Walk-forward out-of-sample ===");
     console.log(table([["trades", "hit", "exp %", "net ₹", "PF", "Sharpe", "maxDD %"], [wf.oos.trades, wf.oos.hitRate, wf.oos.expectancyPct, wf.oos.netPnl, wf.oos.profitFactor, wf.oos.sharpe, wf.oos.maxDrawdownPct]]));
-    const path = writeJson(str(args, "out", `reports/walkforward-${from}-${to}.json`)!, { params, folds: wf.folds, oos: wf.oos });
+    const path = writeJson(str(args, "out", `reports/walkforward-${from}-${to}.json`)!, { params, strategy: strategyOf(cfg), folds: wf.folds, oos: wf.oos });
     console.log(`\nSaved ${path}`);
     return;
   }
@@ -116,7 +134,12 @@ async function main() {
   const main = await runBacktest({ ...base, cfg, from, to, noEvents: params.noEvents }, (day, p) => process.stdout.write(`\r${day} ${(p * 100).toFixed(0)}%   `));
   process.stdout.write("\n");
   report("Strategy", main);
-  const out: Record<string, unknown> = { params, history: history.source, strategy: { summary: main.summary, trades: main.trades, ledgers: main.ledgers, attribution: main.attribution, notes: main.notes } };
+  const out: Record<string, unknown> = {
+    params,
+    config: strategyOf(cfg),
+    history: history.source,
+    strategy: { summary: main.summary, trades: main.trades, ledgers: main.ledgers, attribution: main.attribution, notes: main.notes },
+  };
 
   if (args.placebo) {
     const seed = num(args, "seed", 7);

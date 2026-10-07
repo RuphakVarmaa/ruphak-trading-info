@@ -4,7 +4,7 @@
  * overfitting; placebo runs (no events, shuffled event times) give the baseline an edge must beat.
  */
 import { addDays } from "../clock";
-import { makeConfig, type DeepPartial, type EngineConfig } from "../config";
+import { withOverrides, type DeepPartial, type EngineConfig } from "../config";
 import type { DayLedger, TradeRecord } from "../types";
 import { summarize, type Summary } from "./metrics";
 import { runBacktest, type BacktestInput } from "./runBacktest";
@@ -35,19 +35,20 @@ export interface GridPoint {
   overrides: DeepPartial<EngineConfig>;
 }
 
-/** Default grid: threshold shifts x expected-move multiplier x stop/target pairs (18 combos). */
+/**
+ * Default grid (12 combos): conviction gain x threshold shift x theta-gate minimum edge. Exits and
+ * the expected-move multiplier stay fixed: kEM is an honest-expectation parameter, not a knob to
+ * fit, and stop/target pairs add little but over-fitting risk on short histories.
+ */
 export function defaultGrid(base: EngineConfig): GridPoint[] {
   const out: GridPoint[] = [];
-  for (const dt of [-0.1, 0, 0.1]) {
-    for (const kEM of [0.8, 1, 1.2]) {
-      for (const [stop, target] of [
-        [-30, 50],
-        [-35, 60],
-      ]) {
-        const thresholds = Object.fromEntries(Object.entries(base.conviction.thresholds).map(([k, v]) => [k, Math.max(0.05, v + dt)]));
+  for (const gain of [1.2, 1.5]) {
+    for (const dt of [-0.05, 0, 0.05]) {
+      for (const minEdgeRatio of [0.1, 0.15]) {
+        const thresholds = Object.fromEntries(Object.entries(base.conviction.thresholds).map(([k, v]) => [k, Math.min(0.95, Math.max(0.05, v + dt))]));
         out.push({
-          name: `thr${dt >= 0 ? "+" : ""}${dt} kEM${kEM} stop${stop}/tgt${target}`,
-          overrides: { conviction: { thresholds }, gates: { kEM }, exits: { stopPct: stop, targetPct: target } } as DeepPartial<EngineConfig>,
+          name: `gain${gain} thr${dt >= 0 ? "+" : ""}${dt} edge${minEdgeRatio}`,
+          overrides: { conviction: { gain, thresholds }, gates: { minEdgeRatio } } as DeepPartial<EngineConfig>,
         });
       }
     }
@@ -79,13 +80,14 @@ export async function walkForward(
   for (const fold of folds) {
     let best: { g: GridPoint; s: Summary; score: number } | null = null;
     for (const g of grid) {
-      const cfg = makeConfig({ ...base, ...g.overrides } as DeepPartial<EngineConfig>);
+      // Deep merge: a shallow spread would reset the other keys of the nested groups to the defaults.
+      const cfg = withOverrides(base, g.overrides);
       const out = await runBacktest({ ...input, cfg, from: fold.trainFrom, to: fold.trainTo });
       const score = objective(out.summary);
       if (!best || score > best.score) best = { g, s: out.summary, score };
     }
     const chosen = best!.g;
-    const cfg = makeConfig({ ...base, ...chosen.overrides } as DeepPartial<EngineConfig>);
+    const cfg = withOverrides(base, chosen.overrides);
     const test = await runBacktest({ ...input, cfg, from: fold.testFrom, to: fold.testTo });
     oosTrades.push(...test.trades);
     oosLedgers.push(...test.ledgers);
