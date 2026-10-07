@@ -10,6 +10,7 @@
   // Public workers.dev URL for /ops/* (POST, Bearer ADMIN_TOKEN) and GET /health (phase and heartbeat only).
   // The Telegram webhook ignores requests without the configured secret and chat ID.
   "workers_dev": true,
+  "preview_urls": false,
   "observability": { "enabled": true, "head_sampling_rate": 1 },
   "limits": { "cpu_ms": 60000 },
   // Cron day-of-week: Cloudflare numbers Sunday as 1, so weekdays are spelled MON-FRI.

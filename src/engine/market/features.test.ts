@@ -13,7 +13,7 @@ import {
 } from "../__fixtures__/market/loadFixtures";
 import { barsOnDate, sessionBars } from "./candles";
 import { globalMoves } from "./crossAsset";
-import { computeFeatures, NEUTRAL_OPENING_RANGE, NO_DATA_AGE_SEC } from "./features";
+import { clipWicks, computeFeatures, NEUTRAL_OPENING_RANGE, NO_DATA_AGE_SEC } from "./features";
 import { ReplayMarketDataSource } from "./replayMarketData";
 
 const cal = new TradingCalendar();
@@ -391,5 +391,20 @@ describe("divergence z-scores (synthetic)", () => {
     const f = computeFeatures("NIFTY", replay({ "^NSEI": nifty, "^BSESN": sensexLate }).snapshotSync(t), cal, cfg);
     // Window ends at the last bar both have (11:10): NIFTY's return excludes its final bar.
     expect(f.divergence.selfRet30m).toBeCloseTo(logRetPct(22000, 22000 * (1 + 0.01 * (5 / 6))), 9);
+  });
+});
+
+describe("bad prints", () => {
+  it("clips wicks more than 0.3% beyond the bar body (Yahoo SENSEX, 7 Oct 2026 15:20)", () => {
+    const spike = { t: 0, o: 72570, h: 73477.3, l: 72570, c: 72767.8, v: 0 };
+    const clean = clipWicks(spike);
+    expect(clean.h).toBeCloseTo(72767.8 * 1.003, 6);
+    expect(clean.l).toBe(72570);
+    expect(clean.o).toBe(72570);
+    expect(clean.c).toBe(72767.8);
+    const normal = { t: 0, o: 22690.4, h: 22690.4, l: 22602.1, c: 22622.8, v: 0 };
+    expect(clipWicks(normal)).toBe(normal);
+    const down = clipWicks({ t: 0, o: 100, h: 100.1, l: 98, c: 99.9, v: 0 });
+    expect(down.l).toBeCloseTo(99.9 * 0.997, 9);
   });
 });

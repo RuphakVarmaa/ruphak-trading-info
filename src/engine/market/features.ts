@@ -146,13 +146,14 @@ function prepare(
     if (m < SESSION.open || m >= SESSION.close) continue;
     const d = istDateOf(c.t);
     if (!isTradingDayCached(calendar, d)) continue;
-    visible.push(c);
+    visible.push(clipWicks(c));
     if (d === today && todayOpen === null) todayOpen = c.o > 0 ? c.o : null;
     if (c.t + BAR_5M_MS <= t) {
-      closed.push(c);
+      const clean = visible[visible.length - 1];
+      closed.push(clean);
       const arr = byDate.get(d);
-      if (arr) arr.push(c);
-      else byDate.set(d, [c]);
+      if (arr) arr.push(clean);
+      else byDate.set(d, [clean]);
     }
   }
   const series: Series = {
@@ -166,6 +167,24 @@ function prepare(
   };
   byKey.set(key, series);
   return series;
+}
+
+/**
+ * Largest wick, in percent of price, a 5-minute bar may show beyond its open/close body. Yahoo's
+ * index bars occasionally carry a bad print (SENSEX on 7 Oct 2026, 15:20: high 73,477 on a
+ * 72,570 -> 72,768 bar, a 0.97% spike), which would distort ATR, ADX, Supertrend and the
+ * previous-day high for more than a session.
+ */
+export const MAX_WICK_PCT = 0.3;
+
+/** The bar with any wick beyond MAX_WICK_PCT of its body clipped back to that limit. */
+export function clipWicks(c: Candle): Candle {
+  const top = Math.max(c.o, c.c);
+  const bottom = Math.min(c.o, c.c);
+  const hiCap = top * (1 + MAX_WICK_PCT / 100);
+  const loCap = bottom * (1 - MAX_WICK_PCT / 100);
+  if (c.h <= hiCap && c.l >= loCap) return c;
+  return { ...c, h: Math.min(c.h, hiCap), l: Math.max(c.l, loCap) };
 }
 
 /** Close of the previous session: 5m bars of `prevDate`, its daily bar, else the latest earlier data. */

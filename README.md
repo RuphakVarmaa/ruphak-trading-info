@@ -237,14 +237,14 @@ All runs: both indices, no scored news (the event layer is off), synthetic optio
 |---|---|---|---|---|---|---|
 | Old strategy (before the ensemble), 1 Sep – 7 Oct | 1 | 0% | — | −₹2,456 | — | — |
 | Ensemble with TREND voting, 24 Aug – 7 Oct (31 sessions) | 65 | 25% | −9.5% | −₹50,666 | 0.22 | 10.5% |
-| Shipped defaults, full window (53 sessions) | 45 | 31% | −3.9% | −₹14,787 | 0.65 | 3.1% |
+| Shipped defaults, full window (53 sessions) | 45 | 31% | −3.9% | −₹14,943 | 0.65 | 3.1% |
 | Walk-forward, out of sample only (4 folds, 20 Aug – 7 Oct) | 54 | 33% | −5.4% | −₹25,149 | 0.39 | 5.1% |
 
 What this says:
 
 - **No edge has been demonstrated.** The best in-sample settings are about break-even after theta, spread and charges; out of sample they lose. Forward paper trading decides what happens next, and the go/no-go below is unchanged.
 - **Trend following lost money in this period.** Entering after a trend shows up on 5-minute bars (EMA 9/21, Supertrend, ADX) gave 32 trades with a 19% hit rate (t ≈ −2.7). Entries were followed by reversals: NIFTY and SENSEX mostly mean-reverted intraday. TREND therefore has weight 0; it is still computed, shown and used by the regime classifier, and the walk-forward kept it off in 3 of 4 folds.
-- **Breakouts were mixed.** ORB lost in the full window (2 wins in 18 trades) but the walk-forward kept it in every fold. MOMENTUM was close to flat (44% hit rate, −1% per trade). Mean reversion rarely fires under its strict conditions.
+- **Breakouts were mixed.** ORB lost in the full window (2 wins in 17 trades) but the walk-forward kept it in every fold. MOMENTUM was closer to flat (43% hit rate, −2% per trade). Mean reversion rarely fires under its strict conditions.
 - **Exits matter.** Signal-flip exits cut many trades that would have recovered within the hour. They remain on, because removing them made results worse.
 - The walk-forward chose gain 1.5 in every fold and split between minimum edge 0.10 and 0.15. The shipped defaults are those majority choices.
 
