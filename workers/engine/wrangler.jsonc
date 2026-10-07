@@ -57,7 +57,9 @@
       { "queue": "events-to-score-dlq", "max_batch_size": 10, "max_batch_timeout": 30, "max_retries": 1 }
     ]
   },
-  "r2_buckets": [{ "binding": "R2", "bucket_name": "ruphak-data" }],
+  // Optional R2 archive for dated instrument masters and backtest results. To enable it, add
+  //   "r2_buckets": [{ "binding": "R2", "bucket_name": "ruphak-data" }]
+  // and create the bucket (npx wrangler r2 bucket create ruphak-data).
   // Workers AI runs the news scorer (GLM-5.3 by default) with no API key inside the Worker.
   "ai": { "binding": "AI" },
   "vars": {
@@ -110,7 +112,6 @@
           { "queue": "events-to-score-preview-dlq", "max_batch_size": 10, "max_batch_timeout": 30, "max_retries": 1 }
         ]
       },
-      "r2_buckets": [{ "binding": "R2", "bucket_name": "ruphak-data-preview" }],
       "ai": { "binding": "AI" },
       "durable_objects": {
         "bindings": [

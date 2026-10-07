@@ -125,6 +125,14 @@ export function llmClient(env: Env, logger?: Logger, opts: { mode?: ResponseForm
   return new WorkersAiLlmClient({ run: (model, input) => ai.run(model, input), mode: opts.mode, log: logger ? (m, d) => logger.warn(m, d) : undefined });
 }
 
+/**
+ * Optional R2 archive for dated copies of instrument masters and backtest results. Bind "R2"
+ * in wrangler.jsonc to enable it; the working copies live in KV and Durable Object storage.
+ */
+export function archiveBucket(env: Env): R2Bucket | null {
+  return (env as Env & { R2?: R2Bucket }).R2 ?? null;
+}
+
 export function errorMessage(err: unknown): string {
   return err instanceof Error ? err.message : String(err);
 }

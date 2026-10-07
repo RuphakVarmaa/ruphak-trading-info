@@ -120,7 +120,7 @@ Done${url ? `: ${url}` : ""}.
 - News ingest runs every 10 minutes; scored stories appear in the event feed shortly after.
 - On trading days: instruments at 08:10 IST, pre-market at 08:30, the trading loop from 09:00.
 - Paper trading only: live orders stay off until LIVE_TRADING, LIVE mode, ARM and the relay are all enabled.
-- Commit the updated workers/engine/wrangler.jsonc (resource IDs, not secrets).`);
+- Commit the updated workers/engine/wrangler.jsonc and wrangler.jsonc (resource IDs, not secrets).`);
 }
 
 main().catch((err) => {

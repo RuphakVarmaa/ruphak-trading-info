@@ -2,7 +2,7 @@
  * BacktestDO: one instance per dashboard backtest run. It loads Yahoo history and the scored
  * events from D1, then replays a few trading days per alarm so a long run never hits the
  * per-invocation CPU limit. Progress and the final result live in this object's storage;
- * finished results are also written to R2 (backtests/<runId>.json).
+ * finished results are also written to the optional R2 archive (backtests/<runId>.json).
  */
 import { DurableObject } from "cloudflare:workers";
 import type { BacktestParams, BacktestResult } from "../../../../src/engine/api-types";
@@ -10,7 +10,7 @@ import { loadYahooHistory } from "../../../../src/engine/backtest/history";
 import { BacktestRun, configForParams, toBacktestResult } from "../../../../src/engine/backtest/runBacktest";
 import { DAY_MS, addDays, istDate, istMidnight } from "../../../../src/engine/clock";
 import { MARKET_SYMBOLS } from "../../../../src/engine/types";
-import { errorMessage, makeRuntime } from "../runtime";
+import { archiveBucket, errorMessage, makeRuntime } from "../runtime";
 
 const DAYS_PER_ALARM = 3;
 
@@ -92,7 +92,7 @@ export class BacktestDO extends DurableObject<Env> {
       const result = toBacktestResult(meta.runId, meta.params, out, done);
       await this.ctx.storage.put("meta", done);
       await this.ctx.storage.put("result", result);
-      await this.env.R2.put(`backtests/${meta.runId}.json`, JSON.stringify(result), { httpMetadata: { contentType: "application/json" } });
+      await archiveBucket(this.env)?.put(`backtests/${meta.runId}.json`, JSON.stringify(result), { httpMetadata: { contentType: "application/json" } });
       await rt.repo.audit.append({ ts: Date.now(), actor: meta.actor, action: "backtest_done", entity: "backtest", entityId: meta.runId, detail: { trades: out.summary.trades, net: out.summary.netPnl } });
       this.run = null;
     } catch (err) {

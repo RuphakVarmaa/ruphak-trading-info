@@ -2,7 +2,7 @@
 // All engine data (state, signals, events, orders, P&L) and admin actions (arm, kill
 // switch, mode) go through the engine Worker's EngineAdmin RPC entrypoint, so D1 and
 // every trading secret stay inside the engine Worker.
-// Create the R2 bucket once with: npx wrangler r2 bucket create ruphak-next-cache
+// `npm run cf:setup` creates the KV namespace for the Next cache and writes its ID below.
 {
   "$schema": "node_modules/wrangler/config-schema.json",
   "name": "ruphak-dashboard",
@@ -15,7 +15,8 @@
     { "binding": "WORKER_SELF_REFERENCE", "service": "ruphak-dashboard" },
     { "binding": "ENGINE", "service": "ruphak-engine", "entrypoint": "EngineAdmin" }
   ],
-  "r2_buckets": [{ "binding": "NEXT_INC_CACHE_R2_BUCKET", "bucket_name": "ruphak-next-cache" }],
+  // Next data cache (fetch revalidate windows) and ISR output.
+  "kv_namespaces": [{ "binding": "NEXT_INC_CACHE_KV", "id": "00000000000000000000000000000002" }],
   "vars": {
     "ENGINE_MOCK": "0"
   }

@@ -1,7 +1,7 @@
 /**
  * Instrument master for the Worker: the 08:10 IST job streams Groww's public instrument.csv,
  * keeps NIFTY/SENSEX options for the next few expiries and stores a compact copy in KV
- * (plus a dated copy in R2). The trading DO loads it from KV and keeps it in memory.
+ * (plus a dated copy in the optional R2 archive). The trading DO loads it from KV and keeps it in memory.
  * In PAPER mode only, a missing master falls back to synthetic contracts around spot.
  */
 import type { TradingCalendar } from "../../../src/engine/calendar/calendar";
@@ -12,6 +12,7 @@ import { syntheticInstrumentRows } from "../../../src/engine/instruments/synthet
 import type { MarketContextStore } from "../../../src/engine/pipeline/marketContext";
 import type { InstrumentProvider, Logger } from "../../../src/engine/ports";
 import type { IndexId, OptionContract, OptionType } from "../../../src/engine/types";
+import { archiveBucket } from "./runtime";
 
 export const INSTRUMENTS_KV_KEY = "instruments:latest";
 const KEEP_EXPIRIES = 6;
@@ -68,7 +69,7 @@ export async function refreshInstruments(env: Env, nowMs: number, logger: Logger
   const body: StoredInstruments = { v: 1, fetchedMs: nowMs, rows: compact };
   const json = JSON.stringify(body);
   await env.KV.put(INSTRUMENTS_KV_KEY, json);
-  await env.R2.put(`instruments/${istDate(nowMs)}.json`, json, { httpMetadata: { contentType: "application/json" } });
+  await archiveBucket(env)?.put(`instruments/${istDate(nowMs)}.json`, json, { httpMetadata: { contentType: "application/json" } });
   logger.info("instruments refreshed", { parsed: rows.length, kept: compact.length, bytes: json.length });
   return compact.length;
 }

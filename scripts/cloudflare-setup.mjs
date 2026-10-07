@@ -1,13 +1,13 @@
 #!/usr/bin/env node
-// Creates the engine's Cloudflare resources (idempotent) and writes their IDs into
-// workers/engine/wrangler.jsonc. Run it where Wrangler is logged in:
+// Creates the Cloudflare resources (idempotent) and writes their IDs into
+// workers/engine/wrangler.jsonc and the dashboard's wrangler.jsonc. Run it where Wrangler is logged in:
 //
 //   npx wrangler login            # once, or set CLOUDFLARE_API_TOKEN (+ CLOUDFLARE_ACCOUNT_ID)
 //   npm run cf:setup              # production resources
 //   npm run cf:setup -- --preview # the preview environment's resources too
 //
-// Resources: D1 database, KV namespace, the scoring queue and its dead-letter queue, the data
-// bucket and the dashboard's incremental-cache bucket. Existing resources are reused.
+// Resources: D1 database, the engine's KV namespace, the scoring queue and its dead-letter queue,
+// and the dashboard's Next-cache KV namespace. Existing resources are reused. R2 is not needed.
 // Nothing secret is printed or written; Worker secrets are set separately (see the README).
 import { spawnSync } from "node:child_process";
 import { readFileSync, writeFileSync } from "node:fs";
@@ -15,6 +15,8 @@ import { resolve } from "node:path";
 
 const ROOT = resolve(import.meta.dirname, "..");
 const ENGINE_CONFIG = resolve(ROOT, "workers/engine/wrangler.jsonc");
+const DASHBOARD_CONFIG = resolve(ROOT, "wrangler.jsonc");
+const DASHBOARD_KV = { title: "ruphak-next-cache", placeholder: "00000000000000000000000000000002" };
 const withPreview = process.argv.includes("--preview");
 
 const SETS = [
@@ -23,7 +25,6 @@ const SETS = [
     d1: "ruphak-trading",
     kv: "ruphak-engine-kv",
     queues: ["events-to-score", "events-to-score-dlq"],
-    buckets: ["ruphak-data", "ruphak-next-cache"],
     d1Placeholder: "00000000-0000-0000-0000-000000000000",
     kvPlaceholder: "00000000000000000000000000000000",
   },
@@ -32,7 +33,6 @@ const SETS = [
     d1: "ruphak-trading-preview",
     kv: "ruphak-engine-kv-preview",
     queues: ["events-to-score-preview", "events-to-score-preview-dlq"],
-    buckets: ["ruphak-data-preview"],
     d1Placeholder: "00000000-0000-0000-0000-000000000001",
     kvPlaceholder: "00000000000000000000000000000001",
   },
@@ -111,16 +111,6 @@ function ensureQueue(name) {
   }
 }
 
-function ensureBucket(name) {
-  const r = wrangler(["r2", "bucket", "create", name, "--location", "apac"], { allowFail: true });
-  if (r.ok) console.log(`Created R2 bucket ${name}.`);
-  else if (alreadyExists(r.out)) console.log(`R2 bucket ${name} exists.`);
-  else {
-    console.error(`Could not create R2 bucket ${name} (is R2 enabled on the account?):\n${r.out.trim().split("\n").slice(-8).join("\n")}`);
-    process.exit(1);
-  }
-}
-
 const who = wrangler(["whoami"], { allowFail: true });
 if (!who.ok || /not authenticated/i.test(who.out)) {
   console.error("Wrangler is not logged in. Run `npx wrangler login`, or set CLOUDFLARE_API_TOKEN and CLOUDFLARE_ACCOUNT_ID.");
@@ -136,14 +126,19 @@ for (const set of SETS) {
   const d1Id = ensureD1(set.d1);
   const kvId = ensureKv(set.kv);
   for (const q of set.queues) ensureQueue(q);
-  for (const b of set.buckets) ensureBucket(b);
   if (config.includes(set.d1Placeholder)) config = config.replace(set.d1Placeholder, d1Id);
   if (config.includes(set.kvPlaceholder)) config = config.replace(set.kvPlaceholder, kvId);
   done.push(`${set.label}: D1 ${set.d1} = ${d1Id}, KV ${set.kv} = ${kvId}`);
 }
 writeFileSync(ENGINE_CONFIG, config);
 
-console.log(`\nUpdated workers/engine/wrangler.jsonc:\n  ${done.join("\n  ")}`);
+console.log("\n--- dashboard resources ---");
+const cacheKvId = ensureKv(DASHBOARD_KV.title);
+const dashboard = readFileSync(DASHBOARD_CONFIG, "utf8");
+if (dashboard.includes(DASHBOARD_KV.placeholder)) writeFileSync(DASHBOARD_CONFIG, dashboard.replace(DASHBOARD_KV.placeholder, cacheKvId));
+done.push(`dashboard: KV ${DASHBOARD_KV.title} = ${cacheKvId}`);
+
+console.log(`\nUpdated workers/engine/wrangler.jsonc and wrangler.jsonc:\n  ${done.join("\n  ")}`);
 console.log(`
 Next:
   1. Secrets (ADMIN_TOKEN is the only required one for paper trading):
@@ -151,4 +146,4 @@ Next:
        npx wrangler secret put ADMIN_TOKEN            # dashboard Worker, same value
      Optional: ANTHROPIC_API_KEY, GNEWS_API_KEY, GROWW_API_KEY, GROWW_TOTP_SECRET, TELEGRAM_* (see .dev.vars.example).
   2. npm run db:migrate:remote && npm run deploy:engine && npm run deploy:dashboard
-  3. Commit the updated workers/engine/wrangler.jsonc (resource IDs are not secrets).`);
+  3. Commit the updated workers/engine/wrangler.jsonc and wrangler.jsonc (resource IDs are not secrets).`);

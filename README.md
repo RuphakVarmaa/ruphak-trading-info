@@ -111,7 +111,7 @@ cp .env.example .env.local        # ENGINE_MOCK=1: the desk runs on built-in sim
 npm run dev                       # http://localhost:3000
 ```
 
-To run the real engine locally (Wrangler simulates D1, KV, Queues, R2 and Durable Objects):
+To run the real engine locally (Wrangler simulates D1, KV, Queues and Durable Objects):
 
 ```bash
 cp .dev.vars.example workers/engine/.dev.vars   # ADMIN_TOKEN=dev; every other key is optional
@@ -146,7 +146,7 @@ export ENGINE_ADMIN_TOKEN="$(openssl rand -hex 24)"   # keep a copy: the dashboa
 npm run deploy:paper                                   # add -- --dry-run to see the steps first
 ```
 
-It creates the resources and fills in their IDs, migrates D1, deploys the engine, sets its secrets from `ENGINE_`-prefixed variables, deploys the dashboard, and checks that the dashboard reads the engine. Optional variables: `ENGINE_GNEWS_API_KEY`, `ENGINE_TELEGRAM_BOT_TOKEN`, `ENGINE_TELEGRAM_CHAT_ID`, `ENGINE_GROWW_API_KEY`, `ENGINE_GROWW_TOTP_SECRET`. The API token needs these account permissions: Workers Scripts Edit, Workers KV Storage Edit, D1 Edit, Queues Edit, Workers R2 Storage Edit, Workers AI Edit and Account Settings Read. It also needs the user permissions User Details Read and Memberships Read. The steps below do the same thing by hand.
+It creates the resources and fills in their IDs, migrates D1, deploys the engine, sets its secrets from `ENGINE_`-prefixed variables, deploys the dashboard, and checks that the dashboard reads the engine. Optional variables: `ENGINE_GNEWS_API_KEY`, `ENGINE_TELEGRAM_BOT_TOKEN`, `ENGINE_TELEGRAM_CHAT_ID`, `ENGINE_GROWW_API_KEY`, `ENGINE_GROWW_TOTP_SECRET`. The API token needs these account permissions: Workers Scripts Edit, Workers KV Storage Edit, D1 Edit, Queues Edit, Workers AI Edit and Account Settings Read. It also needs the user permissions User Details Read and Memberships Read. The steps below do the same thing by hand.
 
 1. Create the resources. From a machine where Wrangler is logged in (`npx wrangler login`), run:
 
@@ -154,7 +154,7 @@ It creates the resources and fills in their IDs, migrates D1, deploys the engine
    npm run cf:setup              # add -- --preview for the preview environment
    ```
 
-   It creates the D1 database, KV namespace, queues and R2 buckets, reusing any that exist. It then writes the D1 and KV IDs into `workers/engine/wrangler.jsonc`. Commit that file; the IDs are not secrets. The script also accepts `CLOUDFLARE_API_TOKEN` and `CLOUDFLARE_ACCOUNT_ID` instead of a login.
+   It creates the D1 database, the KV namespaces and the queues, reusing any that exist. It then writes their IDs into `workers/engine/wrangler.jsonc` and the dashboard's `wrangler.jsonc`. Commit both files; the IDs are not secrets. R2 is not required. To keep dated copies of instrument masters and backtest results, add the optional `R2` binding described in `workers/engine/wrangler.jsonc`. The script also accepts `CLOUDFLARE_API_TOKEN` and `CLOUDFLARE_ACCOUNT_ID` instead of a login.
 
 2. Set the engine secrets. Only `ADMIN_TOKEN` is required for paper trading.
 
@@ -173,7 +173,7 @@ It creates the resources and fills in their IDs, migrates D1, deploys the engine
    npm run deploy:dashboard
    ```
 
-4. To deploy from CI, create an API token at dash.cloudflare.com/profile/api-tokens. Start from the "Edit Cloudflare Workers" template and add D1 Edit, Queues Edit and Workers R2 Storage Edit. Add it to the GitHub repository as the Actions secret `CLOUDFLARE_API_TOKEN`, with your account ID as `CLOUDFLARE_ACCOUNT_ID`. Pushes to `main` then migrate D1 and deploy both Workers after the checks pass.
+4. To deploy from CI, create an API token at dash.cloudflare.com/profile/api-tokens. Start from the "Edit Cloudflare Workers" template and add D1 Edit, Queues Edit and Workers AI Edit. Add it to the GitHub repository as the Actions secret `CLOUDFLARE_API_TOKEN`, with your account ID as `CLOUDFLARE_ACCOUNT_ID`. Pushes to `main` then migrate D1 and deploy both Workers after the checks pass.
 
 `npm run deploy:engine:preview` deploys a separate preview environment with its own resources and a single 30-minute cron.
 
@@ -185,7 +185,7 @@ It creates the resources and fills in their IDs, migrates D1, deploys the engine
 | every 2 min, 08:31–16:29 on trading days | `1-59/2 3-10 * * 1-5` | Extra ingest during market hours |
 | every minute, 08:30–16:29 on trading days | `* 3-10 * * 1-5` | Re-arms a missing alarm and alerts on a stale heartbeat |
 | 08:00 | `30 2 * * 1-5` | Groww token (tokens expire at 06:00) |
-| 08:10 | `40 2 * * 1-5` | Instrument master: Groww `instrument.csv` to KV and R2 |
+| 08:10 | `40 2 * * 1-5` | Instrument master: Groww `instrument.csv` to KV (and the optional R2 archive) |
 | 08:30 | `0 3 * * 1-5` | Pre-market ingest, market snapshot, relay health |
 | 16:00 | `30 10 * * 1-5` | End of day: grade decisions, update signal performance, Telegram summary |
 | 20:00 | `30 14 * * *` | Prune old D1 rows |
@@ -252,7 +252,7 @@ Reports are written to `reports/` and caches to `.cache/`; both are gitignored. 
 
 | Item | Estimate |
 |---|---|
-| Cloudflare (Workers Paid, Durable Objects, D1, KV, Queues, R2) | about $5 a month, mostly within included usage |
+| Cloudflare (Workers Paid, Durable Objects, D1, KV, Queues) | about $5 a month, mostly within included usage |
 | News scoring, GLM-5.3 on Workers AI | $1.40 per million input tokens and $4.40 per million output tokens, billed to the Cloudflare account. The default daily caps limit spend to about $8.60 a day; reasoning tokens count as output. |
 | News scoring with Claude (optional) | Roughly $200–280 a month on Opus 5.5 at about 200 calls a day; set `LLM_PROVIDER=anthropic`. |
 | Groww Trade API | ₹499 + GST a month (live data and live trading) |
