@@ -67,6 +67,9 @@ const QUOTE_ROWS: { key: string; label: string; symbol: string }[] = [
   { key: "SPFUT", label: "S&P FUT", symbol: MARKET_SYMBOLS.ES },
 ];
 
+/** Ticker rows whose instrument trades one session per IST date (5-minute bars can stand in for a daily close). */
+const IST_SESSION_KEYS = new Set(["NIFTY", "SENSEX", "INDIAVIX", "BANKNIFTY"]);
+
 /** Price, change versus the previous daily close, and observation time for the dashboard ticker. */
 export function quoteRows(snap: MarketSnapshot): QuoteRow[] {
   const out: QuoteRow[] = [];
@@ -80,9 +83,21 @@ export function quoteRows(snap: MarketSnapshot): QuoteRow[] {
     // Previous close: the last daily bar from an IST date before the latest observation's date.
     const obsDate = istDate(last ? last.t : snap.t);
     let prev: number | undefined;
+    let prevDate = "";
     for (let i = daily.length - 1; i >= 0; i--) {
       if (istDate(daily[i].t) < obsDate) {
         prev = daily[i].c;
+        prevDate = istDate(daily[i].t);
+        break;
+      }
+    }
+    // Indian indices trade one session per IST date: when Yahoo's daily chart lags (it publishes a
+    // session's daily close late), the last 5-minute bar of the newer session is its close.
+    if (IST_SESSION_KEYS.has(r.key)) {
+      for (let i = intraday.length - 1; i >= 0; i--) {
+        const d = istDate(intraday[i].t);
+        if (d >= obsDate) continue;
+        if (d > prevDate) prev = intraday[i].c;
         break;
       }
     }
