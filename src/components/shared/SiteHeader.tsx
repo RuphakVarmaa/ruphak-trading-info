@@ -43,11 +43,11 @@ function NavLink({ href, label, active }: { href: string; label: string; active:
         fontSize: 10,
         fontWeight: 700,
         letterSpacing: "0.1em",
-        color: active ? "#fff" : C.muted,
+        color: active ? C.textStrong : C.muted,
         textDecoration: "none",
         padding: "6px 10px",
         borderRadius: 4,
-        background: active ? "#1c1c1c" : "transparent",
+        background: active ? C.navActive : "transparent",
         borderBottom: `2px solid ${active ? C.gold : "transparent"}`,
       }}
     >
@@ -90,7 +90,7 @@ export default function SiteHeader({
           </div>
           <div>
             <h1 style={{ margin: 0, fontSize: 17, fontWeight: 800, letterSpacing: "0.03em", lineHeight: 1.1 }}>
-              <span style={{ color: "#fff" }}>RUPHAK</span> <span style={{ color: C.gold }}>TRADING INFO</span>
+              <span style={{ color: C.textStrong }}>RUPHAK</span> <span style={{ color: C.gold }}>TRADING INFO</span>
             </h1>
             <p style={{ margin: 0, fontSize: 8, color: C.muted3, textTransform: "uppercase", letterSpacing: "0.15em" }}>
               India Index Desk · Geopolitical Intelligence

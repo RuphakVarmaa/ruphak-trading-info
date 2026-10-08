@@ -1,46 +1,16 @@
 "use client";
 
-import { useCallback, useEffect, useLayoutEffect, useRef, useState, type PointerEvent } from "react";
+import { useLayoutEffect, useRef, useState, type PointerEvent } from "react";
 import type { PositionView } from "@/engine/api-types";
 import { alpha, C, pnlColor } from "@/components/shared/colors";
-import { fmtAge, fmtDateKey, fmtIstHm, fmtNum, fmtPct, fmtSigned } from "@/components/shared/format";
+import { fmtAge, fmtDateKey, fmtIstHm, fmtIstTime, fmtNum, fmtPct, fmtSigned } from "@/components/shared/format";
 import { Panel, PanelHeader, Skeleton, tableStyle, tableWrap, td, tdNum, th, theadRow, thNum } from "@/components/shared/ui";
 import { useClientNow } from "@/hooks/useEngineState";
 import type { NiftyFeed } from "@/lib/market/niftyFeed";
+import type { LoadedFeed } from "./useNiftyFeed";
 
-const POLL_MS = 15_000;
 const SESSION_OPEN_MIN = 9 * 60 + 15;
 const SESSION_MIN = 375;
-
-type Loaded = { feed: NiftyFeed; at: number } | null;
-
-function useNiftyFeed(expiry: string | null) {
-  const [data, setData] = useState<Loaded>(null);
-  const [error, setError] = useState<string | null>(null);
-  const load = useCallback(async () => {
-    try {
-      const res = await fetch(`/api/market/nifty${expiry ? `?expiry=${expiry}` : ""}`, { cache: "no-store" });
-      const body = (await res.json()) as { ok: boolean; data?: NiftyFeed; error?: string };
-      if (body.ok && body.data) {
-        setData({ feed: body.data, at: Date.now() });
-        setError(null);
-      } else setError(body.error ?? `HTTP ${res.status}`);
-    } catch (e) {
-      setError(e instanceof Error ? e.message : String(e));
-    }
-  }, [expiry]);
-  useEffect(() => {
-    const first = setTimeout(() => void load(), 0);
-    const id = setInterval(() => {
-      if (typeof document === "undefined" || !document.hidden) void load();
-    }, POLL_MS);
-    return () => {
-      clearTimeout(first);
-      clearInterval(id);
-    };
-  }, [load]);
-  return { data, error };
-}
 
 /** Minutes since midnight IST for an epoch-ms time. */
 function istMinute(t: number): number {
@@ -158,9 +128,17 @@ function Price({ side, itm }: { side: { ltp: number; bid: number; ask: number };
 }
 
 /** NIFTY 50 live price, today's chart and the option chain (model prices) for the Live P&L page. */
-export default function NiftyLiveFeed({ positions }: { positions: PositionView[] }) {
-  const [expiry, setExpiry] = useState<string | null>(null);
-  const { data, error } = useNiftyFeed(expiry);
+export default function NiftyLiveFeed({
+  positions,
+  data,
+  error,
+  onExpiry,
+}: {
+  positions: PositionView[];
+  data: LoadedFeed | null;
+  error: string | null;
+  onExpiry: (expiry: string) => void;
+}) {
   const clientNow = useClientNow();
   const feed = data?.feed ?? null;
   const chain = feed?.chain ?? null;
@@ -173,7 +151,7 @@ export default function NiftyLiveFeed({ positions }: { positions: PositionView[]
           title="NIFTY 50"
           right={
             <span className="tnum" style={{ fontSize: 10, color: error ? C.orange : C.muted2, fontFamily: "monospace", fontWeight: 400, textTransform: "none", letterSpacing: 0 }}>
-              {error ? `feed error: ${error}` : feed ? `last trade ${fmtIstHm(feed.asOf)} IST · fetched ${clientNow && data ? fmtAge(Math.max(0, clientNow - data.at)) : "—"} ago` : "loading…"}
+              {error ? `feed error: ${error}` : feed ? `last trade ${fmtIstTime(feed.asOf)} IST · updated ${clientNow && data ? fmtAge(Math.max(0, clientNow - data.at)) : "—"} ago` : "loading…"}
             </span>
           }
         />
@@ -197,7 +175,7 @@ export default function NiftyLiveFeed({ positions }: { positions: PositionView[]
               </div>
               <PriceLine bars={feed.bars} prevClose={feed.prevClose} />
               <div style={{ fontSize: 10, color: C.muted3, marginTop: 4 }}>
-                Yahoo 1-minute bars ({feed.session}), about 1–2 minutes behind the exchange. Refreshes every 15 s.
+                Yahoo 1-minute bars ({feed.session}), as fresh as Yahoo has them. Refreshes every 2 s.
               </div>
             </>
           ) : (
@@ -217,7 +195,7 @@ export default function NiftyLiveFeed({ positions }: { positions: PositionView[]
                     key={e}
                     role="tab"
                     aria-selected={e === chain.expiry}
-                    onClick={() => setExpiry(e)}
+                    onClick={() => onExpiry(e)}
                     style={{
                       background: e === chain.expiry ? alpha(C.gold, 0.15) : "transparent",
                       color: e === chain.expiry ? C.gold : C.muted,

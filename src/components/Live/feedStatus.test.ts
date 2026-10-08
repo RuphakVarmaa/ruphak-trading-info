@@ -88,3 +88,18 @@ describe("dashboardLinkStatus", () => {
     expect(dashboardLinkStatus("offline", null, 5000, null).level).toBe("down");
   });
 });
+
+describe("marketFeedStatus with the live 2-second feed", () => {
+  it("is ok when the live price is seconds old, even if the engine quote is older", () => {
+    const s = marketFeedStatus(state("OPEN"), ms("09:40") + 5_000, "NIFTY", { price: 22531.4, asOf: at("09:40") });
+    expect(s.level).toBe("ok");
+    expect(s.detail).toContain("22,531.40");
+    expect(s.detail).toContain("refreshed every 2 s");
+  });
+  it("is stale when the live price is more than three minutes old", () => {
+    expect(marketFeedStatus(state("OPEN"), ms("09:44"), "NIFTY", { price: 22531.4, asOf: at("09:40") }).level).toBe("stale");
+  });
+  it("ignores the live price outside the session", () => {
+    expect(marketFeedStatus(state("CLOSED"), ms("08:45"), "NIFTY", { price: 22531.4, asOf: at("08:44") }).level).toBe("wait");
+  });
+});

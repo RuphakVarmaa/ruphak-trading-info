@@ -3,7 +3,7 @@
  * option prices, the engine loop and the dashboard's own polling. Pure, so it is unit-tested.
  */
 import type { EngineStateDTO, PositionView, SignalView } from "@/engine/api-types";
-import { fmtAge, fmtIstHm, fmtNum } from "@/components/shared/format";
+import { fmtAge, fmtIstHm, fmtIstTime, fmtNum } from "@/components/shared/format";
 
 export type FeedLevel = "ok" | "wait" | "stale" | "down";
 
@@ -15,6 +15,8 @@ export interface FeedStatus {
 
 /** 5-minute bars plus Yahoo's 1–2 minute delay. */
 export const MARKET_FEED_MAX_AGE_MS = 10 * 60_000;
+/** The page's own 2-second NIFTY feed: Yahoo's last trade should be within a couple of minutes. */
+export const LIVE_FEED_MAX_AGE_MS = 3 * 60_000;
 /** Open positions are re-marked every loop tick (30 s). */
 export const OPTION_PRICE_MAX_AGE_MS = 3 * 60_000;
 /** Decisions are stored once per closed 5-minute bar, after the 90 s data lag. */
@@ -27,8 +29,15 @@ const ageOf = (iso: string | null | undefined, now: number): number | null => {
 
 const inSession = (state: EngineStateDTO) => state.market.phase === "OPEN" || state.market.phase === "PRE_OPEN";
 
-export function marketFeedStatus(state: EngineStateDTO, now: number, index = "NIFTY"): FeedStatus {
+export function marketFeedStatus(state: EngineStateDTO, now: number, index = "NIFTY", live?: { price: number; asOf: string }): FeedStatus {
   const q = state.quotes.find((x) => x.key === index);
+  if (!q && !live) return { level: "down", headline: `No ${index} price`, detail: "The engine has not stored a market snapshot yet." };
+  if (live && state.market.phase === "OPEN") {
+    const liveAge = ageOf(live.asOf, now);
+    const line = `${index} ${fmtNum(live.price)} at ${fmtIstTime(live.asOf)} IST`;
+    if (liveAge == null || liveAge > LIVE_FEED_MAX_AGE_MS) return { level: "stale", headline: "Feed delayed", detail: `Last ${line}${liveAge == null ? "" : `, ${fmtAge(liveAge)} old`}` };
+    return { level: "ok", headline: "Coming through", detail: `${line} · ${fmtAge(liveAge)} old · refreshed every 2 s from Yahoo` };
+  }
   if (!q) return { level: "down", headline: `No ${index} price`, detail: "The engine has not stored a market snapshot yet." };
   const age = ageOf(q.asOf, now);
   const last = `${index} ${fmtNum(q.price)} at ${fmtIstHm(q.asOf)} IST`;

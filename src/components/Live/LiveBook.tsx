@@ -1,15 +1,19 @@
 "use client";
 
-import type { CSSProperties, ReactNode } from "react";
+import { useState, type CSSProperties, type ReactNode } from "react";
 import type { PositionView } from "@/engine/api-types";
 import PositionLive from "@/components/Desk/PositionLive";
+import { istIso } from "@/engine/clock";
 import { alpha, C, pnlColor } from "@/components/shared/colors";
+import { SERIF } from "@/components/shared/theme";
 import { fmtAge, fmtInr, fmtIstDay, fmtIstHm, fmtPct } from "@/components/shared/format";
 import { Dot, EmptyState, Panel, PanelHeader, Skeleton, StatTile } from "@/components/shared/ui";
 import { useClientNow, useEngineState, useNow } from "@/hooks/useEngineState";
 import CapitalPnlPies from "./CapitalPnlPies";
 import NiftyLiveFeed from "./NiftyLiveFeed";
-import { dashboardLinkStatus, engineLoopStatus, marketFeedStatus, optionPriceStatus, type FeedLevel, type FeedStatus } from "./feedStatus";
+import { dashboardLinkStatus, engineLoopStatus, LIVE_FEED_MAX_AGE_MS, marketFeedStatus, optionPriceStatus, type FeedLevel, type FeedStatus } from "./feedStatus";
+import { markLive, rawUnrealized, type LiveInputs } from "./liveMarks";
+import { useNiftyFeed } from "./useNiftyFeed";
 
 const LEVEL_COLOR: Record<FeedLevel, string> = { ok: C.green, wait: C.muted, stale: C.orange, down: C.red };
 
@@ -86,32 +90,51 @@ export default function LiveBook() {
   const { state, positions, signals, pnl, status, tiers, fastIntervalMs } = useEngineState();
   const now = useNow();
   const clientNow = useClientNow();
+  const [expiry, setExpiry] = useState<string | null>(null);
+  const { data: liveData, error: liveError } = useNiftyFeed(expiry);
+
+  // While the market is open and the 2-second NIFTY feed is fresh, the open puts are re-priced from it.
+  const liveFeed = liveData?.feed ?? null;
+  const liveOn =
+    liveData != null &&
+    liveFeed != null &&
+    liveFeed.vix != null &&
+    clientNow != null &&
+    clientNow - liveData.at < 10_000 &&
+    clientNow - Date.parse(liveFeed.asOf) < LIVE_FEED_MAX_AGE_MS &&
+    state?.market.phase === "OPEN";
+  const liveInputs: LiveInputs | null = liveOn && liveFeed && liveData ? { spot: liveFeed.spot, vix: liveFeed.vix, asOf: istIso(liveData.at), atMs: liveData.at } : null;
+  const open: PositionView[] = (positions ?? []).map((p) => markLive(p, liveInputs));
 
   const feeds =
     state && now != null
       ? {
-          market: marketFeedStatus(state, now),
-          options: optionPriceStatus(state, positions, signals, now),
+          market: marketFeedStatus(state, now, "NIFTY", liveOn && liveFeed ? { price: liveFeed.spot, asOf: liveFeed.asOf } : undefined),
+          options: optionPriceStatus(state, open, signals, now),
           engine: engineLoopStatus(state, now),
         }
       : null;
   const link = dashboardLinkStatus(status, tiers.fast.lastOkAt, fastIntervalMs, clientNow);
 
-  const open: PositionView[] = positions ?? [];
   const today = pnl?.today ?? null;
-  // Positions refresh every 5 s, the P&L summary every 60 s: take unrealized from the live marks.
-  const unrealized = positions && positions.length > 0 ? positions.reduce((s, p) => s + p.pnl, 0) : (today?.unrealized ?? 0);
+  // Price move on the open positions, before charges (as the engine's own P&L summary counts it).
+  const unrealized = positions && positions.length > 0 ? open.reduce((s, p) => s + rawUnrealized(p), 0) : (today?.unrealized ?? 0);
   const realized = today?.realized ?? 0;
   const charges = today?.charges ?? 0;
   const net = realized + unrealized - charges;
   const equity = pnl ? pnl.startingEquity + net : null;
-  const updated = tiers.fast.lastOkAt != null && clientNow != null ? `updated ${fmtAge(Math.max(0, clientNow - tiers.fast.lastOkAt))} ago` : "connecting…";
+  const updated =
+    liveOn && liveData && clientNow != null
+      ? `live · refreshed ${fmtAge(Math.max(0, clientNow - liveData.at))} ago`
+      : tiers.fast.lastOkAt != null && clientNow != null
+        ? `updated ${fmtAge(Math.max(0, clientNow - tiers.fast.lastOkAt))} ago`
+        : "connecting…";
 
   return (
     <main style={{ width: "100%", maxWidth: 1080, margin: "0 auto", padding: "20px 16px 48px", display: "grid", gap: 24, boxSizing: "border-box" }}>
       <div style={{ display: "flex", flexWrap: "wrap", alignItems: "flex-end", justifyContent: "space-between", gap: 8 }}>
         <div>
-          <h1 style={{ margin: 0, fontSize: 22, fontWeight: 800, color: C.textStrong }}>Live P&amp;L</h1>
+          <h1 style={{ margin: 0, fontSize: 28, fontWeight: 500, color: C.textStrong, fontFamily: SERIF, letterSpacing: "-0.01em" }}>Live P&amp;L</h1>
           <p style={{ margin: "4px 0 0", fontSize: 12, color: C.muted }}>
             NIFTY 50 options · paper trading with simulated fills{state ? ` · ${fmtIstDay(state.market.nowIst)}` : ""}
           </p>
@@ -134,10 +157,15 @@ export default function LiveBook() {
             <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(150px, 1fr))", gap: 12 }}>
               <StatTile label="Net after charges" value={fmtInr(net, { decimals: 0, sign: true })} color={pnlColor(net)} hero sub={equity != null ? `equity ${fmtInr(equity, { decimals: 0 })} (${fmtPct((net / pnl.startingEquity) * 100)})` : undefined} />
               <StatTile label="Realized" value={fmtInr(realized, { decimals: 0, sign: true })} color={pnlColor(realized)} sub="closed trades" />
-              <StatTile label="Unrealized" value={fmtInr(unrealized, { decimals: 0, sign: true })} color={pnlColor(unrealized)} sub={`${open.length} open`} />
+              <StatTile label="Unrealized" value={fmtInr(unrealized, { decimals: 0, sign: true })} color={pnlColor(unrealized)} sub={`${open.length} open · ${liveOn ? "live" : "engine mark"}`} />
               <StatTile label="Charges" value={fmtInr(charges, { decimals: 0 })} color={C.textSoft} sub="brokerage, STT, fees, GST" />
             </div>
-            {state && <LossCapBar used={state.caps.dailyLossUsed} cap={state.caps.dailyLossCap} />}
+            {state && <LossCapBar used={Math.max(0, -net)} cap={state.caps.dailyLossCap} />}
+            <div style={{ marginTop: 10, fontSize: 10, color: C.muted2, lineHeight: 1.5 }}>
+              {liveOn
+                ? "Live estimate: refreshed every 2 s from the NIFTY price, with model option prices. The engine checks stops and targets on its own 30-second cycle."
+                : "Engine marks, refreshed about every 30 s."}
+            </div>
           </Panel>
         ) : (
           <Skeleton height={120} />
@@ -168,7 +196,7 @@ export default function LiveBook() {
       </Section>
 
       <Section title="NIFTY 50 live feed and option chain">
-        <NiftyLiveFeed positions={open} />
+        <NiftyLiveFeed positions={open} data={liveData} error={liveError} onExpiry={setExpiry} />
       </Section>
     </main>
   );

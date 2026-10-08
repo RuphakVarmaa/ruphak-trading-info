@@ -112,7 +112,7 @@ export function SectionHeader({ label, title, sub, right }: { label: string; tit
         <div style={{ marginBottom: 6 }}>
           <span style={{ fontSize: 10, color: C.gold, fontWeight: 700, letterSpacing: "0.08em", textTransform: "uppercase" }}>{label}</span>
         </div>
-        <h3 style={{ margin: "0 0 6px", fontSize: 26, fontWeight: 400, color: "#e0e0e0", fontFamily: "var(--font-playfair), 'Playfair Display', Georgia, serif" }}>
+        <h3 style={{ margin: "0 0 6px", fontSize: 26, fontWeight: 400, color: C.textStrong, fontFamily: "var(--font-playfair), 'Playfair Display', Georgia, serif" }}>
           {title}
         </h3>
         {sub != null && <p style={{ margin: 0, fontSize: 13, color: C.muted2 }}>{sub}</p>}
@@ -279,7 +279,7 @@ export function Skeleton({ width = "100%", height = 12, style }: { width?: numbe
         width,
         height,
         borderRadius: 3,
-        background: "#1a1a1a",
+        background: C.borderSoft,
         animation: "skeleton-pulse 1.4s ease-in-out infinite",
         ...style,
       }}
@@ -433,7 +433,7 @@ export function ConfirmDialog({
 
 export const tableWrap: CSSProperties = { border: `1px solid ${C.border}`, borderRadius: 8, overflowX: "auto", background: C.panel };
 export const tableStyle: CSSProperties = { width: "100%", borderCollapse: "collapse", fontSize: 11 };
-export const theadRow: CSSProperties = { background: "#151515", color: C.muted, textTransform: "uppercase", fontSize: 9, letterSpacing: "0.06em" };
+export const theadRow: CSSProperties = { background: C.thead, color: C.muted, textTransform: "uppercase", fontSize: 9, letterSpacing: "0.06em" };
 export const th: CSSProperties = { padding: "10px 12px", textAlign: "left", fontWeight: 700, whiteSpace: "nowrap" };
 export const thNum: CSSProperties = { ...th, textAlign: "right" };
 export const td: CSSProperties = { padding: "8px 12px", borderTop: `1px solid ${C.borderSoft}`, color: C.textSoft, whiteSpace: "nowrap" };

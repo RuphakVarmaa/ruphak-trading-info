@@ -15,27 +15,36 @@ import type {
 } from "@/engine/api-types";
 import type { IntelItem } from "@/utils/api";
 
+/**
+ * Each colour is a CSS variable with today's dark value as the fallback, so every page looks the
+ * same unless a wrapper sets the variables (see theme.ts, used by the Live P&L page).
+ */
+const token = (name: string, dark: string) => `var(--c-${name}, ${dark})`;
+
 export const C = {
-  bg: "#0a0a0a",
-  panel: "#111",
-  panelAlt: "#0f0f0f",
-  panelDeep: "#0d0d0d",
-  border: "#222",
-  borderStrong: "#2a2a2a",
-  borderSoft: "#1a1a1a",
-  gold: "#ffb300",
-  green: "#4caf50",
-  red: "#f44336",
-  orange: "#ff9800",
-  blue: "#2196f3",
-  purple: "#ab7df8",
-  text: "#ededed",
-  textStrong: "#eee",
-  textSoft: "#ccc",
-  textDim: "#aaa",
-  muted: "#888",
-  muted2: "#666",
-  muted3: "#555",
+  bg: token("bg", "#0a0a0a"),
+  panel: token("panel", "#111"),
+  panelAlt: token("panelAlt", "#0f0f0f"),
+  panelDeep: token("panelDeep", "#0d0d0d"),
+  border: token("border", "#222"),
+  borderStrong: token("borderStrong", "#2a2a2a"),
+  borderSoft: token("borderSoft", "#1a1a1a"),
+  thead: token("thead", "#151515"),
+  navActive: token("navActive", "#1c1c1c"),
+  track: token("track", "#1f1f1f"),
+  gold: token("gold", "#ffb300"),
+  green: token("green", "#4caf50"),
+  red: token("red", "#f44336"),
+  orange: token("orange", "#ff9800"),
+  blue: token("blue", "#2196f3"),
+  purple: token("purple", "#ab7df8"),
+  text: token("text", "#ededed"),
+  textStrong: token("textStrong", "#eee"),
+  textSoft: token("textSoft", "#ccc"),
+  textDim: token("textDim", "#aaa"),
+  muted: token("muted", "#888"),
+  muted2: token("muted2", "#666"),
+  muted3: token("muted3", "#555"),
 } as const;
 
 // --- moved from IntelFeed -------------------------------------------------------
@@ -170,8 +179,9 @@ export function ageColor(ageMs: number | null, stale = false): string {
   return C.green;
 }
 
-/** Hex colour with alpha, e.g. alpha('#f44336', 0.12). */
+/** A colour with alpha, e.g. alpha('#f44336', 0.12). A CSS variable (a theme colour) is mixed with transparent instead. */
 export function alpha(hex: string, a: number): string {
+  if (!hex.startsWith("#")) return `color-mix(in srgb, ${hex} ${Math.round(a * 100)}%, transparent)`;
   const h = hex.replace("#", "");
   const full = h.length === 3 ? h.split("").map((c) => c + c).join("") : h;
   const n = parseInt(full, 16);

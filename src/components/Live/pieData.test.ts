@@ -2,8 +2,9 @@ import { describe, expect, it } from "vitest";
 import type { PositionView } from "@/engine/api-types";
 import { capitalSlices, pnlSlices } from "./pieData";
 
-const pos = (id: string, strike: number, avgPrice: number, pnl: number) =>
-  ({ id, avgPrice, qty: 65, pnl, contract: { strike, optionType: "PE" } }) as unknown as PositionView;
+/** `move` is the price move in rupees before charges: (mark - entry) x 65. */
+const pos = (id: string, strike: number, avgPrice: number, move: number) =>
+  ({ id, avgPrice, qty: 65, ltp: avgPrice + move / 65, pnl: move - 28, contract: { strike, optionType: "PE" } }) as unknown as PositionView;
 
 describe("capitalSlices", () => {
   it("splits capital into one slice per position plus free capital", () => {
@@ -33,19 +34,19 @@ describe("capitalSlices", () => {
 });
 
 describe("pnlSlices", () => {
-  it("counts open gains and the realized total as profit, and nets to the page's net", () => {
+  it("counts open price gains and the realized total as profit, and nets to the page's net", () => {
     const p = pnlSlices({ realized: 0, positions: [pos("a", 22500, 143.45, 2231), pos("b", 22450, 146.55, 339)], charges: 56 });
-    expect(p.gains).toBe(2570);
+    expect(p.gains).toBeCloseTo(2570, 6);
     expect(p.losses).toBe(0);
-    expect(p.net).toBe(2514);
+    expect(p.net).toBeCloseTo(2514, 6);
     expect(p.slices.map((s) => s.label)).toEqual(["Profit (gross)", "Charges"]);
   });
 
   it("separates gross profit from gross loss across closed and open trades", () => {
     const p = pnlSlices({ realized: -2516, positions: [pos("a", 22500, 143.45, 2139), pos("b", 22450, 146.55, -300)], charges: 90 });
-    expect(p.gains).toBe(2139);
-    expect(p.losses).toBe(2816);
-    expect(p.net).toBe(2139 - 2816 - 90);
+    expect(p.gains).toBeCloseTo(2139, 6);
+    expect(p.losses).toBeCloseTo(2816, 6);
+    expect(p.net).toBeCloseTo(2139 - 2816 - 90, 6);
     expect(p.slices.map((s) => s.label)).toEqual(["Profit (gross)", "Loss (gross)", "Charges"]);
   });
 

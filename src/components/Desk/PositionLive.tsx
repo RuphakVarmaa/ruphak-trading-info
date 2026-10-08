@@ -90,7 +90,7 @@ export default function PositionLive({ p }: { p: PositionView }) {
         aria-label={`Premium ${fmtNum(ltp)} between stop ${fmtNum(lo)} and target ${fmtNum(hi)}${p.trailPrice != null ? `, trailing stop ${fmtNum(p.trailPrice)}` : ""}`}
         style={{ position: "relative", height: 16 }}
       >
-        <div style={{ position: "absolute", left: 0, right: 0, top: 6, height: 4, background: "#1f1f1f", borderRadius: 2 }} />
+        <div style={{ position: "absolute", left: 0, right: 0, top: 6, height: 4, background: C.track, borderRadius: 2 }} />
         <div
           style={{
             position: "absolute",
@@ -103,7 +103,7 @@ export default function PositionLive({ p }: { p: PositionView }) {
         />
         <div style={{ position: "absolute", left: 0, top: 1, width: 3, height: 14, background: C.red, borderRadius: 1 }} title={`Stop ${fmtNum(lo)}`} />
         <div style={{ position: "absolute", right: 0, top: 1, width: 3, height: 14, background: C.green, borderRadius: 1 }} title={`Target ${fmtNum(hi)}`} />
-        <div style={{ position: "absolute", left: `${entryAt}%`, top: 2, width: 2, height: 12, marginLeft: -1, background: "#bbb" }} />
+        <div style={{ position: "absolute", left: `${entryAt}%`, top: 2, width: 2, height: 12, marginLeft: -1, background: C.textDim }} />
         {trailAt != null && (
           <div style={{ position: "absolute", left: `${trailAt}%`, top: 0, width: 2, height: 16, marginLeft: -1, background: C.orange }} />
         )}
@@ -117,7 +117,7 @@ export default function PositionLive({ p }: { p: PositionView }) {
             height: 12,
             marginLeft: -6,
             borderRadius: "50%",
-            background: "#fff",
+            background: C.textStrong,
             border: `3px solid ${color === C.textDim ? C.muted : color}`,
             boxSizing: "border-box",
           }}
