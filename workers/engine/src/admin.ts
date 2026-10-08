@@ -7,6 +7,7 @@ import { WorkerEntrypoint } from "cloudflare:workers";
 import type {
   BacktestParams,
   BacktestResult,
+  CopyTicketView,
   EngineApi,
   EngineMode,
   EngineStateDTO,
@@ -112,6 +113,10 @@ export class EngineAdmin extends WorkerEntrypoint<Env> implements EngineApi {
   }
   getBacktest(runId: string): Promise<BacktestResult | null> {
     return getBacktest(this.env, String(runId));
+  }
+  getCopyTickets(date: string, account?: string): Promise<CopyTicketView[]> {
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) throw new AdminError("BAD_REQUEST", "date must be YYYY-MM-DD");
+    return this.model(account).getCopyTickets(date);
   }
 
   async verifyAdmin(token: string): Promise<boolean> {

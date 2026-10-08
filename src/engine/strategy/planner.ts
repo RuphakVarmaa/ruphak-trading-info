@@ -145,12 +145,14 @@ export async function planEntry(a: PlanArgs, ctx: PlanContext): Promise<PlanDeci
   let edge: EdgeResult | null = null;
   let premium: number | null = null;
   let limitPrice: number | null = null;
+  let quoteSource: Quote["source"] | undefined;
   try {
     const q = bandQuote ?? (await ctx.optionQuotes.quote(contract, { t, spot: f.spot, vix: f.vix }));
     const problem = quoteProblem(q, t, quoteOpts(contract));
     gates.push({ gate: "quote", label: "Usable option quote", passed: problem === null, detail: problem ?? `${q.source} bid ${q.bid} / ask ${q.ask}` });
     if (problem === null) {
       premium = q.ask;
+      quoteSource = q.source;
       limitPrice = marketableLimit("BUY", q, contract.tickSize);
       gates.push(...liquidityGates(q, contract, cfg));
       const horizonMin = Math.max(5, Math.min(cfg.exits.horizonMinByRegime[c.regime], Math.floor((squareOffMs(t, cfg) - t) / MINUTE_MS)));
@@ -231,6 +233,10 @@ export async function planEntry(a: PlanArgs, ctx: PlanContext): Promise<PlanDeci
     conviction: c,
     gates,
     dominantSource: dom,
+    indicators: decision.indicators,
+    vix: f.vix,
+    retFromOpenPct: f.retFromOpen,
+    ...(quoteSource ? { quoteSource } : {}),
   };
   decision.plan = plan;
   return decision;

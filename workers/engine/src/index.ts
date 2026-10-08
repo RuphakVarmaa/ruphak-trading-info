@@ -130,6 +130,12 @@ async function handleFetch(req: Request, env: Env): Promise<Response> {
           return Response.json(await engine(env).endOfDay());
         case "/ops/status":
           return new Response(await engine(env).statusText());
+        case "/ops/telegram-test": {
+          // Confirms the TELEGRAM_* secrets reach the chat (the alerts are otherwise silent no-ops).
+          const alerts = new Alerts(env, rt.repo.state, rt.logger);
+          const sent = alerts.enabled ? await alerts.send("✅ Telegram works: trade and copy-trade alerts from the engine will arrive here.") : false;
+          return Response.json({ ok: sent, enabled: alerts.enabled });
+        }
         default:
           return Response.json({ ok: false, error: "unknown op" }, { status: 404 });
       }

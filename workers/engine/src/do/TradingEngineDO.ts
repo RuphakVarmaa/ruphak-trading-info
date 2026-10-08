@@ -10,7 +10,8 @@
  * plus RELAY_LIVE on the relay; otherwise every order is simulated by the PaperBroker.
  */
 import { DurableObject } from "cloudflare:workers";
-import { parseAccountId } from "../../../../src/engine/accounts";
+import { parseAccountId, type AccountId } from "../../../../src/engine/accounts";
+import type { AccountView } from "../../../../src/engine/api-types";
 import type { TradingCalendar } from "../../../../src/engine/calendar/calendar";
 import { MINUTE_MS, istAt, istDate, istIso, systemClock } from "../../../../src/engine/clock";
 import { PaperBroker } from "../../../../src/engine/broker/paperBroker";
@@ -26,6 +27,7 @@ import {
   type RelayClient,
   type RelayHealth,
 } from "../../../../src/engine/broker/groww";
+import type { EngineConfig } from "../../../../src/engine/config";
 import { computeFeatures } from "../../../../src/engine/market/features";
 import { YahooMarketDataSource } from "../../../../src/engine/market/yahooMarketData";
 import { runFollowerEntries } from "../../../../src/engine/pipeline/accountCycle";
@@ -36,12 +38,13 @@ import { MarketContextStore } from "../../../../src/engine/pipeline/marketContex
 import { runPositionCycle, type PositionReport } from "../../../../src/engine/pipeline/positionCycle";
 import { quoteRows, runTradingCycle, type CycleReport } from "../../../../src/engine/pipeline/tradingCycle";
 import { SyntheticOptionQuotes } from "../../../../src/engine/pricing/syntheticOptionPricer";
-import { randomId, type Broker, type EngineDeps, type OptionQuoteSource } from "../../../../src/engine/ports";
+import { randomId, type Broker, type EngineDeps, type OptionQuoteSource, type Repository } from "../../../../src/engine/ports";
 import { entryMode } from "../../../../src/engine/settings";
 import type { EngineMode, EnginePhase, EngineSettings, Fill, Heartbeat, IndexId, MarketFeatures, Order, Position, TradingMode } from "../../../../src/engine/types";
 import { makeRefId } from "../../../../src/engine/util/refId";
+import { sendEntryAlert, sendExitAlert, sendTrailAlerts, type CopyAlertContext } from "../copyAlerts";
 import { CachedInstruments } from "../instruments";
-import { accountRuntime, enabledAccounts, errorMessage, growwDataClient, makeRuntime, relayClient, type AccountRuntime, type Runtime } from "../runtime";
+import { accountRuntime, accountViews, enabledAccounts, errorMessage, growwDataClient, makeRuntime, relayClient, type AccountRuntime, type Runtime } from "../runtime";
 import { Alerts } from "../telegram";
 
 const LOOP_MS = 30_000;
@@ -84,6 +87,8 @@ interface Follower extends AccountRuntime {
   alerts: Alerts;
   /** Consecutive failed steps (its own counter: it never degrades main). */
   errors: number;
+  /** Copy-trade alerts for this account. */
+  copy: CopyAlertContext;
 }
 
 const FOLLOWER_ALERT_AFTER_ERRORS = 5;
@@ -98,6 +103,8 @@ export class TradingEngineDO extends DurableObject<Env> {
   private readonly market: YahooMarketDataSource;
   private readonly instruments: CachedInstruments;
   private readonly alerts: Alerts;
+  /** Copy-trade alerts for main. */
+  private readonly copy: CopyAlertContext;
   private hot: HotState = { ...INITIAL_HOT };
   private relayHealth: { at: number; value: RelayHealth } | null = null;
   private ticking: Promise<number> | null = null;
@@ -151,12 +158,26 @@ export class TradingEngineDO extends DurableObject<Env> {
       allowSynthetic: () => this.entryModeNow === "PAPER",
     });
     this.alerts = new Alerts(env, repo.state, logger);
-    this.followers = enabledAccounts(env)
+    const ids = enabledAccounts(env);
+    const views = accountViews(this.rt, ids);
+    const view = (id: AccountId): AccountView => views.find((v) => v.id === id) ?? accountViews(this.rt, [id])[0];
+    const copyFor = (r: Repository, c: EngineConfig, account: AccountView, alerts: Alerts): CopyAlertContext => ({
+      repo: r,
+      cfg: c,
+      account,
+      alerts,
+      logger,
+      dashboardUrl: env.DASHBOARD_URL,
+      trailSent: new Set(),
+    });
+    this.copy = copyFor(repo, cfg, view("main"), this.alerts);
+    this.followers = ids
       .filter((id) => id !== "main")
       .map((id) => {
         const a = accountRuntime(this.rt, id);
         // Its alert dedupe keys live under the account's prefix (the scoped repo's state).
-        return { ...a, alerts: new Alerts(env, a.repo.state, logger), errors: 0 };
+        const alerts = new Alerts(env, a.repo.state, logger);
+        return { ...a, alerts, errors: 0, copy: copyFor(a.repo, a.cfg, view(id), alerts) };
       });
     void ctx.blockConcurrencyWhile(async () => {
       this.hot = { ...INITIAL_HOT, ...((await ctx.storage.get<HotState>("hot")) ?? {}) };
@@ -225,9 +246,8 @@ export class TradingEngineDO extends DurableObject<Env> {
       const r = await runFollowerEntries(this.followerDeps(f, calendar), report, { calendar, noEntries, decisionEveryMs: 5 * MINUTE_MS });
       for (const e of r.entries) {
         const d = r.decisions.find((x) => x.plan?.id === e.planId);
-        await f.alerts.send(
-          `📝 ${f.spec.shortLabel} ENTRY ${d?.plan?.contract.tradingSymbol ?? e.planId} x${d?.plan?.qty ?? "?"} @ ~₹${d?.plan?.limitPrice ?? d?.plan?.refPremium ?? "?"} (${e.status})`,
-        );
+        const short = `📝 ${f.spec.shortLabel} ENTRY ${d?.plan?.contract.tradingSymbol ?? e.planId} x${d?.plan?.qty ?? "?"} @ ~₹${d?.plan?.limitPrice ?? d?.plan?.refPremium ?? "?"} (${e.status})`;
+        await sendEntryAlert(f.copy, e.positionId, d?.plan ?? null, short);
       }
       if (r.halted && !noEntries) await f.alerts.send(`⏸ ${f.spec.shortLabel} entries halted: ${r.halted}`, { key: `halt:${istDate(r.t)}:${r.halted.slice(0, 40)}`, minIntervalMs: 6 * 60 * MINUTE_MS });
       if (r.errors.length) throw new Error(r.errors.join("; "));
@@ -241,8 +261,10 @@ export class TradingEngineDO extends DurableObject<Env> {
       for (const x of pr.exits) {
         const pos = await f.repo.positions.get(x.positionId);
         const pnl = pos && pos.status === "CLOSED" ? (pos.realized ?? 0) - pos.entryCharges - (pos.exitCharges ?? 0) : null;
-        await f.alerts.send(`📝 ${f.spec.shortLabel} EXIT ${pos?.contract.tradingSymbol ?? x.positionId} ${x.reason} (${x.status})${pnl !== null ? ` net ₹${pnl.toFixed(0)}` : ""}`);
+        const short = `📝 ${f.spec.shortLabel} EXIT ${pos?.contract.tradingSymbol ?? x.positionId} ${x.reason} (${x.status})${pnl !== null ? ` net ₹${pnl.toFixed(0)}` : ""}`;
+        await sendExitAlert(f.copy, x.positionId, short);
       }
+      await sendTrailAlerts(f.copy, "PAPER");
       for (const e of pr.errors) this.rt.logger.warn("follower position cycle error", { account: f.spec.id, error: e });
     });
   }
@@ -387,9 +409,8 @@ export class TradingEngineDO extends DurableObject<Env> {
     if (report.errors.length >= cfg.indices.length) throw new Error(`trading cycle failed: ${report.errors.join("; ")}`);
     for (const e of report.entries) {
       const d = report.decisions.find((x) => x.plan?.id === e.planId);
-      await this.alerts.send(
-        `${mode === "LIVE" ? "🔴 LIVE" : "📝 PAPER"} ENTRY ${d?.plan?.contract.tradingSymbol ?? e.planId} x${d?.plan?.qty ?? "?"} @ ~₹${d?.plan?.limitPrice ?? d?.plan?.refPremium ?? "?"} (${e.status}) conviction ${d?.conviction.score.toFixed(2) ?? "?"}`,
-      );
+      const short = `${mode === "LIVE" ? "🔴 LIVE" : "📝 PAPER"} ENTRY ${d?.plan?.contract.tradingSymbol ?? e.planId} x${d?.plan?.qty ?? "?"} @ ~₹${d?.plan?.limitPrice ?? d?.plan?.refPremium ?? "?"} (${e.status}) conviction ${d?.conviction.score.toFixed(2) ?? "?"}`;
+      await sendEntryAlert(this.copy, e.positionId, d?.plan ?? null, short);
     }
     if (report.halted) await this.alerts.send(`⏸ Entries halted: ${report.halted}`, { key: `halt:${istDate(now)}:${report.halted.slice(0, 40)}`, minIntervalMs: 6 * 60 * MINUTE_MS });
 
@@ -429,10 +450,10 @@ export class TradingEngineDO extends DurableObject<Env> {
     for (const x of pr.exits) {
       const pos = await this.rt.repo.positions.get(x.positionId);
       const pnl = pos && pos.status === "CLOSED" ? (pos.realized ?? 0) - pos.entryCharges - (pos.exitCharges ?? 0) : null;
-      await this.alerts.send(
-        `${book === "LIVE" ? "🔴 LIVE" : "📝 PAPER"} EXIT ${pos?.contract.tradingSymbol ?? x.positionId} ${x.reason} (${x.status})${pnl !== null ? ` net ₹${pnl.toFixed(0)}` : ""}`,
-      );
+      const short = `${book === "LIVE" ? "🔴 LIVE" : "📝 PAPER"} EXIT ${pos?.contract.tradingSymbol ?? x.positionId} ${x.reason} (${x.status})${pnl !== null ? ` net ₹${pnl.toFixed(0)}` : ""}`;
+      await sendExitAlert(this.copy, x.positionId, short);
     }
+    await sendTrailAlerts(this.copy, book);
     for (const e of pr.errors) this.rt.logger.warn("position cycle error", { book, error: e });
     return pr;
   }

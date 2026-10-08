@@ -1,0 +1,258 @@
+import { describe, expect, it } from "vitest";
+import { computeCharges } from "../broker/charges";
+import { istAt } from "../clock";
+import { NEUTRAL_INDICATORS, NEUTRAL_OPENING_RANGE } from "../market/features";
+import type { IndicatorView, OptionContract, Position, TradePlan } from "../types";
+import { accountTag, copyEntryText, copyExitText, copyLink, copyTicketView, copyTrailText, expiryLabel, setupReasons } from "./copyTicket";
+
+const T = istAt("2026-10-09", "10:20");
+const TEN_K = { id: "small10k", label: "₹10k account", shortLabel: "₹10k", paperOnly: true, capitalRupees: 10_000 };
+const MAIN = { id: "main", label: "Main account", shortLabel: "Main", paperOnly: false, capitalRupees: 500_000 };
+
+const contract: OptionContract = {
+  index: "NIFTY",
+  exchange: "NSE",
+  tradingSymbol: "NIFTY26O1325000PE",
+  growwSymbol: "NSE-NIFTY-13Oct26-25000-PE",
+  exchangeToken: "1",
+  expiry: "2026-10-13",
+  strike: 25000,
+  type: "PE",
+  lotSize: 65,
+  tickSize: 0.05,
+};
+
+const stops = { stopPct: -35, targetPct: 60, trailActivatePct: 30, trailGivebackPct: 50, timeStopMs: istAt("2026-10-09", "11:50"), squareOffMs: istAt("2026-10-09", "15:05") };
+
+const indicators: IndicatorView = {
+  ...NEUTRAL_INDICATORS,
+  rsi14: 38,
+  adx14: 24,
+  plusDi14: 17,
+  minusDi14: 28,
+  supertrendDir: -1,
+  vwap: 25_080,
+  vwapZ: -1.3,
+  prevDayClose: 25_200,
+  spot: 25_050,
+  atrPct5m: 0.08,
+  vwapDistPct: -0.12,
+  openingRange: { ...NEUTRAL_OPENING_RANGE, high: 25_160, low: 25_070, state: "BROKE_DOWN", strengthAtr: 0.4, barsOutside: 2, lastBreak: "DOWN" },
+};
+
+function plan(over: Partial<TradePlan> = {}): TradePlan {
+  return {
+    id: "plan1",
+    index: "NIFTY",
+    t: T,
+    side: "BEAR",
+    contract,
+    lots: 1,
+    qty: 65,
+    entryType: "LIMIT",
+    limitPrice: 62.5,
+    refPremium: 62.4,
+    refSpot: 25_050,
+    horizonMin: 90,
+    expectedMovePct: 0.4,
+    impliedMovePct: 0.3,
+    breakevenMovePct: 0.25,
+    edgeRatio: 1.33,
+    stops,
+    riskRupees: 1_420,
+    riskPct: 14.2,
+    kellyFraction: 0,
+    conviction: {
+      index: "NIFTY",
+      t: T,
+      score: -0.52,
+      components: [
+        { source: "MOMENTUM", value: -0.4, weight: 0.15, horizonMin: 60, enabled: true, notes: "z15 -1.2" },
+        { source: "ORB", value: -0.9, weight: 0.15, horizonMin: 90, enabled: true, notes: "below 25,070–25,160 by 0.40 ATR, 2 bars outside" },
+        { source: "GAP", value: 0, weight: 0.1, horizonMin: 60, enabled: true, abstain: true, notes: "undecided" },
+        { source: "VOL_REGIME", value: 0, weight: 0, horizonMin: 60, enabled: true, notes: "RV/IV 1.30: options cheap" },
+      ],
+      regime: "RANGE",
+      threshold: 0.45,
+      passes: true,
+      sizeMult: 1,
+      stance: "BEARISH",
+    },
+    gates: [{ gate: "quote", label: "Usable option quote", passed: true, detail: "synthetic bid 62.1 / ask 62.4" }],
+    dominantSource: "ORB",
+    indicators,
+    vix: 13.9,
+    retFromOpenPct: -0.4,
+    quoteSource: "synthetic",
+    ...over,
+  };
+}
+
+function position(over: Partial<Position> = {}): Position {
+  return {
+    id: "pos1",
+    planId: "plan1",
+    index: "NIFTY",
+    side: "BEAR",
+    contract,
+    mode: "PAPER",
+    qty: 65,
+    avgEntry: 62.4,
+    entryMs: T + 2_000,
+    entryCharges: 27.5,
+    status: "OPEN",
+    markPremium: 70.2,
+    markMs: T + 600_000,
+    peakPremium: 72,
+    unrealized: (70.2 - 62.4) * 65,
+    stops,
+    horizonMin: 90,
+    convictionAtEntry: -0.52,
+    regimeAtEntry: "RANGE",
+    dominantSource: "ORB",
+    attribution: [],
+    eventKeysAtEntry: [],
+    maePct: -3,
+    mfePct: 15.4,
+    ...over,
+  };
+}
+
+describe("copy ticket", () => {
+  it("says what to buy, at which levels, with the risk in rupees", () => {
+    const t = copyTicketView({ position: position(), plan: plan(), account: TEN_K, timeStopMinPnlPct: 10 });
+    expect(t.headline).toBe("BUY NIFTY 25000 PE (13 Oct)");
+    expect(t.searchText).toBe("NIFTY 25000 PE");
+    expect(t.expiryLabel).toBe("Tue 13 Oct");
+    expect(t.qty).toBe(65);
+    expect(t.lots).toBe(1);
+    expect(t.entry.premium).toBe(62.4);
+    expect(t.entry.costRupees).toBeCloseTo(4_056, 2);
+    expect(t.entry.priceSource).toBe("model");
+    expect(t.levels.stop).toBeCloseTo(40.56, 2);
+    expect(t.levels.target).toBeCloseTo(99.84, 2);
+    expect(t.levels.trailActivateAt).toBeCloseTo(81.12, 2);
+    expect(t.levels.trail).toBeNull();
+    expect(t.levels.timeStopAt).toBe("2026-10-09T11:50:00+05:30");
+    const expectedRisk = (62.4 - 40.56) * 65 + 27.5 + computeCharges("SELL", 40.56, 65, "NSE", "2026-10-09").total;
+    expect(t.riskAtStop.rupees).toBe(Math.round(expectedRisk));
+    expect(t.riskAtStop.pctOfCapital).toBeCloseTo((expectedRisk / 10_000) * 100, 1);
+  });
+
+  it("puts the skip level half the expected move past the entry, in the trade's direction", () => {
+    const bear = copyTicketView({ position: position(), plan: plan(), account: TEN_K, timeStopMinPnlPct: 10 });
+    expect(bear.entry.skipBeyondSpot).toBeCloseTo(25_050 * (1 - 0.002), 2);
+    const bull = copyTicketView({ position: position({ side: "BULL" }), plan: plan({ side: "BULL" }), account: TEN_K, timeStopMinPnlPct: 10 });
+    expect(bull.entry.skipBeyondSpot).toBeCloseTo(25_050 * 1.002, 2);
+    expect(bull.steps.join(" ")).toContain("already above 25,100");
+  });
+
+  it("marks an open trade and reports a closed one after all charges", () => {
+    const open = copyTicketView({ position: position(), plan: plan(), account: TEN_K, timeStopMinPnlPct: 10 });
+    expect(open.live?.movePct).toBeCloseTo(12.5, 1);
+    expect(open.live?.pnl).toBeCloseTo((70.2 - 62.4) * 65 - 27.5, 2);
+    expect(open.exit).toBeNull();
+
+    const closed = copyTicketView({
+      position: position({ status: "CLOSED", qty: 0, exitedQty: 65, exitMs: T + 42 * 60_000, avgExit: 99.9, exitReason: "TARGET", realized: (99.9 - 62.4) * 65, exitCharges: 41 }),
+      plan: plan(),
+      account: TEN_K,
+      timeStopMinPnlPct: 10,
+    });
+    expect(closed.qty).toBe(65);
+    expect(closed.live).toBeNull();
+    expect(closed.levels.trail).toBeNull();
+    expect(closed.exit).toMatchObject({ reason: "TARGET", reasonText: "Target hit", holdMin: 42 });
+    expect(closed.exit!.pnl).toBeCloseTo((99.9 - 62.4) * 65 - 27.5 - 41, 2);
+    expect(closed.exit!.movePct).toBeCloseTo(60.1, 1);
+  });
+
+  it("explains the setup from the signals that voted, strongest first", () => {
+    const reasons = setupReasons(plan());
+    expect(reasons[0]).toMatch(/^Opening-range breakout, bearish \(69% of the vote\): below 25,070–25,160/);
+    expect(reasons[1]).toMatch(/^Intraday momentum, bearish \(31% of the vote\)/);
+    expect(reasons.at(-1)).toBe("Volatility: RV/IV 1.30: options cheap");
+    const t = copyTicketView({ position: position(), plan: plan(), account: TEN_K, timeStopMinPnlPct: 10 });
+    expect(t.setup?.components.map((c) => c.source)).toEqual(["ORB", "MOMENTUM", "GAP", "VOL_REGIME"]);
+    expect(t.market.changePct).toBeCloseTo((25_050 / 25_200 - 1) * 100, 2);
+  });
+
+  it("falls back for older plans: decision readings and the quote gate's source", () => {
+    const old = plan({ indicators: undefined, vix: undefined, quoteSource: undefined, gates: [{ gate: "quote", label: "q", passed: true, detail: "groww bid 61 / ask 62.4" }] });
+    const t = copyTicketView({ position: position(), plan: old, account: TEN_K, timeStopMinPnlPct: 10, fallbackIndicators: indicators });
+    expect(t.market.indicators?.rsi14).toBe(38);
+    expect(t.market.vix).toBeNull();
+    expect(t.entry.priceSource).toBe("broker");
+    const none = copyTicketView({ position: position(), plan: null, account: TEN_K, timeStopMinPnlPct: 10 });
+    expect(none.setup).toBeNull();
+    expect(none.entry.skipBeyondSpot).toBeNull();
+  });
+
+  it("formats SENSEX tickets with its own lot size", () => {
+    const sx: OptionContract = { ...contract, index: "SENSEX", exchange: "BSE", tradingSymbol: "SENSEX26O1582000CE", strike: 82_000, type: "CE", lotSize: 20, expiry: "2026-10-15" };
+    const t = copyTicketView({ position: position({ index: "SENSEX", side: "BULL", contract: sx, qty: 20, avgEntry: 180 }), plan: null, account: TEN_K, timeStopMinPnlPct: 10 });
+    expect(t.headline).toBe("BUY SENSEX 82000 CE (15 Oct)");
+    expect(t.expiryLabel).toBe("Thu 15 Oct");
+    expect(t.lots).toBe(1);
+    expect(t.entry.costRupees).toBe(3_600);
+  });
+});
+
+describe("copy alert texts", () => {
+  const open = copyTicketView({ position: position(), plan: plan(), account: TEN_K, timeStopMinPnlPct: 10 });
+  const link = copyLink("https://dash.example.dev/", open);
+
+  it("links to the ticket on the copy page (account only when not main)", () => {
+    expect(link).toBe("https://dash.example.dev/copy?account=small10k&id=pos1");
+    const m = copyTicketView({ position: position(), plan: plan(), account: MAIN, timeStopMinPnlPct: 10 });
+    expect(copyLink("https://dash.example.dev", m)).toBe("https://dash.example.dev/copy?id=pos1");
+    expect(copyLink(undefined, m)).toBeNull();
+    expect(copyLink("not a url", m)).toBeNull();
+  });
+
+  it("tags accounts by their capital", () => {
+    expect(accountTag(TEN_K)).toBe("₹10k");
+    expect(accountTag(MAIN)).toBe("Main ₹5L");
+  });
+
+  it("has everything needed to copy the entry", () => {
+    const text = copyEntryText(open, link);
+    expect(text.split("\n")[0]).toBe("🟢 COPY ₹10k · BUY NIFTY 25000 PE (13 Oct)");
+    expect(text).toContain("1 lot = 65 qty · paper fill ₹62.40 (model price: check the real one) · cost ₹4,056");
+    expect(text).toContain("Skip if NIFTY is already below 25,000 (it was 25,050)");
+    expect(text).toContain("Stop −35% → ₹40.56 · Target +60% → ₹99.84");
+    expect(text).toContain("time stop 11:50 unless +10% · out by 15:05");
+    expect(text).toContain("Why: bearish −0.52 (needs 0.45) on a range-bound day");
+    expect(text).toContain("• Opening-range breakout, bearish");
+    expect(text).toContain("Edge: expects 0.40% vs 0.30% priced in over 90 min (×1.33)");
+    expect(text).toContain("NIFTY 25,050 (−0.60% on the day) · VWAP 25,080 (−1.3σ) · opening range 25,070–25,160 broken downward · RSI 38 · ADX 24 (+DI 17 / −DI 28) · Supertrend down · VIX 13.9");
+    expect(text.endsWith(link!)).toBe(true);
+    expect(text.length).toBeLessThan(4000);
+  });
+
+  it("announces the trailing stop once the trail is on", () => {
+    expect(copyTrailText(open, link)).toBeNull();
+    const peaked = copyTicketView({ position: position({ peakPremium: 90, markPremium: 88 }), plan: plan(), account: TEN_K, timeStopMinPnlPct: 10 });
+    const text = copyTrailText(peaked, null)!;
+    expect(text.split("\n")[0]).toBe("🟡 COPY ₹10k · NIFTY 25000 PE (13 Oct): trailing stop on");
+    expect(text).toContain(`falls to ₹${((90 + 62.4) / 2).toFixed(2)}`);
+  });
+
+  it("tells the copier to sell, with the paper result", () => {
+    expect(copyExitText(open, link)).toBeNull();
+    const closed = copyTicketView({
+      position: position({ status: "CLOSED", qty: 0, exitedQty: 65, exitMs: T + 42 * 60_000, avgExit: 40.5, exitReason: "STOP", realized: (40.5 - 62.4) * 65, exitCharges: 40 }),
+      plan: plan(),
+      account: TEN_K,
+      timeStopMinPnlPct: 10,
+    });
+    const text = copyExitText(closed, link)!;
+    expect(text.split("\n")[0]).toBe("🔴 COPY ₹10k · SELL NIFTY 25000 PE (13 Oct) now");
+    expect(text).toContain("Stop-loss hit · paper ₹62.40 → ₹40.50 (−35.1%) · −₹1,491 after charges ❌");
+    expect(text).toContain("Held 42 min");
+  });
+
+  it("labels expiries with the weekday", () => {
+    expect(expiryLabel("2026-10-15")).toBe("Thu 15 Oct");
+  });
+});

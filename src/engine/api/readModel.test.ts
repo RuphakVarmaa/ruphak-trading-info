@@ -6,7 +6,7 @@ import { DEFAULT_CONFIG } from "../config";
 import { sample } from "../repo/contract";
 import { accountRepository } from "../repo/accountRepo";
 import { InMemoryRepository } from "../repo/memory";
-import type { Conviction, Fill, OptionContract, Order, PlanDecision, Position } from "../types";
+import type { Conviction, Fill, OptionContract, Order, PlanDecision, Position, TradePlan } from "../types";
 import { ReadModel, llmUsageKey, positionView } from "./readModel";
 
 const NOW = istAt("2026-10-07", "11:00");
@@ -220,6 +220,54 @@ describe("read model for the ₹10k account", () => {
     expect(smallOrders.fills.map((f) => f.id)).toEqual(["fs"]);
     expect((await main.getPositions()).map((p) => p.id)).toEqual(["pm"]);
     expect((await tenK.getPositions()).map((p) => p.id)).toEqual(["ps"]);
+  });
+
+  it("lists each account's own trades of the day as copy tickets, open first", async () => {
+    const { base, small, main, tenK } = await setupBoth();
+    const plan = (id: string): TradePlan =>
+      ({ id, index: "NIFTY", t: NOW - 30 * 60_000, side: "BEAR", contract, lots: 1, qty: 65, entryType: "LIMIT", refPremium: 100, refSpot: 22_650, horizonMin: 90, expectedMovePct: 0.4, impliedMovePct: 0.3, breakevenMovePct: 0.2, edgeRatio: 1.3, stops: position().stops, riskRupees: 2_000, riskPct: 0.4, kellyFraction: 0, conviction: conviction(-0.6), gates: [], dominantSource: "EVENT" }) as TradePlan;
+    await base.plans.save(plan("plan-m"));
+    await small.plans.save(plan("plan-s"));
+    await base.positions.save(position({ id: "m-open", planId: "plan-m" }));
+    await base.positions.save(position({ id: "m-closed", planId: "plan-m", entryMs: NOW - 90 * 60_000, status: "CLOSED", qty: 0, exitedQty: 65, exitMs: NOW - 60 * 60_000, avgExit: 130, exitReason: "TARGET", realized: 1_950, exitCharges: 40 }));
+    await base.positions.save(position({ id: "m-yesterday", planId: "plan-m", entryMs: NOW - 86_400_000, status: "CLOSED", qty: 0, exitedQty: 65, exitMs: NOW - 86_000_000, avgExit: 90, exitReason: "STOP", realized: -650, exitCharges: 40 }));
+    await small.positions.save(position({ id: "s-open", planId: "plan-s" }));
+
+    const mine = await main.getCopyTickets("2026-10-07");
+    expect(mine.map((t) => [t.id, t.status])).toEqual([["m-open", "OPEN"], ["m-closed", "CLOSED"]]);
+    expect(mine[0].account.id).toBe("main");
+    expect(mine[0].setup?.conviction).toBe(-0.6);
+    expect(mine[1].exit?.pnl).toBeCloseTo(1_950 - 28 - 40, 2);
+    const theirs = await tenK.getCopyTickets("2026-10-07");
+    expect(theirs.map((t) => t.id)).toEqual(["s-open"]);
+    expect(theirs[0].account).toMatchObject({ id: "small10k", capitalRupees: 10_000 });
+    // Other days list only their own trades (today's open position is not one of them).
+    expect((await main.getCopyTickets("2026-10-06")).map((t) => [t.id, t.exit?.reason])).toEqual([["m-yesterday", "STOP"]]);
+    expect(await main.getCopyTickets("2026-10-05")).toEqual([]);
+  });
+
+  it("shows readings from main's decision for plans made before plans carried them", async () => {
+    const { base, main } = await setupBoth();
+    const d: PlanDecision = {
+      id: "d1",
+      index: "NIFTY",
+      t: NOW - 30 * 60_000,
+      conviction: conviction(-0.6),
+      gates: [],
+      plan: { id: "plan-old", index: "NIFTY", t: NOW - 30 * 60_000, side: "BEAR", contract, lots: 1, qty: 65, entryType: "LIMIT", refPremium: 100, refSpot: 22_650, horizonMin: 90, expectedMovePct: 0.4, impliedMovePct: 0.3, breakevenMovePct: 0.2, edgeRatio: 1.3, stops: position().stops, riskRupees: 2_000, riskPct: 0.4, kellyFraction: 0, conviction: conviction(-0.6), gates: [], dominantSource: "EVENT" },
+      contract,
+      refPremium: 100,
+      expectedMovePct: 0.4,
+      impliedMovePct: 0.3,
+      edgeRatio: 1.3,
+      noPlanReason: null,
+      indicators: { rsi14: 41 } as PlanDecision["indicators"],
+    };
+    await base.decisions.append(d);
+    await base.plans.save(d.plan!);
+    await base.positions.save(position({ id: "p-old", planId: "plan-old" }));
+    const [t] = await main.getCopyTickets("2026-10-07");
+    expect(t.market.indicators?.rsi14).toBe(41);
   });
 
   it("shows its own kill switch, not main's", async () => {

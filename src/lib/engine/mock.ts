@@ -13,6 +13,7 @@ import type {
   BacktestParams,
   BacktestResult,
   ChargesView,
+  CopyTicketView,
   DailyPnlView,
   EngineApi,
   EngineMode,
@@ -62,6 +63,8 @@ import {
   type QuoteSeed,
   type SignalSeed,
 } from "./fixtures";
+import { copyTicketView } from "@/engine/copy/copyTicket";
+import type { Position, TradePlan } from "@/engine/types";
 import { simulateBacktest } from "./mockBacktest";
 import { clamp, hashString, round2 } from "./random";
 
@@ -502,6 +505,88 @@ export class MockEngineApi implements EngineApi {
     };
   }
 
+  /** The open position as a copy ticket, built by the engine's own builder from the fixture. */
+  private copyTicket(pos: PositionSeed, now: number): CopyTicketView {
+    const seed = this.seed.signals.find((s) => s.index === pos.index);
+    const mark = this.mark(pos, now);
+    const c = pos.contract;
+    const side = c.optionType === "CE" ? "BULL" : "BEAR";
+    const stops = {
+      stopPct: pos.stopPct,
+      targetPct: pos.targetPct,
+      trailActivatePct: pos.trailActivatePct,
+      trailGivebackPct: pos.trailGivebackPct,
+      timeStopMs: pos.timeStopAt,
+      squareOffMs: pos.squareOffAt,
+    };
+    const position: Position = {
+      id: pos.id,
+      planId: pos.planId,
+      index: pos.index,
+      side,
+      contract: { index: c.index, exchange: c.index === "NIFTY" ? "NSE" : "BSE", tradingSymbol: c.tradingSymbol, growwSymbol: "", exchangeToken: "", expiry: c.expiry, strike: c.strike, type: c.optionType, lotSize: c.lotSize, tickSize: 0.05 },
+      mode: "PAPER",
+      qty: pos.qty,
+      avgEntry: pos.avgPrice,
+      entryMs: pos.openedAt,
+      entryCharges: pos.entryCharges,
+      status: "OPEN",
+      markPremium: mark,
+      markMs: now - 3000,
+      peakPremium: Math.max(pos.peak, mark),
+      unrealized: (mark - pos.avgPrice) * pos.qty,
+      stops,
+      horizonMin: Math.round((pos.timeStopAt - pos.openedAt) / MINUTE_MS),
+      convictionAtEntry: seed?.baseConviction ?? 0,
+      regimeAtEntry: seed?.regime ?? "RANGE",
+      dominantSource: pos.dominantSource,
+      attribution: [],
+      eventKeysAtEntry: [],
+      maePct: 0,
+      mfePct: round2((Math.max(pos.peak, mark) / pos.avgPrice - 1) * 100),
+    };
+    const plan: TradePlan | null = seed
+      ? {
+          id: pos.planId,
+          index: pos.index,
+          t: pos.openedAt,
+          side,
+          contract: position.contract,
+          lots: c.lots,
+          qty: pos.qty,
+          entryType: "LIMIT",
+          refPremium: pos.avgPrice,
+          refSpot: pos.entrySpot,
+          horizonMin: position.horizonMin,
+          expectedMovePct: round2(Math.abs(seed.baseConviction) * seed.impliedMovePct),
+          impliedMovePct: seed.impliedMovePct,
+          breakevenMovePct: round2(seed.impliedMovePct * 0.8),
+          edgeRatio: 0.21,
+          stops,
+          riskRupees: round2(pos.avgPrice * pos.qty * Math.abs(pos.stopPct / 100)),
+          riskPct: 0.6,
+          kellyFraction: 0.25,
+          conviction: {
+            index: pos.index,
+            t: pos.openedAt,
+            score: seed.baseConviction,
+            components: seed.components.map((x) => ({ ...x, horizonMin: 60 })),
+            regime: seed.regime,
+            threshold: seed.threshold,
+            passes: true,
+            sizeMult: 1,
+            stance: seed.stance,
+          },
+          gates: seed.gates,
+          dominantSource: pos.dominantSource,
+          indicators: { ...seed.indicators, spot: pos.entrySpot },
+          quoteSource: "synthetic",
+        }
+      : null;
+    const account = { id: "main", label: "Main account", shortLabel: "Main", paperOnly: false, capitalRupees: this.seed.startingEquity };
+    return copyTicketView({ position, plan, account, timeStopMinPnlPct: 10 });
+  }
+
   // -------------------------------------------------------------------------
   // EngineApi: reads
   // -------------------------------------------------------------------------
@@ -519,6 +604,11 @@ export class MockEngineApi implements EngineApi {
   async getPositions(): Promise<PositionView[]> {
     const now = this.read();
     return clone(this.positions.map((p) => this.positionView(p, now)));
+  }
+
+  async getCopyTickets(date: string): Promise<CopyTicketView[]> {
+    const now = this.read();
+    return clone(this.positions.filter((p) => istDate(p.openedAt) === date).map((p) => this.copyTicket(p, now)));
   }
 
   async getEvents(q: EventsQuery): Promise<EventClusterView[]> {

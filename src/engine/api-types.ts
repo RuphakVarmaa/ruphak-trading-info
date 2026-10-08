@@ -379,6 +379,100 @@ export interface ScheduledEventView {
 }
 
 // ---------------------------------------------------------------------------
+// Copy trading
+// ---------------------------------------------------------------------------
+
+/** One paper trade laid out for a person to repeat by hand in their own broker account. */
+export interface CopyTicketView {
+  /** Position id. */
+  id: string;
+  planId: string;
+  account: { id: string; label: string; shortLabel: string; capitalRupees: number };
+  mode: TradingMode;
+  status: "OPEN" | "CLOSED";
+  index: IndexId;
+  side: "BULL" | "BEAR";
+  /** e.g. "BUY NIFTY 25000 PE (13 Oct)". */
+  headline: string;
+  contract: SuggestedContract & { growwSymbol: string };
+  /** What to type into a broker app's search box, e.g. "NIFTY 25000 PE". */
+  searchText: string;
+  /** e.g. "Tue 13 Oct". */
+  expiryLabel: string;
+  qty: number;
+  lots: number;
+  entry: {
+    at: string;
+    /** The paper fill. */
+    premium: number;
+    costRupees: number;
+    charges: number;
+    /** "model": Black-Scholes on India VIX (a broker's real price will differ); "broker": a Groww quote. */
+    priceSource: "model" | "broker";
+    /** Index level when the trade was planned. */
+    spot: number;
+    /**
+     * Index level past which the copy is probably too late: half the expected move already happened
+     * in the trade's direction (below it for puts, above it for calls). Null without an expected move.
+     */
+    skipBeyondSpot: number | null;
+  };
+  levels: {
+    stopPct: number;
+    stop: number;
+    targetPct: number;
+    target: number;
+    trailActivatePct: number;
+    trailActivateAt: number;
+    /** Share of the peak gain the trail gives back before it sells, percent. */
+    trailGivebackPct: number;
+    /** Current trailing-stop level once the trail is on, else null. */
+    trail: number | null;
+    timeStopAt: string;
+    /** The time stop sells at timeStopAt unless the trade is up at least this much, percent. */
+    timeStopMinPnlPct: number;
+    squareOffAt: string;
+  };
+  /** Loss if the stop is hit (price move plus charges), rupees and percent of the account's capital. */
+  riskAtStop: { rupees: number; pctOfCapital: number };
+  /**
+   * Open trades: the engine's latest mark. `pnl` is after entry charges; `movePct` is the premium's change
+   * since entry (the stop, target and trail are set on it); mfe/mae are its best and worst so far.
+   */
+  live: { mark: number; markAt: string | null; pnl: number; movePct: number; peak: number; mfePct: number; maePct: number } | null;
+  /** Closed trades. `pnl` is after all charges; `movePct` is the exit premium versus the entry. */
+  exit: { at: string; premium: number; reason: OrderReason; reasonText: string; pnl: number; movePct: number; holdMin: number } | null;
+  /** Why the engine took the trade (null when the plan record is missing). */
+  setup: {
+    stance: Stance;
+    conviction: number;
+    threshold: number;
+    regime: Regime;
+    dominantSource: SignalSource;
+    expectedMovePct: number;
+    impliedMovePct: number;
+    breakevenMovePct: number;
+    edgeRatio: number;
+    horizonMin: number;
+    /** Voting signals first, strongest contribution first. */
+    components: SignalComponentView[];
+    gates: GateResult[];
+    /** Plain-language reasons, strongest first. */
+    reasons: string[];
+  } | null;
+  /** The index when the trade was planned. */
+  market: {
+    spot: number;
+    /** Percent versus the previous close (null without one). */
+    changePct: number | null;
+    vix: number | null;
+    indicators: IndicatorView | null;
+  };
+  /** Numbered steps for copying this trade by hand. */
+  steps: string[];
+}
+
+// ---------------------------------------------------------------------------
 // Backtests
 // ---------------------------------------------------------------------------
 
@@ -484,6 +578,8 @@ export interface EngineApi {
   getPerformance(account?: string): Promise<SignalPerformanceRow[]>;
   getScheduled(hours: number): Promise<ScheduledEventView[]>;
   getBacktest(runId: string): Promise<BacktestResult | null>;
+  /** The account's trades opened on an IST date YYYY-MM-DD as copy tickets: open ones first, then newest first. */
+  getCopyTickets(date: string, account?: string): Promise<CopyTicketView[]>;
 
   /** Admin methods re-check the token inside the engine (defense in depth). */
   verifyAdmin(token: string): Promise<boolean>;

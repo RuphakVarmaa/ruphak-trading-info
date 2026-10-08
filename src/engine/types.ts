@@ -500,6 +500,13 @@ export interface TradePlan {
   gates: GateResult[];
   /** Dominant signal source at entry (largest |weight * value|). */
   dominantSource: SignalSource;
+  /** Market readings the plan was made on, for the copy-trade view (absent on older plans). */
+  indicators?: IndicatorView;
+  vix?: number;
+  /** The index's move since today's open, percent. */
+  retFromOpenPct?: number;
+  /** Where the entry premium came from: a broker quote or the model. */
+  quoteSource?: Quote["source"];
 }
 
 /** Result of planning for one index on one tick, including the no-trade case. */

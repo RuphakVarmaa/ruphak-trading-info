@@ -9,6 +9,7 @@ import {
   taxonomyTab,
   type AccountView,
   type ChargesView,
+  type CopyTicketView,
   type DailyPnlView,
   type EngineStateDTO,
   type EventClusterDetail,
@@ -31,6 +32,7 @@ import {
 import type { TradingCalendar } from "../calendar/calendar";
 import { DAY_MS, HOUR_MS, MINUTE_MS, addDays, istAt, istDate, istIso, istMidnight } from "../clock";
 import type { EngineConfig } from "../config";
+import { copyTicketView } from "../copy/copyTicket";
 import { classifySeverity } from "../events/lexicon";
 import { CONFIDENCE_VALUE, MAGNITUDE_MIDPOINT_PCT, MAGNITUDE_VALUE } from "../events/taxonomy";
 import type { Repository } from "../ports";
@@ -45,6 +47,7 @@ import {
   type EngineSettings,
   type EventPressure,
   type IndexId,
+  type IndicatorView,
   type OptionContract,
   type PlanDecision,
   type Position,
@@ -479,6 +482,29 @@ export class ReadModel {
         .sort((a, b) => b.t - a.t)
         .map((f) => ({ id: f.id, orderId: f.orderId, at: istIso(f.t), price: f.price, qty: f.qty, charges: round2(f.charges.total) })),
     };
+  }
+
+  /** Trades opened on an IST date as copy tickets: open ones first, then newest first. */
+  async getCopyTickets(date: string): Promise<CopyTicketView[]> {
+    const { repo, cfg } = this.ctx;
+    const from = istMidnight(date);
+    const to = from + DAY_MS - 1;
+    const lists = await Promise.all([repo.positions.open("PAPER"), repo.positions.open("LIVE"), repo.positions.closedBetween(from, to, "PAPER"), repo.positions.closedBetween(from, to, "LIVE")]);
+    const positions = new Map<string, Position>();
+    for (const p of lists.flat()) if (p.entryMs >= from && p.entryMs <= to && !positions.has(p.id)) positions.set(p.id, p);
+    const account = this.ctx.account ?? { id: "main", label: "Main account", shortLabel: "Main", paperOnly: false, capitalRupees: cfg.capitalRupees };
+    const out: CopyTicketView[] = [];
+    for (const p of positions.values()) {
+      const plan = await repo.plans.get(p.planId);
+      // Plans made before they carried their own readings: use main's decision for the same plan.
+      let fallbackIndicators: IndicatorView | null = null;
+      if (!plan?.indicators) {
+        const t = plan?.t ?? p.entryMs;
+        fallbackIndicators = (await repo.decisions.between(t - MINUTE_MS, t + MINUTE_MS)).find((d) => d.plan?.id === p.planId)?.indicators ?? null;
+      }
+      out.push(copyTicketView({ position: p, plan, account, timeStopMinPnlPct: cfg.exits.timeStopMinPnlPct, fallbackIndicators }));
+    }
+    return out.sort((a, b) => (a.status === b.status ? Date.parse(b.entry.at) - Date.parse(a.entry.at) : a.status === "OPEN" ? -1 : 1));
   }
 
   async getPnl(days: number): Promise<PnlResponse> {
