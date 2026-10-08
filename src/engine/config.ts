@@ -466,6 +466,17 @@ export function parseIndices(raw: string | undefined): IndexId[] | undefined {
   return out.length > 0 ? out : undefined;
 }
 
+/**
+ * Parses the most positions that may be open on one index (an integer from 1 to 3). Anything else
+ * returns undefined, so the default of 1 stays.
+ */
+export function parseMaxOpenPerIndex(raw: string | undefined): number | undefined {
+  const text = (raw ?? "").trim();
+  if (!/^\d+$/.test(text)) return undefined;
+  const n = Number(text);
+  return n >= 1 && n <= 3 ? n : undefined;
+}
+
 /** Returns DEFAULT_CONFIG overridden by `overrides`, validated. Throws on invalid values. */
 export function makeConfig(overrides: DeepPartial<EngineConfig> = {}): EngineConfig {
   return withOverrides(DEFAULT_CONFIG, overrides);
