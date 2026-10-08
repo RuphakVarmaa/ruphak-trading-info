@@ -1,17 +1,16 @@
 "use client";
 
 import { useEffect, useId, useState, type CSSProperties, type ReactNode } from "react";
-import { ACCOUNTS, type AccountId } from "@/engine/accounts";
 import type { BacktestParams, BacktestResult, IndexId } from "@/engine/api-types";
 import { storeAdminToken, useStoredAdminToken, verifyAdminToken } from "@/hooks/adminToken";
-import { EnvelopeError, errorText, fetchEnvelope } from "@/hooks/engineFetch";
+import { EnvelopeError, fetchEnvelope } from "@/hooks/engineFetch";
 import EquityCurve from "@/components/Blotter/EquityCurve";
 import { SignalPerformanceTable } from "@/components/Blotter/Tables";
 import { alpha, C, pnlColor } from "@/components/shared/colors";
 import { enumLabel, fmtInr, fmtIstDate, fmtIstHm, fmtNum, fmtPct, fmtSigned } from "@/components/shared/format";
 import { Btn, inputStyle, PageHeader, Panel, PanelHeader, Pill, Segmented, StatTile, tableStyle, tableWrap, td, tdNum, th, theadRow, thNum } from "@/components/shared/ui";
 import { SERIF } from "@/components/shared/theme";
-import { paramsToQuery } from "@/lib/backtestParams";
+import { BACKTEST_ACCOUNTS, backtestAccount, paramsToQuery, type BacktestAccount } from "@/lib/backtestParams";
 
 interface FormState {
   from: string;
@@ -25,11 +24,39 @@ interface FormState {
   noEvents: boolean;
 }
 
-/** Each account's own default stop and target (percent of premium), shown when it is picked. */
-const ACCOUNT_EXITS: Record<string, { stopPct: number; targetPct: number }> = {
-  main: { stopPct: -30, targetPct: 50 },
-  small10k: { stopPct: ACCOUNTS.small10k.configPatch.exits?.stopPct ?? -35, targetPct: ACCOUNTS.small10k.configPatch.exits?.targetPct ?? 60 },
-};
+/** Each account's own default stop and target (percent of premium), read from its config patch and applied when it is picked. */
+const ACCOUNT_EXITS: Record<string, { stopPct: number; targetPct: number }> = Object.fromEntries(
+  BACKTEST_ACCOUNTS.map((a) => [a.id, { stopPct: a.stopPct, targetPct: a.targetPct }]),
+);
+
+/** "₹5L", "₹10k", "₹5k": the account's capital in a few characters. */
+const fmtCapitalShort = (rupees: number) =>
+  rupees >= 100_000 ? `₹${Number((rupees / 100_000).toFixed(1))}L` : rupees >= 1000 ? `₹${Number((rupees / 1000).toFixed(1))}k` : `₹${rupees}`;
+
+/** The toggle's label: the short label, plus the capital when the label does not already say it. */
+const accountOptionLabel = (a: BacktestAccount) =>
+  a.shortLabel.includes(fmtCapitalShort(a.capitalRupees)) ? a.shortLabel : `${a.shortLabel} ${fmtCapitalShort(a.capitalRupees)}`;
+
+/** The account's capital and default exits in one line, from its registry entry. */
+function accountHint(a: BacktestAccount): string {
+  const base = `${fmtInr(a.capitalRupees, { decimals: 0 })} capital; default stop ${a.stopPct}% and target +${a.targetPct}% of premium`;
+  return a.id === "main" ? `${base}.` : `${base}. Follows the main account's signals, which replay alongside it.`;
+}
+
+/**
+ * A plain sentence for a failed request, never an error code. The engine's own wording is kept only
+ * for rejected settings, where it names the field to fix.
+ */
+function plainError(err: unknown): string {
+  if (err instanceof EnvelopeError) {
+    if (err.status === 401 || err.code === "UNAUTHORIZED") return "The admin token was not accepted. Enter it again.";
+    if (err.code === "BAD_REQUEST") return err.message ? `The engine did not accept these settings: ${err.message}` : "The engine did not accept these settings.";
+    if (err.code === "CONFLICT") return "Another backtest is still running. Wait for it to finish, then run again.";
+    if (err.code === "ADMIN_DISABLED") return "Backtests are switched off on this deployment because no admin token is configured.";
+    if (err.code === "NOT_FOUND") return "The engine does not know this run. It may have expired.";
+  }
+  return "The engine did not answer. Check your connection and try again in a moment.";
+}
 
 const toForm = (p: BacktestParams): FormState => ({
   from: p.from,
@@ -130,7 +157,7 @@ function TokenGate() {
     void verifyAdminToken(candidate).then((res) => {
       setBusy(false);
       if (res.ok) storeAdminToken(candidate);
-      else setError(res.code === "UNAUTHORIZED" ? "Token rejected." : res.error);
+      else setError(res.code === "UNAUTHORIZED" ? "That token was not accepted." : "The token could not be checked because the engine did not answer. Try again in a moment.");
     });
   };
   return (
@@ -186,7 +213,15 @@ function RunStatus({ result, runId }: { result: BacktestResult | null; runId: st
   if (result.status === "ERROR") {
     return (
       <div role="alert" style={{ fontSize: 14, color: C.red, background: alpha(C.red, 0.06), border: `1px solid ${alpha(C.red, 0.3)}`, borderRadius: 14, padding: "14px 18px" }}>
-        ✗ Run {runId} failed: {result.error ?? "unknown error"}
+        ✗ This run stopped before it finished, so it has no results. Run it again, or pick a shorter period.
+        {result.error && (
+          <details style={{ marginTop: 8, fontSize: 12.5, color: C.textSoft }}>
+            <summary style={{ cursor: "pointer", color: C.muted }}>Details</summary>
+            <div style={{ marginTop: 6, overflowWrap: "anywhere" }}>
+              Run {runId}: {result.error}
+            </div>
+          </details>
+        )}
       </div>
     );
   }
@@ -195,7 +230,7 @@ function RunStatus({ result, runId }: { result: BacktestResult | null; runId: st
       <span style={{ color: C.green, fontWeight: 700 }}>✓ Completed</span>
       <span>
         {result.params.from} → {result.params.to} · {result.params.index === "BOTH" ? "NIFTY + SENSEX" : result.params.index}
-        {result.params.account && result.params.account !== "main" ? <> · {ACCOUNTS[result.params.account as AccountId]?.label ?? result.params.account}</> : null}
+        {result.params.account && result.params.account !== "main" ? <> · {BACKTEST_ACCOUNTS.find((a) => a.id === result.params.account)?.label ?? result.params.account}</> : null}
         {result.finishedAt && <> · finished {fmtIstHm(result.finishedAt)} IST</>}
       </span>
       <span style={{ color: C.muted3 }}>run {runId}</span>
@@ -255,8 +290,8 @@ function Results({ result }: { result: BacktestResult }) {
         <StatTile label="Trades" value={String(s.trades)} sub={`${s.tradesPerDay.toFixed(2)} per day · avg hold ${s.avgHoldingMin} min`} />
         <StatTile label="Hit rate" value={fmtPct(s.hitRate * 100, 1, false)} sub="winning trades after costs" />
         <StatTile label="Expectancy" value={fmtPct(s.expectancyPct, 1)} color={pnlColor(s.expectancyPct)} sub={`${fmtInr(s.expectancyRupees, { sign: true })} per trade`} />
-        <StatTile label="Profit factor" value={s.profitFactor.toFixed(2)} color={s.profitFactor >= 1.3 ? C.green : s.profitFactor >= 1 ? C.textStrong : C.red} sub="go-live bar: ≥ 1.30" />
-        <StatTile label="Sharpe" value={s.sharpe.toFixed(2)} color={s.sharpe >= 0.8 ? C.green : C.textStrong} sub="daily P&L, annualized · go-live bar ≥ 0.80" />
+        <StatTile label="Profit factor" value={s.profitFactor.toFixed(2)} color={s.profitFactor >= BAR.profitFactor ? C.green : s.profitFactor >= 1 ? C.textStrong : C.red} sub={`go-live bar: ≥ ${BAR.profitFactor.toFixed(2)}`} />
+        <StatTile label="Sharpe" value={s.sharpe.toFixed(2)} color={s.sharpe >= BAR.sharpe ? C.green : C.textStrong} sub={`daily P&L, annualized · go-live bar ≥ ${BAR.sharpe.toFixed(2)}`} />
         <StatTile label="Sortino" value={s.sortino.toFixed(2)} sub="downside deviation only" />
         <StatTile label="Max drawdown" value={fmtInr(-s.maxDrawdown)} color={s.maxDrawdown > 0 ? C.red : C.textStrong} sub={`${fmtPct(-s.maxDrawdownPct, 1)} from peak`} />
         <StatTile label="Real option prices" value={fmtPct(s.realPriceShare * 100, 0, false)} sub="rest synthetic (Black-Scholes)" />
@@ -373,7 +408,7 @@ export default function BacktestClient({
           if (cancelled) return;
           failures += 1;
           const notFound = err instanceof EnvelopeError && err.status === 404;
-          setError(notFound ? `Run ${runId} not found (it may have expired).` : errorText(err));
+          setError(notFound ? "That run is no longer available (runs expire). Start a new one." : plainError(err));
           if (!notFound && failures < 5) timer = setTimeout(poll, 4000);
         });
     };
@@ -416,7 +451,7 @@ export default function BacktestClient({
       if (err instanceof EnvelopeError && err.status === 401) {
         storeAdminToken(null);
         setError("Admin token rejected; enter it again.");
-      } else setError(errorText(err));
+      } else setError(plainError(err));
     } finally {
       setSubmitting(false);
     }
@@ -463,14 +498,11 @@ export default function BacktestClient({
             </Group>
 
             <Group title="Account and index">
-              <Field label="Account" hint={form.account === "main" ? "₹5 lakh, at-the-money options." : "₹10,000, one cheaper lot; the main account replays alongside it."}>
-                <Segmented
+              <Field label="Account" hint={accountHint(backtestAccount(form.account))}>
+                <Segmented<string>
                   label="Account"
-                  value={form.account === "small10k" ? "small10k" : "main"}
-                  options={[
-                    { value: "main", label: "Main ₹5L" },
-                    { value: "small10k", label: "₹10k" },
-                  ]}
+                  value={backtestAccount(form.account).id}
+                  options={BACKTEST_ACCOUNTS.map((a) => ({ value: a.id, label: accountOptionLabel(a), title: a.label }))}
                   onChange={(account) => {
                     const exits = ACCOUNT_EXITS[account] ?? ACCOUNT_EXITS.main;
                     update({ account, stopPct: String(exits.stopPct), targetPct: String(exits.targetPct) });
@@ -539,25 +571,10 @@ export default function BacktestClient({
               {result?.status === "DONE" && <Results result={result} />}
             </>
           ) : (
-            <Panel style={{ padding: "24px 26px" }}>
-              <div style={{ fontFamily: SERIF, fontSize: 24, fontWeight: 500, color: C.textStrong, letterSpacing: "-0.01em" }}>Pick a period and run</div>
-              <p style={{ margin: "8px 0 18px", fontSize: 14.5, color: C.muted, lineHeight: 1.6, maxWidth: 640 }}>
-                A run replays every 30-second decision of the chosen sessions: the signals, the checks before a trade, the stops, targets and trailing stops, and Groww&apos;s charges.
-              </p>
-              <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(min(100%, 210px), 1fr))", gap: 12 }}>
-                {[
-                  ["Same code as live", "Signals, sizing and exits are the engine's own, not a re-implementation."],
-                  ["Point-in-time data", "Each decision sees only the candles and news known at that moment."],
-                  ["Real prices first", "Recorded option quotes where they exist; otherwise Black-Scholes from India VIX."],
-                ].map(([t, d]) => (
-                  <div key={t} style={{ border: `1px solid ${C.border}`, borderRadius: 12, padding: "14px 16px", background: C.panelAlt }}>
-                    <div style={{ fontSize: 14, fontWeight: 600, color: C.textStrong, marginBottom: 4 }}>{t}</div>
-                    <div style={{ fontSize: 13, color: C.muted, lineHeight: 1.5 }}>{d}</div>
-                  </div>
-                ))}
-              </div>
-              <p style={{ margin: "18px 0 0", fontSize: 13, color: C.muted2, lineHeight: 1.55 }}>
-                The bar for going live: profit factor ≥ 1.30 and Sharpe ≥ 0.80 over at least 60 trades, out of sample.
+            <Panel style={{ padding: "20px 22px" }}>
+              <p style={{ margin: 0, fontSize: 15, color: C.textSoft, lineHeight: 1.55 }}>Pick a period and press Run backtest; the results appear here.</p>
+              <p style={{ margin: "8px 0 0", fontSize: 13, color: C.muted2, lineHeight: 1.55 }}>
+                Go-live bar: profit factor ≥ {BAR.profitFactor.toFixed(2)} and Sharpe ≥ {BAR.sharpe.toFixed(2)} over at least {BAR.trades} trades, out of sample.
               </p>
             </Panel>
           )}

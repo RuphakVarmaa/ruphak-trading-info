@@ -55,10 +55,12 @@ export default async function EventPage({ params }: Props) {
           <div style={{ maxWidth: 720, margin: "0 auto", display: "flex", flexDirection: "column", gap: 14 }}>
             <BackToDesk />
             <div role="alert" style={{ border: `1px solid ${alpha(C.red, 0.35)}`, background: alpha(C.red, 0.06), borderRadius: 14, padding: "16px 18px" }}>
-              <div style={{ color: C.red, fontWeight: 600, fontSize: 15, marginBottom: 6 }}>✗ The engine is unreachable</div>
-              <div style={{ fontSize: 14, color: C.textSoft }}>
-                Could not load event <code>{clusterId}</code> right now. Try again in a moment.
-              </div>
+              <div style={{ color: C.red, fontWeight: 600, fontSize: 15, marginBottom: 6 }}>✗ This event could not be loaded</div>
+              <div style={{ fontSize: 14, color: C.textSoft }}>The engine did not answer. Reload the page in a moment.</div>
+              <details style={{ marginTop: 8, fontSize: 12.5, color: C.muted }}>
+                <summary style={{ cursor: "pointer" }}>Details</summary>
+                <div style={{ marginTop: 6, overflowWrap: "anywhere" }}>Event ID {clusterId}</div>
+              </details>
             </div>
           </div>
         </main>

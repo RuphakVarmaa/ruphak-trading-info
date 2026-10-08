@@ -47,7 +47,7 @@ export function marketFeedStatus(state: EngineStateDTO, now: number, index = "NI
   }
   const yahoo = state.health.yahoo;
   if (yahoo && !yahoo.ok) {
-    return { level: "down", headline: "Feed failing", detail: `Yahoo is not answering${yahoo.detail ? ` (${yahoo.detail})` : ""} · last ${last}` };
+    return { level: "down", headline: "Feed failing", detail: `Yahoo is not answering · last ${last}` };
   }
   if (q.stale || age == null || age > MARKET_FEED_MAX_AGE_MS) {
     return { level: "stale", headline: "Feed delayed", detail: `Last ${last}${age == null ? "" : `, ${fmtAge(age)} old`}` };
@@ -96,7 +96,7 @@ export function engineLoopStatus(state: EngineStateDTO, now: number): FeedStatus
   }
   if (hb.phase === "DEGRADED" || hb.consecutiveErrors > 0) {
     const level: FeedLevel = hb.phase === "DEGRADED" ? "down" : "stale";
-    return { level, headline: `${hb.consecutiveErrors} failed tick${hb.consecutiveErrors === 1 ? "" : "s"}`, detail: `${hb.lastError ?? "see engine logs"} · ${last}` };
+    return { level, headline: `${hb.consecutiveErrors} failed tick${hb.consecutiveErrors === 1 ? "" : "s"}`, detail: `The engine retries every ${hb.loopIntervalSec} s · ${last}` };
   }
   if (!inSession(state)) return { level: "wait", headline: "Idle until the pre-open", detail: `Runs every ${hb.loopIntervalSec} s from 09:00 IST · ${last}` };
   const maxAge = Math.max(3 * hb.loopIntervalSec, 90) * 1000;

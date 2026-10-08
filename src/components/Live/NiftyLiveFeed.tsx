@@ -143,6 +143,9 @@ export default function NiftyLiveFeed({
   const feed = data?.feed ?? null;
   const chain = feed?.chain ?? null;
   const held = new Map(positions.filter((p) => !chain || p.contract.expiry === chain.expiry).map((p) => [`${p.contract.strike}${p.contract.optionType}`, p]));
+  // The lot size comes from a held contract (the instrument master's value); without one it is not shown.
+  const lotSize = positions.find((p) => p.index === "NIFTY")?.contract.lotSize ?? null;
+  const received = clientNow && data ? fmtAge(Math.max(0, clientNow - data.at)) : null;
 
   return (
     <div style={{ display: "grid", gap: 12 }}>
@@ -150,8 +153,14 @@ export default function NiftyLiveFeed({
         <PanelHeader
           title="NIFTY 50"
           right={
-            <span className="tnum" style={{ fontSize: 10, color: error ? C.orange : C.muted2, fontFamily: "var(--font-num)", fontWeight: 400, textTransform: "none", letterSpacing: 0 }}>
-              {error ? `feed error: ${error}` : feed ? `last trade ${fmtIstTime(feed.asOf)} IST · updated ${clientNow && data ? fmtAge(Math.max(0, clientNow - data.at)) : "—"} ago` : "loading…"}
+            <span className="tnum" style={{ fontSize: 12, color: error ? C.orange : C.muted2, fontFamily: "var(--font-num)", fontWeight: 400, textTransform: "none", letterSpacing: 0 }}>
+              {error
+                ? feed
+                  ? `Feed not answering · showing the last trade, ${fmtIstTime(feed.asOf)} IST, received ${received ?? "—"} ago`
+                  : "Feed not answering · retrying every 2 s"
+                : feed
+                  ? `last trade ${fmtIstTime(feed.asOf)} IST · updated ${received ?? "—"} ago`
+                  : "Loading…"}
             </span>
           }
         />
@@ -178,6 +187,8 @@ export default function NiftyLiveFeed({
                 Yahoo 1-minute bars ({feed.session}), as fresh as Yahoo has them. Refreshes every 2 s.
               </div>
             </>
+          ) : error ? (
+            <div style={{ color: C.muted, fontSize: 13, padding: "24px 0" }}>The NIFTY price feed (Yahoo) is not answering, so there is no price to show yet. It retries every 2 s.</div>
           ) : (
             <Skeleton height={220} />
           )}
@@ -250,13 +261,15 @@ export default function NiftyLiveFeed({
               </table>
             </div>
           ) : feed ? (
-            <div style={{ color: C.muted3, fontSize: 11 }}>India VIX is missing, so the chain cannot be priced.</div>
+            <div style={{ color: C.muted, fontSize: 13 }}>India VIX is missing, so the chain cannot be priced.</div>
+          ) : error ? (
+            <div style={{ color: C.muted, fontSize: 13 }}>The chain is priced from the NIFTY feed, which is not answering.</div>
           ) : (
             <Skeleton height={200} />
           )}
           {chain && (
             <div style={{ fontSize: 10, color: C.muted3, marginTop: 8 }}>
-              Shaded cells are in the money. Lot size 65. The engine never buys the contract expiring today.
+              Shaded cells are in the money.{lotSize != null ? ` Lot size ${lotSize} (from the open position).` : ""} The engine never buys the contract expiring today.
             </div>
           )}
         </div>
