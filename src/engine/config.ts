@@ -187,6 +187,18 @@ export interface EngineConfig {
     maxOpenPerIndex: number;
     maxTradesPerDay: number;
     maxCombinedPremiumPct: number;
+    /** Size from the day's starting equity (capital plus prior net P&L) and cap by free cash; small accounts. */
+    useCurrentEquity: boolean;
+  };
+  /** Which strike to buy: at the money, or the strike nearest the money whose premium is in a band. */
+  selection: {
+    mode: "ATM" | "PREMIUM_BAND";
+    minPremium: number;
+    maxPremium: number;
+    /** Strikes beyond ATM to consider. */
+    maxOtmSteps: number;
+    /** Most option quotes fetched per pick. */
+    maxQuotes: number;
   };
   exits: {
     stopPct: number;
@@ -207,6 +219,8 @@ export interface EngineConfig {
     maxConsecutiveLossesPerDay: number;
     staleDataHaltSec: number;
     reconcileMismatchHalts: boolean;
+    /** Block an entry when today's loss plus this trade's stop risk and charges would break the daily cap. */
+    prospectiveLossCap: boolean;
   };
   broker: {
     slippageTicksMarket: number;
@@ -390,6 +404,14 @@ export const DEFAULT_CONFIG: EngineConfig = {
     maxOpenPerIndex: 1,
     maxTradesPerDay: 4,
     maxCombinedPremiumPct: 6,
+    useCurrentEquity: false,
+  },
+  selection: {
+    mode: "ATM",
+    minPremium: 40,
+    maxPremium: 70,
+    maxOtmSteps: 8,
+    maxQuotes: 4,
   },
   exits: {
     stopPct: -30,
@@ -408,6 +430,7 @@ export const DEFAULT_CONFIG: EngineConfig = {
     maxConsecutiveLossesPerDay: 2,
     staleDataHaltSec: 600,
     reconcileMismatchHalts: true,
+    prospectiveLossCap: false,
   },
   broker: {
     slippageTicksMarket: 2,
@@ -543,6 +566,11 @@ export function validateConfig(cfg: EngineConfig): string[] {
   if (cfg.sizing.minRiskPct > cfg.sizing.defaultRiskPct) p.push("sizing.minRiskPct must not exceed defaultRiskPct");
   frac("sizing.kellyFraction", cfg.sizing.kellyFraction);
   if (!(cfg.sizing.maxOpenPerIndex >= 1)) p.push("sizing.maxOpenPerIndex must be >= 1");
+  const sel = cfg.selection;
+  if (sel.mode !== "ATM" && sel.mode !== "PREMIUM_BAND") p.push("selection.mode must be ATM or PREMIUM_BAND");
+  if (!(sel.minPremium > 0 && sel.minPremium < sel.maxPremium)) p.push("selection.minPremium must be > 0 and below maxPremium");
+  if (!(Number.isInteger(sel.maxOtmSteps) && sel.maxOtmSteps >= 0 && sel.maxOtmSteps <= 20)) p.push("selection.maxOtmSteps must be an integer 0-20");
+  if (!(Number.isInteger(sel.maxQuotes) && sel.maxQuotes >= 1 && sel.maxQuotes <= 10)) p.push("selection.maxQuotes must be an integer 1-10");
   pos("risk.dailyLossCapPct", cfg.risk.dailyLossCapPct);
   pos("pricing.tradingMinutesPerDay", cfg.pricing.tradingMinutesPerDay);
   if (!(cfg.pricing.r >= 0 && cfg.pricing.r < 0.5)) p.push("pricing.r must be an annual decimal rate");
