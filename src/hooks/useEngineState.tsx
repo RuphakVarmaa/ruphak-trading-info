@@ -55,6 +55,15 @@ const TIER_SLICES: Record<TierName, { key: SliceKey; url: string }[]> = {
   cal: [{ key: "scheduled", url: `/api/engine/scheduled?hours=${SCHEDULED_HOURS}` }],
 };
 
+/** Slices that belong to one paper account; events and scheduled events are shared. */
+const ACCOUNT_SLICES: ReadonlySet<SliceKey> = new Set<SliceKey>(["state", "signals", "positions", "orders", "pnl", "performance"]);
+
+/** The slice URL for `account` (main keeps the plain URL, so its cache keys do not change). */
+export function sliceUrl(spec: { key: SliceKey; url: string }, account?: string): string {
+  if (!account || account === "main" || !ACCOUNT_SLICES.has(spec.key)) return spec.url;
+  return `${spec.url}${spec.url.includes("?") ? "&" : "?"}account=${encodeURIComponent(account)}`;
+}
+
 export interface TierMeta {
   lastOkAt: number | null;
   lastAttemptAt: number | null;
@@ -140,7 +149,11 @@ const cloneMeta = (m: Record<TierName, TierMeta>): Record<TierName, TierMeta> =>
   cal: { ...m.cal },
 });
 
-export function EngineProvider({ initial, children }: { initial: EngineSnapshot | null; children: ReactNode }) {
+/**
+ * `account`: a paper account other than main (e.g. small10k); omitted means main. Give the provider
+ * `key={account}` so switching accounts starts a fresh poller.
+ */
+export function EngineProvider({ initial, account, children }: { initial: EngineSnapshot | null; account?: string; children: ReactNode }) {
   const [slices, setSlices] = useState<EngineSlices>(() => ({
     state: initial?.state ?? null,
     signals: initial?.signals ?? null,
@@ -198,7 +211,7 @@ export function EngineProvider({ initial, children }: { initial: EngineSnapshot 
       const specs = TIER_SLICES[tier];
       const startedAt = Date.now();
       const urlFor = (url: string) => (bust ? `${url}${url.includes("?") ? "&" : "?"}_=${startedAt}` : url);
-      const results = await Promise.allSettled(specs.map((s) => fetchEnvelope<unknown>(urlFor(s.url))));
+      const results = await Promise.allSettled(specs.map((s) => fetchEnvelope<unknown>(urlFor(sliceUrl(s, account)))));
       const endedAt = Date.now();
       inflight[tier] = false;
       if (disposed) return;
@@ -350,8 +363,8 @@ export function EngineProvider({ initial, children }: { initial: EngineSnapshot 
       arm: () => post("arm", "/api/engine/admin/arm", { armed: true }, ["fast"]),
       disarm: () => post("disarm", "/api/engine/admin/arm", { armed: false }, ["fast"]),
       kill: (squareOff: boolean, reason: string) =>
-        post("kill", "/api/engine/admin/kill", { engaged: true, squareOff, reason }, ["fast", "slow"]),
-      resetKill: () => post("reset", "/api/engine/admin/kill", { engaged: false, squareOff: false, reason: "Reset from dashboard" }, ["fast"]),
+        post("kill", "/api/engine/admin/kill", { engaged: true, squareOff, reason, ...(account ? { account } : {}) }, ["fast", "slow"]),
+      resetKill: () => post("reset", "/api/engine/admin/kill", { engaged: false, squareOff: false, reason: "Reset from dashboard", ...(account ? { account } : {}) }, ["fast"]),
       setMode: (mode: EngineMode) => post("mode", "/api/engine/admin/mode", { mode }, ["fast", "slow"]),
       refresh,
       setAdminToken: async (value: string) => {
@@ -370,7 +383,7 @@ export function EngineProvider({ initial, children }: { initial: EngineSnapshot 
         setChecked(null);
       },
     }),
-    [post, refresh],
+    [post, refresh, account],
   );
 
   const value: EngineContextValue = useMemo(

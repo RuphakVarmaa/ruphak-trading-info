@@ -30,6 +30,7 @@ export function paramsFromQuery(q: Query, todayIst: string): BacktestParams {
     stopPct: num(first(q.stopPct), -90, -5, d.stopPct),
     targetPct: num(first(q.targetPct), 5, 300, d.targetPct),
     noEvents: first(q.noEvents) === "1" || first(q.noEvents) === "true",
+    ...(first(q.account) === "small10k" ? { account: "small10k" } : {}),
   };
 }
 
@@ -43,6 +44,7 @@ export function paramsToQuery(p: BacktestParams, runId?: string | null): string 
     targetPct: String(p.targetPct),
     noEvents: p.noEvents ? "1" : "0",
   });
+  if (p.account && p.account !== "main") q.set("account", p.account);
   if (runId) q.set("runId", runId);
   return q.toString();
 }

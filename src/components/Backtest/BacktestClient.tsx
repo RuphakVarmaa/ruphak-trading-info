@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useId, useState, type ReactNode } from "react";
+import { ACCOUNTS, type AccountId } from "@/engine/accounts";
 import type { BacktestParams, BacktestResult, IndexId } from "@/engine/api-types";
 import { storeAdminToken, useStoredAdminToken, verifyAdminToken } from "@/hooks/adminToken";
 import { EnvelopeError, errorText, fetchEnvelope } from "@/hooks/engineFetch";
@@ -14,6 +15,8 @@ import { paramsToQuery } from "@/lib/backtestParams";
 interface FormState {
   from: string;
   to: string;
+  /** "main", or a follower account such as "small10k" (main replays alongside it). */
+  account: string;
   index: IndexId | "BOTH";
   thresholdDelta: string;
   stopPct: string;
@@ -21,9 +24,16 @@ interface FormState {
   noEvents: boolean;
 }
 
+/** Each account's own default stop and target (percent of premium), shown when it is picked. */
+const ACCOUNT_EXITS: Record<string, { stopPct: number; targetPct: number }> = {
+  main: { stopPct: -30, targetPct: 50 },
+  small10k: { stopPct: ACCOUNTS.small10k.configPatch.exits?.stopPct ?? -35, targetPct: ACCOUNTS.small10k.configPatch.exits?.targetPct ?? 60 },
+};
+
 const toForm = (p: BacktestParams): FormState => ({
   from: p.from,
   to: p.to,
+  account: p.account ?? "main",
   index: p.index,
   thresholdDelta: String(p.thresholdDelta),
   stopPct: String(p.stopPct),
@@ -41,7 +51,8 @@ function parseForm(f: FormState, today: string): { ok: true; params: BacktestPar
   if (!Number.isFinite(thresholdDelta) || thresholdDelta < -0.3 || thresholdDelta > 0.3) return { ok: false, error: "Threshold shift must be between −0.30 and +0.30." };
   if (!Number.isFinite(stopPct) || stopPct < -90 || stopPct > -5) return { ok: false, error: "Stop must be between −90% and −5% of premium." };
   if (!Number.isFinite(targetPct) || targetPct < 5 || targetPct > 300) return { ok: false, error: "Target must be between +5% and +300% of premium." };
-  return { ok: true, params: { from: f.from, to: f.to, index: f.index, thresholdDelta, stopPct, targetPct, noEvents: f.noEvents } };
+  const account = f.account !== "main" ? { account: f.account } : {};
+  return { ok: true, params: { from: f.from, to: f.to, index: f.index, thresholdDelta, stopPct, targetPct, noEvents: f.noEvents, ...account } };
 }
 
 function Field({ label, htmlFor, hint, children }: { label: string; htmlFor: string; hint?: string; children: ReactNode }) {
@@ -139,6 +150,7 @@ function RunStatus({ result, runId }: { result: BacktestResult | null; runId: st
     <div role="status" style={{ fontSize: 11, color: C.textSoft }}>
       <span style={{ color: C.green }}>✓</span> Completed <span style={{ fontFamily: "monospace", color: C.muted }}>{runId}</span>
       {result.finishedAt && <> at {fmtIstHm(result.finishedAt)} IST</>} · {result.params.from} → {result.params.to} · {result.params.index}
+      {result.params.account && result.params.account !== "main" ? <> · {ACCOUNTS[result.params.account as AccountId]?.label ?? result.params.account}</> : null}
     </div>
   );
 }
@@ -249,7 +261,7 @@ export default function BacktestClient({
   const [result, setResult] = useState<BacktestResult | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
-  const ids = { from: useId(), to: useId(), index: useId(), delta: useId(), stop: useId(), target: useId() };
+  const ids = { from: useId(), to: useId(), account: useId(), index: useId(), delta: useId(), stop: useId(), target: useId() };
 
   // Poll the run every 2 s until it is DONE or ERROR.
   useEffect(() => {
@@ -343,6 +355,22 @@ export default function BacktestClient({
               </Field>
               <Field label="To" htmlFor={ids.to}>
                 <input id={ids.to} type="date" value={form.to} min={form.from} max={todayIst} onChange={(e) => update({ to: e.target.value })} style={inputStyle} />
+              </Field>
+              <Field label="Account" htmlFor={ids.account} hint="stop and target apply to this account">
+                <select
+                  id={ids.account}
+                  value={form.account}
+                  onChange={(e) => {
+                    const account = e.target.value;
+                    const exits = ACCOUNT_EXITS[account] ?? ACCOUNT_EXITS.main;
+                    // The ₹10k account trades NIFTY only; main replays alongside it on the same index.
+                    update({ account, stopPct: String(exits.stopPct), targetPct: String(exits.targetPct), ...(account !== "main" ? { index: "NIFTY" as const } : {}) });
+                  }}
+                  style={inputStyle}
+                >
+                  <option value="main">Main (₹5L, at the money)</option>
+                  <option value="small10k">₹10k (one cheaper lot)</option>
+                </select>
               </Field>
               <Field label="Index" htmlFor={ids.index}>
                 <select id={ids.index} value={form.index} onChange={(e) => update({ index: e.target.value as FormState["index"] })} style={inputStyle}>

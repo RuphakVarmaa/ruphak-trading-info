@@ -8,6 +8,7 @@ import { alpha, C, pnlColor } from "@/components/shared/colors";
 import { SERIF } from "@/components/shared/theme";
 import { fmtAge, fmtInr, fmtIstDay, fmtIstHm, fmtPct } from "@/components/shared/format";
 import { Dot, EmptyState, Panel, PanelHeader, Skeleton, StatTile } from "@/components/shared/ui";
+import AccountSwitcher from "./AccountSwitcher";
 import { useClientNow, useEngineState, useNow } from "@/hooks/useEngineState";
 import CapitalPnlPies from "./CapitalPnlPies";
 import NiftyLiveFeed from "./NiftyLiveFeed";
@@ -136,10 +137,14 @@ export default function LiveBook() {
         <div>
           <h1 style={{ margin: 0, fontSize: 28, fontWeight: 500, color: C.textStrong, fontFamily: SERIF, letterSpacing: "-0.01em" }}>Live P&amp;L</h1>
           <p style={{ margin: "4px 0 0", fontSize: 12, color: C.muted }}>
+            {state?.account && state.account.id !== "main" ? `${state.account.label} (${fmtInr(state.account.capitalRupees, { decimals: 0 })}, one cheaper lot) · ` : ""}
             NIFTY 50 options · paper trading with simulated fills{state ? ` · ${fmtIstDay(state.market.nowIst)}` : ""}
           </p>
         </div>
-        <span className="tnum" style={{ fontSize: 11, color: C.muted2, fontFamily: "monospace" }}>{updated}</span>
+        <div style={{ display: "flex", flexWrap: "wrap", alignItems: "center", gap: 12 }}>
+          <AccountSwitcher />
+          <span className="tnum" style={{ fontSize: 11, color: C.muted2, fontFamily: "monospace" }}>{updated}</span>
+        </div>
       </div>
 
       <Section title="Data feeds">

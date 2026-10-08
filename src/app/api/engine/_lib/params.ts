@@ -39,6 +39,25 @@ export function dateParam(sp: URLSearchParams, name: string, def: string): Parse
 
 export const ID_PATTERN = /^[A-Za-z0-9._:-]{1,128}$/;
 
+const ACCOUNT_PATTERN = /^[a-z0-9]{1,32}$/;
+
+/**
+ * Optional `?account=` (a paper account other than main, e.g. small10k). Absent means main, so
+ * main's URLs and cache keys stay as they were; the engine rejects accounts it does not run.
+ */
+export function accountParam(sp: URLSearchParams): Parsed<string | undefined> {
+  const raw = sp.get("account");
+  if (raw == null || raw === "" || raw === "main") return good(undefined);
+  return ACCOUNT_PATTERN.test(raw) ? good(raw) : bad("'account' must be an account id such as small10k.");
+}
+
+/** Optional `account` in an admin body: an account id or "all"; absent means main. */
+export function accountField(body: Record<string, unknown>): Parsed<string | undefined> {
+  const raw = body.account;
+  if (raw === undefined || raw === null || raw === "" || raw === "main") return good(undefined);
+  return typeof raw === "string" && ACCOUNT_PATTERN.test(raw) ? good(raw) : bad("'account' must be an account id such as small10k, or all.");
+}
+
 const MAX_BODY_BYTES = 4096;
 
 function isRecord(v: unknown): v is Record<string, unknown> {
@@ -99,5 +118,8 @@ export function parseBacktest(body: Record<string, unknown>, todayIst: string): 
   if (!finite(stopPct) || stopPct < -90 || stopPct > -5) return bad("'stopPct' must be a negative percent between -90 and -5.");
   if (!finite(targetPct) || targetPct < 5 || targetPct > 300) return bad("'targetPct' must be a percent between 5 and 300.");
   if (typeof noEvents !== "boolean") return bad("'noEvents' must be a boolean.");
-  return good({ from, to, index, thresholdDelta, stopPct, targetPct, noEvents });
+  const account = accountField(body);
+  if (!account.ok) return account;
+  if (account.value === "all") return bad("'account' must be a single account for a backtest.");
+  return good({ from, to, index, thresholdDelta, stopPct, targetPct, noEvents, ...(account.value ? { account: account.value } : {}) });
 }

@@ -19,7 +19,8 @@ function settle<T>(p: PromiseLike<T>, deadline: Promise<null>): Promise<T | null
   return Promise.race([Promise.resolve(p).catch(() => null), deadline]);
 }
 
-export async function getInitialEngineSnapshot(): Promise<EngineSnapshot | null> {
+/** `account`: a paper account other than main (e.g. small10k); omitted means main. */
+export async function getInitialEngineSnapshot(account?: string): Promise<EngineSnapshot | null> {
   let timer: ReturnType<typeof setTimeout> | undefined;
   const deadline = new Promise<null>((resolve) => {
     timer = setTimeout(() => resolve(null), SNAPSHOT_TIMEOUT_MS);
@@ -28,14 +29,15 @@ export async function getInitialEngineSnapshot(): Promise<EngineSnapshot | null>
     const engine = await settle(getEngineApi(), deadline);
     if (!engine) return null;
     const { api, source } = engine;
+    const today = istDate(Date.now());
     const [state, signals, positions, events, orders, pnl, performance, scheduled] = await Promise.all([
-      settle(api.getState(), deadline),
-      settle(api.getSignals(), deadline),
-      settle(api.getPositions(), deadline),
+      settle(account ? api.getState(account) : api.getState(), deadline),
+      settle(account ? api.getSignals(account) : api.getSignals(), deadline),
+      settle(account ? api.getPositions(account) : api.getPositions(), deadline),
       settle(api.getEvents({ tab: "ALL", limit: DEFAULT_EVENTS_LIMIT }), deadline),
-      settle(api.getOrders(istDate(Date.now())), deadline),
-      settle(api.getPnl(DEFAULT_PNL_DAYS), deadline),
-      settle(api.getPerformance(), deadline),
+      settle(account ? api.getOrders(today, account) : api.getOrders(today), deadline),
+      settle(account ? api.getPnl(DEFAULT_PNL_DAYS, account) : api.getPnl(DEFAULT_PNL_DAYS), deadline),
+      settle(account ? api.getPerformance(account) : api.getPerformance(), deadline),
       settle(api.getScheduled(DEFAULT_SCHEDULED_HOURS), deadline),
     ]);
     return { source, fetchedAt: Date.now(), state, signals, positions, events, orders, pnl, performance, scheduled };
