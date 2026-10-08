@@ -1,94 +1,73 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+/**
+ * /copy, trade first and phone first: what to do now for each index (large type, the exact order and a
+ * copy button), then the current trade with every value one tap from the clipboard, one "what to do now"
+ * line, the price chart, the reasoning behind a Details disclosure, and the day's other trades.
+ */
+import { useEffect, useState, type ReactNode } from "react";
 import type { CopyTicketView, IndexId, SignalView } from "@/engine/api-types";
 import AccountSwitcher from "@/components/Live/AccountSwitcher";
-import { alpha, C, pnlColor } from "@/components/shared/colors";
-import { fmtAge, fmtInr, fmtIstDay, fmtIstHm } from "@/components/shared/format";
-import { Btn, EmptyState, PageHeader, Panel, PanelHeader, Section, Skeleton } from "@/components/shared/ui";
-import { useClientNow, useEngineState } from "@/hooks/useEngineState";
-import type { IntradayFeed } from "@/lib/market/intraday";
-import CandleChart from "./CandleChart";
-import TicketCard, { MarketChips, SetupPanel } from "./TicketCard";
-import { usePolled } from "@/hooks/usePolled";
+import { C, pnlColor } from "@/components/shared/colors";
+import { fmtDateKey } from "@/components/shared/format";
+import { SERIF } from "@/components/shared/theme";
+import { EmptyState, Panel, Segmented, Skeleton } from "@/components/shared/ui";
+import { EXIT_WORDS, hm, hms, nowLine, type IndexAction } from "@/lib/copy/action";
+import { wholeRupees } from "@/lib/copy/prices";
+import { istParts } from "@/lib/ist";
+import IndexActionStrip from "./ActionStrip";
+import { titleBadge } from "./alerts";
+import { ALERTS_EXPLAINED } from "./AlertsToggle";
+import CopyChart from "./CopyChart";
+import { plainError } from "./sharedPoll";
+import { GateList, MarketChips, SetupPanel } from "./TicketParts";
+import TradeCard from "./TradeCard";
+import { INDICES, useIndexActions, type CopyData } from "./useIndexActions";
 
 const PAGE_TITLE = "Copy trades — Ruphak India Index Desk";
+const SR_ONLY = { position: "absolute", width: 1, height: 1, padding: 0, margin: -1, overflow: "hidden", clip: "rect(0 0 0 0)", whiteSpace: "nowrap", border: 0 } as const;
 
-
-/** The chart's empty state: "no candles yet" is normal before the open; anything else is a feed problem. */
-function candleNote(error: string): string {
-  if (error.startsWith("NOT_FOUND")) return "No 5-minute candles for this day yet. The chart fills in once the market opens at 09:15 IST.";
-  return `The 5-minute chart is unavailable right now (${error.replace(/^[A-Z_]+: /, "")}). It retries on its own.`;
+/**
+ * The trade to show: an exit to act on first, then an entry (or a paused one), then the trade picked
+ * from the list, then an open one, then the latest of the day.
+ */
+export function pickCurrent(actions: Record<IndexId, IndexAction> | null, tickets: CopyTicketView[] | null, picked: string | null): CopyTicketView | null {
+  const list = tickets ?? [];
+  const byKind = (...kinds: IndexAction["kind"][]) => INDICES.map((i) => actions?.[i]).find((a) => a && kinds.includes(a.kind) && a.ticket)?.ticket ?? null;
+  const live = (t: CopyTicketView | null) => (t ? (list.find((x) => x.id === t.id) ?? t) : null);
+  return live(byKind("EXIT_NOW")) ?? live(byKind("ENTER_NOW", "PAUSED")) ?? list.find((t) => t.id === picked) ?? live(byKind("MANAGE")) ?? list.find((t) => t.status === "OPEN") ?? list[0] ?? null;
 }
 
-/** A short two-tone chime (Web Audio, no file to load). Browsers allow it once the page has been clicked. */
-function chime(up: boolean) {
-  try {
-    const Ctx = window.AudioContext ?? (window as unknown as { webkitAudioContext?: typeof AudioContext }).webkitAudioContext;
-    if (!Ctx) return;
-    const ctx = new Ctx();
-    const notes = up ? [660, 990] : [880, 520];
-    notes.forEach((f, i) => {
-      const o = ctx.createOscillator();
-      const g = ctx.createGain();
-      const at = ctx.currentTime + i * 0.18;
-      o.type = "sine";
-      o.frequency.value = f;
-      g.gain.setValueAtTime(0.0001, at);
-      g.gain.exponentialRampToValueAtTime(0.25, at + 0.02);
-      g.gain.exponentialRampToValueAtTime(0.0001, at + 0.35);
-      o.connect(g).connect(ctx.destination);
-      o.start(at);
-      o.stop(at + 0.4);
-    });
-    setTimeout(() => void ctx.close(), 1000);
-  } catch {
-    // No audio: the on-page banner and the desktop notification still show.
-  }
+function H3({ children }: { children: ReactNode }) {
+  return <h3 style={{ margin: "18px 0 8px", fontSize: 14, fontWeight: 700, color: C.textStrong }}>{children}</h3>;
 }
 
-function desktopNotice(title: string, body: string) {
-  try {
-    if ("Notification" in window && Notification.permission === "granted") new Notification(title, { body, tag: title });
-  } catch {
-    // Some mobile browsers only allow notifications from a service worker.
-  }
+function signalMarket(s: SignalView): CopyTicketView["market"] {
+  return { spot: s.spot ?? s.indicators?.spot ?? 0, changePct: null, vix: null, indicators: s.indicators };
 }
 
-/** How close each index is to a trade, while nothing has been bought today. */
-function Waiting({ signals, phase }: { signals: SignalView[] | null; phase: string | undefined }) {
-  const open = phase === "OPEN" || phase === "PRE_OPEN";
+function RawIds({ t }: { t: CopyTicketView }) {
+  const rows: [string, string][] = [
+    ["Position id", t.id],
+    ["Plan id", t.planId],
+    ["Account", `${t.account.id} (${t.account.label}, ${wholeRupees(t.account.capitalRupees)})`],
+    ["Mode", t.mode],
+    ["Contract", t.contract.label],
+    ["Exchange symbol", t.contract.tradingSymbol],
+    ["Groww symbol", t.contract.growwSymbol || "not given (synthetic contract)"],
+    ["Entry price source", t.entry.priceSource === "model" ? "model (Black-Scholes on India VIX)" : "broker quote"],
+    ["Index at entry", `${t.entry.spot}`],
+    ["Skip beyond (raw)", t.entry.skipBeyondSpot == null ? "none" : `${t.entry.skipBeyondSpot}`],
+  ];
   return (
-    <Panel>
-      <PanelHeader title="No trade yet today" />
-      <div style={{ padding: 16, display: "grid", gap: 14 }}>
-        <div style={{ fontSize: 13, color: C.textSoft, lineHeight: 1.5 }}>
-          {open
-            ? "The engine buys when its conviction reaches the threshold and every check passes. Entries can come from 09:25 to 14:30 IST; this page refreshes every 5 seconds and chimes when one does (turn alerts on above)."
-            : "The market is closed. Entries can come from 09:25 to 14:30 IST on the next session."}
+    <dl className="tnum" style={{ display: "grid", gridTemplateColumns: "minmax(110px, auto) minmax(0, 1fr)", gap: "4px 12px", margin: 0, fontSize: 12.5 }}>
+      {rows.map(([k, v]) => (
+        <div key={k} style={{ display: "contents" }}>
+          <dt style={{ color: C.muted }}>{k}</dt>
+          <dd style={{ margin: 0, color: C.textSoft, overflowWrap: "anywhere", fontFamily: "ui-monospace, SFMono-Regular, Menlo, monospace" }}>{v}</dd>
         </div>
-        {(signals ?? []).map((s) => {
-          const v = Math.min(1, Math.abs(s.conviction));
-          const color = s.conviction >= 0 ? C.green : C.red;
-          return (
-            <div key={s.index} style={{ display: "grid", gap: 6 }}>
-              <div style={{ display: "flex", justifyContent: "space-between", flexWrap: "wrap", gap: 8, fontSize: 12 }}>
-                <b style={{ color: C.textStrong }}>{s.index}</b>
-                <span style={{ color: C.muted, fontFamily: "var(--font-num)" }}>
-                  {s.stance.toLowerCase()} {s.conviction >= 0 ? "+" : "−"}
-                  {Math.abs(s.conviction).toFixed(2)} · needs {s.entryThreshold.toFixed(2)} · {s.regime.replace("_", " ").toLowerCase()}
-                </span>
-              </div>
-              <div style={{ position: "relative", height: 8, background: C.track, borderRadius: 4, overflow: "hidden" }}>
-                <div style={{ width: `${v * 100}%`, height: "100%", background: color }} />
-                <div style={{ position: "absolute", left: `${s.entryThreshold * 100}%`, top: 0, bottom: 0, width: 2, background: C.textStrong }} />
-              </div>
-              {s.noPlanReason && <div style={{ fontSize: 11, color: C.muted2 }}>{s.noPlanReason}</div>}
-            </div>
-          );
-        })}
-      </div>
-    </Panel>
+      ))}
+    </dl>
   );
 }
 
@@ -101,226 +80,194 @@ function TicketRow({ t, selected, onPick }: { t: CopyTicketView; selected: boole
       aria-pressed={selected}
       style={{
         display: "grid",
-        gridTemplateColumns: "56px 1fr auto",
+        gridTemplateColumns: "52px minmax(0, 1fr) auto",
         alignItems: "center",
         gap: 10,
         width: "100%",
+        minHeight: 52,
         textAlign: "left",
-        padding: "10px 12px",
+        padding: "10px 14px",
         border: "none",
         borderTop: `1px solid ${C.borderSoft}`,
-        background: selected ? alpha(C.gold, 0.08) : "transparent",
+        background: selected ? C.navActive : "transparent",
         cursor: "pointer",
         color: C.textSoft,
-        fontSize: 12,
+        fontSize: 13.5,
       }}
     >
-      <span style={{ fontFamily: "var(--font-num)", color: C.muted }}>{fmtIstHm(t.entry.at)}</span>
-      <span>
-        <b style={{ color: C.textStrong }}>{t.headline}</b>
-        <span style={{ color: C.muted2 }}> · {t.status === "OPEN" ? "open" : t.exit?.reasonText.toLowerCase()}</span>
+      <span className="tnum" style={{ color: C.muted }}>
+        {hm(t.entry.at)}
       </span>
-      <span style={{ fontFamily: "var(--font-num)", fontWeight: 700, color: pnlColor(pnl) }}>{fmtInr(pnl, { decimals: 0, sign: true })}</span>
+      <span style={{ minWidth: 0, overflowWrap: "anywhere" }}>
+        <b style={{ color: C.textStrong }}>{t.headline}</b>
+        <span style={{ color: C.muted2 }}> · {t.status === "OPEN" ? "open" : t.exit ? EXIT_WORDS[t.exit.reason] : "closed"}</span>
+      </span>
+      <span className="tnum" style={{ fontWeight: 700, color: pnlColor(pnl) }}>
+        {wholeRupees(pnl, true)}
+      </span>
     </button>
   );
 }
 
-/** The day's paper trades laid out for copying by hand, with the price action and the setup behind each. */
-export default function CopyDesk({ initialId }: { initialId: string | null }) {
-  const { state, signals } = useEngineState();
-  const clientNow = useClientNow();
-  const account = state?.account?.id ?? "main";
-  const phase = state?.market.phase;
-  const active = phase === "OPEN" || phase === "PRE_OPEN";
-  const date = state?.market.nowIst.slice(0, 10) ?? null;
-  const tickets = usePolled<CopyTicketView[]>(date ? `/api/engine/copy?date=${date}${account !== "main" ? `&account=${encodeURIComponent(account)}` : ""}` : null, active ? 5_000 : 60_000);
-  const list = tickets.data;
+function emptyText(d: CopyData): string {
+  if (d.phase === "HOLIDAY" || (d.nowMs != null && istParts(d.nowMs).weekday >= 6)) return "No trades today: the market is closed.";
+  const mins = d.nowMs != null ? istParts(d.nowMs).minutesOfDay : 0;
+  if (mins > 14 * 60 + 30) return "No trades today: new entries stop at 14:30 IST.";
+  if (mins >= 9 * 60 + 25 && d.phase === "OPEN") return "No trade yet today: entries can come until 14:30 IST. The status above says what the engine is waiting for.";
+  return "No trade yet: the first entry can come at 09:25 IST.";
+}
+
+/** The day's paper trades laid out for copying by hand. `account`: the paper account (default main). */
+export default function CopyDesk({ initialId, account }: { initialId: string | null; account?: string }) {
+  const d = useIndexActions(account);
   const [picked, setPicked] = useState<string | null>(initialId);
   const [watch, setWatch] = useState<IndexId>("NIFTY");
-  const selected = list?.find((t) => t.id === picked) ?? list?.find((t) => t.status === "OPEN") ?? list?.[0] ?? null;
-  const chartIndex = selected?.index ?? watch;
-  const feed = usePolled<IntradayFeed>(`/api/market/intraday?index=${chartIndex}${selected ? `&date=${selected.entry.at.slice(0, 10)}` : ""}`, active ? 20_000 : 300_000);
+  const list = d.tickets.data;
+  const current = pickCurrent(d.actions, list, picked);
+  const currentAction = current && d.actions?.[current.index]?.ticket?.id === current.id ? d.actions[current.index] : null;
+  const chartIndex = current?.index ?? watch;
+  const active = d.phase === "OPEN" || d.phase === "PRE_OPEN";
+  const weekend = d.nowMs != null && istParts(d.nowMs).weekday >= 6;
+  // Today's session once it has opened; before the open (and on closed days) the latest session, labelled as the previous one.
+  const opened = d.nowMs != null && istParts(d.nowMs).minutesOfDay >= 9 * 60 + 15;
+  const chartDate = current ? current.entry.at.slice(0, 10) : d.phase === "HOLIDAY" || weekend || !opened ? null : d.date;
+  const signalFor = (index: IndexId) => d.signals?.find((s) => s.index === index) ?? null;
 
-  // Alerts: a chime, a desktop notification and the tab title when a trade opens or closes.
-  const [alertsOn, setAlertsOn] = useState(false);
-  const [banner, setBanner] = useState<{ text: string; up: boolean } | null>(null);
-  const seen = useRef<Map<string, string> | null>(null);
-  const alertsRef = useRef(alertsOn);
+  const badge = titleBadge(d.actions);
   useEffect(() => {
-    alertsRef.current = alertsOn;
-  }, [alertsOn]);
-  useEffect(() => {
-    if (!list) return;
-    const before = seen.current;
-    seen.current = new Map(list.map((t) => [t.id, t.status]));
-    if (!before) return;
-    for (const t of list) {
-      const was = before.get(t.id);
-      const bought = was === undefined && t.status === "OPEN";
-      const sold = was === "OPEN" && t.status === "CLOSED";
-      if (!bought && !sold) continue;
-      const text = bought ? `${t.headline} · ${t.lots} lot (${t.qty}) · stop ₹${t.levels.stop.toFixed(2)}` : `SELL ${t.searchText} now · ${t.exit?.reasonText ?? "closed"}`;
-      setBanner({ text, up: bought });
-      if (alertsRef.current) {
-        chime(bought);
-        desktopNotice(bought ? `Copy: ${t.headline}` : `Copy: SELL ${t.searchText}`, text);
-      }
-    }
-  }, [list]);
-  const openTicket = list?.find((t) => t.status === "OPEN") ?? null;
-  useEffect(() => {
-    document.title = openTicket ? `● ${openTicket.headline} — copy` : PAGE_TITLE;
+    document.title = badge ? `${badge} — Copy trades` : PAGE_TITLE;
     return () => {
       document.title = PAGE_TITLE;
     };
-  }, [openTicket]);
+  }, [badge]);
 
   const pick = (id: string) => {
     setPicked(id);
     const sp = new URLSearchParams(window.location.search);
     sp.set("id", id);
     window.history.replaceState(null, "", `${window.location.pathname}?${sp.toString()}`);
+    document.getElementById("trade")?.scrollIntoView({ behavior: "smooth", block: "start" });
   };
 
-  const turnOnAlerts = async () => {
-    setAlertsOn(true);
-    chime(true);
-    try {
-      if ("Notification" in window && Notification.permission === "default") await Notification.requestPermission();
-    } catch {
-      // Permission prompt not available: the chime and banner still work.
-    }
-  };
-
-  const updated = tickets.at != null && clientNow != null ? `updated ${fmtAge(Math.max(0, clientNow - tickets.at))} ago` : "connecting…";
-  const accountLabel = state?.account && state.account.id !== "main" ? `${state.account.label} (${fmtInr(state.account.capitalRupees, { decimals: 0 })})` : "Main account";
+  const loadError = plainError(d.tickets.error);
 
   return (
-    <main style={{ width: "100%", maxWidth: 1240, margin: "0 auto", padding: "32px 16px 56px", display: "grid", gap: 32, boxSizing: "border-box" }}>
-      <PageHeader
-        eyebrow={state ? fmtIstDay(state.market.nowIst) : "Copy trading"}
-        title="Copy trades"
-        sub={`${accountLabel}: what the paper engine buys and sells, with the levels, the setup and the price action, to repeat by hand in your own account.`}
-        right={
-          <>
-            <AccountSwitcher basePath="/copy" />
-            <span className="tnum" style={{ fontSize: 12, color: C.muted2 }}>{updated}</span>
-          </>
-        }
-      />
+    <main style={{ width: "100%", maxWidth: 1240, margin: "0 auto", padding: "16px 16px 56px", display: "grid", gap: 18, boxSizing: "border-box", minWidth: 0 }}>
+      <h1 style={SR_ONLY}>Copy trades{d.date ? `, ${fmtDateKey(d.date)}` : ""}</h1>
+      <IndexActionStrip account={d.account.id} headerExtra={<AccountSwitcher basePath="/copy" />} />
 
-      <div style={{ display: "flex", flexWrap: "wrap", alignItems: "center", gap: 12, padding: "12px 16px", borderRadius: 14, background: C.panel, border: `1px solid ${C.border}`, boxShadow: "var(--shadow-card)" }}>
-        {alertsOn ? (
-          <span style={{ fontSize: 12, color: C.green, fontWeight: 700 }}>🔔 Alerts on in this tab</span>
+      <section id="trade" aria-label="The trade" style={{ scrollMarginTop: 84, minWidth: 0 }}>
+        {current ? (
+          <Panel style={{ padding: 16 }}>
+            <TradeCard t={current} a={currentAction} ticketsAgeMs={d.ticketsAgeMs} />
+          </Panel>
+        ) : list == null && !d.tickets.error ? (
+          <Skeleton height={240} style={{ borderRadius: 14 }} />
         ) : (
-          <Btn variant="gold" size="md" onClick={() => void turnOnAlerts()}>
-            🔔 Turn on sound and desktop alerts
-          </Btn>
+          <Panel>
+            <EmptyState style={{ padding: "28px 16px", fontSize: 15, color: list == null ? C.orange : C.muted }}>
+              {list == null ? `${loadError ?? "Can't load today's trades."} Today's trades will show here once it answers; it retries every few seconds.` : emptyText(d)}
+            </EmptyState>
+          </Panel>
         )}
-        <span style={{ fontSize: 11, color: C.muted, lineHeight: 1.5, flex: "1 1 260px" }}>
-          Keep this tab open during market hours. Phone alerts come through Telegram once the engine&apos;s Telegram bot is set up; each message links back here.
-        </span>
-      </div>
+      </section>
 
-      {banner && (
-        <div
-          role="status"
-          style={{
-            display: "flex",
-            justifyContent: "space-between",
-            gap: 10,
-            alignItems: "center",
-            padding: "12px 14px",
-            borderRadius: 8,
-            background: alpha(banner.up ? C.green : C.red, 0.1),
-            border: `1px solid ${alpha(banner.up ? C.green : C.red, 0.45)}`,
-            color: banner.up ? C.green : C.red,
-            fontWeight: 700,
-            fontSize: 14,
-          }}
-        >
-          <span>{banner.text}</span>
-          <Btn variant="ghost" onClick={() => setBanner(null)} aria-label="Dismiss">
-            ✕
-          </Btn>
+      <p style={{ margin: 0, fontSize: 16, lineHeight: 1.5, fontWeight: 600, color: C.textStrong }}>
+        <span style={{ color: C.gold }}>What to do now → </span>
+        {current ? nowLine(currentAction, current) : "Nothing to copy yet. The statuses above say what the engine is waiting for, and this page chimes when that changes (turn alerts on)."}
+      </p>
+
+      <section aria-label="Price action" style={{ display: "grid", gap: 10, minWidth: 0 }}>
+        <div style={{ display: "flex", flexWrap: "wrap", alignItems: "center", justifyContent: "space-between", gap: 8 }}>
+          <h2 style={{ margin: 0, fontFamily: SERIF, fontSize: 22, fontWeight: 500, color: C.textStrong }}>Price action · {chartIndex} 5-minute</h2>
+          {!current && (
+            <Segmented<IndexId>
+              label="Index"
+              value={watch}
+              onChange={setWatch}
+              options={[
+                { value: "NIFTY", label: "NIFTY" },
+                { value: "SENSEX", label: "SENSEX" },
+              ]}
+            />
+          )}
         </div>
-      )}
-
-      {tickets.error && !list && (
-        <Panel>
-          <EmptyState style={{ padding: 16 }}>Could not load the trades: {tickets.error}</EmptyState>
+        <Panel style={{ padding: 12 }}>
+          <CopyChart index={chartIndex} date={chartDate} ticket={current} active={active} phase={d.phase} today={d.date} />
         </Panel>
-      )}
+      </section>
 
-      {list == null && !tickets.error ? (
-        <Skeleton height={220} />
-      ) : list && list.length === 0 ? (
-        <Waiting signals={signals} phase={phase} />
-      ) : selected ? (
-        <>
-          <Section title={selected.status === "OPEN" ? "Trade to copy" : "Trade (closed)"}>
-            <Panel style={{ padding: 16 }}>
-              <TicketCard t={selected} />
-            </Panel>
-          </Section>
-          <Section title={`Price action · ${selected.index} 5-minute`} right={feed.data ? <span style={{ fontSize: 11, color: C.muted2 }}>last {feed.data.last.toLocaleString("en-IN")} at {fmtIstHm(feed.data.asOf)} IST</span> : null}>
-            <Panel style={{ padding: 12 }}>
-              {feed.data ? (
-                <CandleChart
-                  feed={feed.data}
-                  marks={{ entry: { at: selected.entry.at, spot: selected.entry.spot, side: selected.side }, exit: selected.exit ? { at: selected.exit.at } : null, skipBeyond: selected.status === "OPEN" ? selected.entry.skipBeyondSpot : null }}
-                />
-              ) : feed.error ? (
-                <EmptyState style={{ padding: 16 }}>{candleNote(feed.error)}</EmptyState>
-              ) : (
-                <Skeleton height={280} />
-              )}
-              <div style={{ marginTop: 10, display: "grid", gap: 6 }}>
-                <div style={{ fontSize: 13, color: C.muted, fontWeight: 600 }}>The index when the engine bought</div>
-                <MarketChips t={selected} />
+      <details style={{ background: C.panel, border: `1px solid ${C.border}`, borderRadius: 14, padding: "4px 16px", minWidth: 0 }}>
+        <summary style={{ cursor: "pointer", minHeight: 48, display: "flex", alignItems: "center", fontSize: 15, fontWeight: 700, color: C.textStrong }}>
+          Details: why, every check, indicator readings and raw IDs
+        </summary>
+        <div style={{ paddingBottom: 16 }}>
+          {current?.setup && (
+            <>
+              <H3>Why the engine took {current.headline}</H3>
+              <SetupPanel t={current} />
+            </>
+          )}
+          {current && (
+            <>
+              <H3>{current.index} when the engine bought</H3>
+              <MarketChips index={current.index} market={current.market} />
+            </>
+          )}
+          {INDICES.map((index) => {
+            const s = signalFor(index);
+            if (!s) return null;
+            return (
+              <div key={index}>
+                <H3>
+                  Every check on the engine&apos;s latest {index} reading ({hms(s.computedAt)} IST)
+                </H3>
+                <p style={{ margin: "0 0 8px", fontSize: 12.5, color: C.muted, lineHeight: 1.5 }}>{s.rationale}</p>
+                <GateList gates={s.gates} />
+                {s.indicators && (
+                  <div style={{ marginTop: 10 }}>
+                    <MarketChips index={index} market={signalMarket(s)} />
+                  </div>
+                )}
               </div>
-            </Panel>
-          </Section>
-          <Section title="Why the engine took it">
-            <Panel style={{ padding: 16 }}>
-              <SetupPanel t={selected} />
-            </Panel>
-          </Section>
-        </>
-      ) : null}
+            );
+          })}
+          {current && current.steps.length > 0 && (
+            <>
+              <H3>The engine&apos;s own copy steps</H3>
+              <ol style={{ listStyle: "decimal", margin: 0, paddingLeft: 20, display: "grid", gap: 6, fontSize: 12.5, color: C.textSoft, lineHeight: 1.5 }}>
+                {current.steps.map((s) => (
+                  <li key={s}>{s}</li>
+                ))}
+              </ol>
+            </>
+          )}
+          {current && (
+            <>
+              <H3>Raw IDs</H3>
+              <RawIds t={current} />
+            </>
+          )}
+        </div>
+      </details>
 
       {list && list.length > 0 && (
-        <Section title={`Today's trades (${list.length})`}>
-          <Panel style={{ padding: 0, overflow: "hidden" }}>
+        <section aria-label="Today's trades" style={{ display: "grid", gap: 10, minWidth: 0 }}>
+          <h2 style={{ margin: 0, fontFamily: SERIF, fontSize: 22, fontWeight: 500, color: C.textStrong }}>Today&apos;s trades ({list.length})</h2>
+          <Panel style={{ padding: 0 }}>
             {list.map((t) => (
-              <TicketRow key={t.id} t={t} selected={t.id === selected?.id} onPick={() => pick(t.id)} />
+              <TicketRow key={t.id} t={t} selected={t.id === current?.id} onPick={() => pick(t.id)} />
             ))}
           </Panel>
-        </Section>
+        </section>
       )}
 
-      {list && list.length === 0 && (
-        <Section
-          title={`Price action · ${watch} 5-minute`}
-          right={
-            <div style={{ display: "inline-flex", gap: 6 }}>
-              {(["NIFTY", "SENSEX"] as IndexId[]).map((i) => (
-                <Btn key={i} variant={i === watch ? "gold" : "outline"} onClick={() => setWatch(i)}>
-                  {i}
-                </Btn>
-              ))}
-            </div>
-          }
-        >
-          <Panel style={{ padding: 12 }}>
-            {feed.data ? <CandleChart feed={feed.data} marks={{}} /> : feed.error ? <EmptyState style={{ padding: 16 }}>{candleNote(feed.error)}</EmptyState> : <Skeleton height={280} />}
-          </Panel>
-        </Section>
-      )}
-
-      <p style={{ margin: 0, fontSize: 11, color: C.muted2, lineHeight: 1.6 }}>
-        These are paper trades. Over the 54 sessions backtested so far the strategy lost money on both accounts, so copying them with real money is likely to lose money too. The engine&apos;s option prices are
-        model prices until a broker feed is connected, and the index data is about a minute late: check the real price, size from your own capital, and use a stop-loss.
+      <p style={{ margin: 0, fontSize: 12.5, color: C.muted, lineHeight: 1.6 }}>
+        <b>Alerts.</b> {ALERTS_EXPLAINED}
+      </p>
+      <p style={{ margin: 0, fontSize: 12, color: C.muted2, lineHeight: 1.6 }}>
+        These are paper trades. Over the sessions backtested so far the strategy lost money on both accounts, so copying them with real money is likely to lose money too. Without a broker feed the
+        engine&apos;s option prices are model prices, and the index data is about a minute late: check the real price, size from your own capital, and always use a stop-loss.
       </p>
     </main>
   );

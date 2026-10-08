@@ -70,7 +70,8 @@ export default function CandleChart({ feed, marks }: { feed: IntradayFeed; marks
     setHover(best);
   };
   const h = hover != null ? candles[hover] : null;
-  const entryColor = marks.entry?.side === "BULL" ? C.green : C.red;
+  // The buy is an action (terracotta), whatever its side: green and red mean profit and loss here.
+  const entryColor = C.gold;
 
   return (
     <div ref={wrap} style={{ position: "relative", width: "100%", height: H }}>
@@ -114,9 +115,9 @@ export default function CandleChart({ feed, marks }: { feed: IntradayFeed; marks
           )}
           {marks.skipBeyond != null && (
             <g>
-              <line x1={PAD.l} x2={PAD.l + innerW} y1={y(marks.skipBeyond)} y2={y(marks.skipBeyond)} stroke={C.orange} strokeWidth={1} strokeDasharray="1 3" />
-              <text x={PAD.l + innerW - 4} y={y(marks.skipBeyond) + (marks.entry?.side === "BULL" ? -4 : 11)} fill={C.orange} fontSize={9} textAnchor="end">
-                too late to copy past {fmtNum(marks.skipBeyond, 0)}
+              <line x1={PAD.l} x2={PAD.l + innerW} y1={y(marks.skipBeyond)} y2={y(marks.skipBeyond)} stroke={C.textDim} strokeWidth={1} strokeDasharray="2 3" />
+              <text x={PAD.l + innerW - 4} y={y(marks.skipBeyond) + (marks.entry?.side === "BULL" ? -4 : 11)} fill={C.textDim} fontSize={9} textAnchor="end">
+                skip level {fmtNum(marks.skipBeyond, 0)}: too late to copy past it
               </text>
             </g>
           )}
