@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { accountSpec } from "../accounts";
 import { computeCharges } from "../broker/charges";
 import { istAt } from "../clock";
 import { NEUTRAL_INDICATORS, NEUTRAL_OPENING_RANGE } from "../market/features";
@@ -213,6 +214,17 @@ describe("copy alert texts", () => {
   it("tags accounts by their capital", () => {
     expect(accountTag(TEN_K)).toBe("₹10k");
     expect(accountTag(MAIN)).toBe("Main ₹5L");
+  });
+
+  it("prefixes the ₹5k account's alerts with ₹5k and links to its book", () => {
+    const spec = accountSpec("small5k");
+    const fiveK = { id: spec.id, label: spec.label, shortLabel: spec.shortLabel, paperOnly: spec.paperOnly, capitalRupees: 5_000 };
+    expect(accountTag(fiveK)).toBe("₹5k");
+    const t = copyTicketView({ position: position(), plan: plan(), account: fiveK, timeStopMinPnlPct: 10 });
+    const l = copyLink("https://dash.example.dev", t);
+    expect(l).toBe("https://dash.example.dev/copy?account=small5k&id=pos1");
+    expect(copyEntryText(t, l).split("\n")[0]).toBe("🟢 COPY ₹5k · BUY NIFTY 25000 PE (13 Oct)");
+    expect(copyEntryText(t, l)).toContain("% of ₹5k)");
   });
 
   it("has everything needed to copy the entry", () => {

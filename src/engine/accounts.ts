@@ -122,7 +122,7 @@ export function parseAccountId(raw: string | null | undefined): AccountId | null
   return (ACCOUNT_IDS as readonly string[]).includes(text) ? (text as AccountId) : null;
 }
 
-/** Comma-separated account ids ("main,small10k"). Main is always first; unknown names and duplicates are dropped. */
+/** Comma-separated account ids ("main,small10k,small5k"). Main is always first; unknown names and duplicates are dropped. */
 export function parseAccounts(raw: string | undefined): AccountId[] {
   const out: AccountId[] = ["main"];
   for (const part of (raw ?? "").split(",")) {
