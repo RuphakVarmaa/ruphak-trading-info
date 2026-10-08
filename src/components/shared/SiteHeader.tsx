@@ -33,13 +33,14 @@ export function ModeBadge({ mode, title }: { mode: EngineMode; title?: string })
   );
 }
 
-type Page = "desk" | "live" | "copy" | "backtest";
+type Page = "desk" | "live" | "copy" | "backtest" | "metals";
 
 const NAV: { href: string; label: string; page: Page }[] = [
   { href: "/", label: "Desk", page: "desk" },
   { href: "/live", label: "Live P&L", page: "live" },
   { href: "/copy", label: "Copy trade", page: "copy" },
   { href: "/backtest", label: "Backtest", page: "backtest" },
+  { href: "/metals", label: "Metals", page: "metals" },
 ];
 
 export default function SiteHeader({
@@ -49,7 +50,7 @@ export default function SiteHeader({
 }: {
   active: Page | null;
   mode?: EngineMode | null;
-  /** Page-specific status shown before the mode badge. */
+  /** Page-specific status shown before the mode badge. The PAPER/LIVE badge belongs here only, once per page. */
   extra?: ReactNode;
 }) {
   return (

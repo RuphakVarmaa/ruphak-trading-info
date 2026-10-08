@@ -117,8 +117,13 @@ export function ConvictionGauge({
   );
 }
 
-export function ContractBlock({ signal }: { signal: SignalView }) {
+/**
+ * `priceNote`: where the premium comes from, e.g. "model price" (Black-Scholes on India VIX, so a
+ * broker's price will differ) or "Groww quote".
+ */
+export function ContractBlock({ signal, priceNote = "model price" }: { signal: SignalView; priceNote?: string }) {
   const c = signal.contract;
+  const note = <span title={priceNote === "model price" ? "Black-Scholes on India VIX; a broker's price will differ" : undefined}>({priceNote})</span>;
   const box = { border: `1px solid ${C.border}`, borderRadius: 10, padding: "11px 13px", background: C.panelAlt } as const;
   if (!c) {
     return (
@@ -133,7 +138,7 @@ export function ContractBlock({ signal }: { signal: SignalView }) {
       <div className="tnum" style={{ ...box, padding: "7px 11px", fontSize: 10, color: C.muted, fontFamily: "var(--font-num)", display: "flex", flexWrap: "wrap", gap: "2px 10px" }}>
         <span style={{ ...microLabel, fontFamily: "inherit" }}>Plan</span>
         <span>
-          entry {c.premium != null ? fmtInr(c.premium, { decimals: 2 }) : "—"} · at risk {c.premiumAtRisk != null ? fmtInr(c.premiumAtRisk) : "—"}
+          entry {c.premium != null ? <>{fmtInr(c.premium, { decimals: 2 })} {note}</> : "—"} · at risk {c.premiumAtRisk != null ? fmtInr(c.premiumAtRisk) : "—"}
         </span>
         {signal.expectedMovePct != null && signal.impliedMovePct != null && (
           <span>
@@ -163,7 +168,7 @@ export function ContractBlock({ signal }: { signal: SignalView }) {
       </div>
       <div style={{ fontSize: 15, fontWeight: 700, color: C.textStrong, fontFamily: "var(--font-num)", letterSpacing: "0.01em" }}>{c.label}</div>
       <div className="tnum" style={{ fontSize: 11, color: C.muted, fontFamily: "var(--font-num)", marginTop: 3 }}>
-        lot {c.lotSize} × {c.lots} · premium {c.premium != null ? fmtInr(c.premium, { decimals: 2 }) : "—"} · at risk{" "}
+        lot {c.lotSize} × {c.lots} · premium {c.premium != null ? <>{fmtInr(c.premium, { decimals: 2 })} {note}</> : "—"} · at risk{" "}
         {c.premiumAtRisk != null ? fmtInr(c.premiumAtRisk) : "—"}
       </div>
       {signal.expectedMovePct != null && signal.impliedMovePct != null && (
@@ -179,8 +184,29 @@ export function ContractBlock({ signal }: { signal: SignalView }) {
 const gateGlyph = (g: GateResult) => (g.passed === true ? "✓" : g.passed === false ? "✗" : "–");
 const gateColor = (g: GateResult) => (g.passed === true ? C.green : g.passed === false ? C.red : C.muted3);
 
-export function GateList({ gates, allPassed }: { gates: GateResult[]; allPassed: boolean }) {
-  const [open, setOpen] = useState(false);
+/** One line for the card: whether every check passes, and the first one that blocks a trade. */
+export function ChecksSummary({ gates, allPassed }: { gates: GateResult[]; allPassed: boolean }) {
+  const applicable = gates.filter((g) => g.passed !== null);
+  const passed = applicable.filter((g) => g.passed === true).length;
+  const failed = gates.find((g) => g.passed === false);
+  return (
+    <div style={{ display: "flex", alignItems: "baseline", flexWrap: "wrap", gap: "4px 8px", fontSize: 13, color: C.textSoft, lineHeight: 1.5 }}>
+      {allPassed ? <Pill color={C.green}>✓ all clear</Pill> : <Pill color={C.red}>✗ blocked</Pill>}
+      <span className="tnum" style={{ color: C.muted2 }}>
+        {passed}/{applicable.length} checks pass
+      </span>
+      {failed && (
+        <span style={{ minWidth: 0 }}>
+          · {failed.label}: <span style={{ color: C.muted }}>{failed.detail || "failed"}</span>
+        </span>
+      )}
+    </div>
+  );
+}
+
+export function GateList({ gates, allPassed, expanded = false }: { gates: GateResult[]; allPassed: boolean; expanded?: boolean }) {
+  const [openState, setOpen] = useState(false);
+  const open = expanded || openState;
   const failed = gates.filter((g) => g.passed === false);
   const applicable = gates.filter((g) => g.passed !== null);
   const passed = applicable.filter((g) => g.passed === true).length;
@@ -192,9 +218,11 @@ export function GateList({ gates, allPassed }: { gates: GateResult[]; allPassed:
           {passed}/{applicable.length} passed
         </span>
         {allPassed ? <Pill color={C.green}>✓ all clear</Pill> : <Pill color={C.red}>✗ blocked</Pill>}
-        <button type="button" aria-expanded={open} onClick={() => setOpen((o) => !o)} style={{ ...linkButton, marginLeft: "auto" }}>
-          {open ? "▾ hide details" : "▸ details"}
-        </button>
+        {!expanded && (
+          <button type="button" aria-expanded={open} onClick={() => setOpen((o) => !o)} style={{ ...linkButton, marginLeft: "auto" }}>
+            {open ? "▾ hide details" : "▸ details"}
+          </button>
+        )}
       </div>
       {open ? (
         <div style={{ display: "flex", flexDirection: "column", gap: 3 }}>

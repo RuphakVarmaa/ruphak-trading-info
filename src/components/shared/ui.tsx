@@ -292,24 +292,72 @@ export function StatTile({
       }}
     >
       <div style={{ fontSize: 12.5, color: C.muted, marginBottom: 8, fontWeight: 500 }}>{label}</div>
+      {/* Figures are never cut off: the size steps down on narrow tiles and, as a last resort, the figure wraps. */}
       <div
         className="tnum"
         style={{
-          fontSize: hero ? 30 : 23,
+          fontSize: hero ? "clamp(22px, 2.4vw, 30px)" : "clamp(18px, 1.9vw, 23px)",
           fontWeight: 600,
           color,
           fontFamily: "var(--font-num)",
           letterSpacing: "-0.02em",
           lineHeight: 1.15,
-          whiteSpace: "nowrap",
-          overflow: "hidden",
-          textOverflow: "ellipsis",
+          overflowWrap: "anywhere",
         }}
       >
         {value}
       </div>
       {sub != null && <div style={{ fontSize: 12, color: C.muted2, marginTop: 6, lineHeight: 1.45 }}>{sub}</div>}
     </div>
+  );
+}
+
+/**
+ * A collapsed card for secondary material: the summary row is its header (an H2 with an optional
+ * note); the content renders only once it has been opened, and stays mounted after that.
+ */
+export function Disclosure({
+  id,
+  title,
+  note,
+  defaultOpen = false,
+  children,
+}: {
+  id?: string;
+  title: ReactNode;
+  note?: ReactNode;
+  defaultOpen?: boolean;
+  children: ReactNode;
+}) {
+  const [opened, setOpened] = useState(defaultOpen);
+  const ref = useRef<HTMLDetailsElement>(null);
+  // A link to the disclosure (#id) opens it.
+  useEffect(() => {
+    if (!id) return;
+    const openIfTarget = () => {
+      if (window.location.hash === `#${id}` && ref.current) ref.current.open = true;
+    };
+    openIfTarget();
+    window.addEventListener("hashchange", openIfTarget);
+    return () => window.removeEventListener("hashchange", openIfTarget);
+  }, [id]);
+  return (
+    <details
+      ref={ref}
+      id={id}
+      className="card-disclosure"
+      open={defaultOpen || undefined}
+      onToggle={(e) => {
+        if ((e.currentTarget as HTMLDetailsElement).open) setOpened(true);
+      }}
+      style={{ background: C.panel, border: `1px solid ${C.border}`, borderRadius: 14, boxShadow: "var(--shadow-card)", scrollMarginTop: 84, minWidth: 0 }}
+    >
+      <summary>
+        <h2 style={{ display: "inline", margin: 0, fontFamily: SERIF, fontSize: "clamp(20px, 2.2vw, 24px)", fontWeight: 500, letterSpacing: "-0.01em", color: C.textStrong }}>{title}</h2>
+        {note != null && <span style={{ fontSize: 13.5, color: C.muted2 }}>{note}</span>}
+      </summary>
+      {opened && <div style={{ padding: 18, display: "grid", gridTemplateColumns: "minmax(0, 1fr)", gap: 20, minWidth: 0 }}>{children}</div>}
+    </details>
   );
 }
 
