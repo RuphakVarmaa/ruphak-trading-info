@@ -85,9 +85,14 @@ export async function fetchRssFeed(feed: FeedSpec, opts: RssFetchOptions = {}): 
   return parseRssItems(xml, "publisher_rss", { publisher: feed.publisher });
 }
 
-/** Bing News RSS search for India, newest first. */
-export function bingNewsRssUrl(query: string): string {
-  const params = new URLSearchParams({ q: query, format: "rss", mkt: "en-IN", qft: 'sortbydate="1"' });
+export interface BingNewsOptions extends RssFetchOptions {
+  /** Bing market, e.g. "en-US" for global coverage. Default "en-IN". */
+  market?: string;
+}
+
+/** Bing News RSS search, newest first; India results unless another market is given. */
+export function bingNewsRssUrl(query: string, market = "en-IN"): string {
+  const params = new URLSearchParams({ q: query, format: "rss", mkt: market, qft: 'sortbydate="1"' });
   return `https://www.bing.com/news/search?${params.toString()}`;
 }
 
@@ -105,7 +110,7 @@ export function unwrapBingLink(link: string): string {
   return link;
 }
 
-export async function fetchBingNews(query: string, opts: RssFetchOptions = {}): Promise<RawArticle[]> {
-  const xml = await fetchText(opts.fetchImpl ?? fetch, bingNewsRssUrl(query), { headers: { "User-Agent": BROWSER_UA, Accept: RSS_ACCEPT } }, opts.timeoutMs ?? 15_000);
+export async function fetchBingNews(query: string, opts: BingNewsOptions = {}): Promise<RawArticle[]> {
+  const xml = await fetchText(opts.fetchImpl ?? fetch, bingNewsRssUrl(query, opts.market), { headers: { "User-Agent": BROWSER_UA, Accept: RSS_ACCEPT } }, opts.timeoutMs ?? 15_000);
   return parseRssItems(xml, "bing_rss", { mapLink: unwrapBingLink });
 }

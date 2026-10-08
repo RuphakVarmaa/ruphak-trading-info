@@ -30,15 +30,17 @@ export async function GET(req: Request) {
   if (hit && Date.now() - hit.at < CACHE_MS) return reply(hit.data, hit.at);
 
   let feed: IntradayFeed | null = null;
-  let why = "no bars for that day";
+  let failure: string | null = null;
   try {
     feed = buildIntraday(index, await fetchYahooChart(MARKET_SYMBOLS[index], { interval: "5m", range: "5d", timeoutMs: 8000 }), date);
   } catch (err) {
-    why = err instanceof Error ? err.message : String(err);
+    failure = err instanceof Error ? err.message : String(err);
   }
   if (!feed) {
     if (hit && Date.now() - hit.at < STALE_OK_MS) return reply(hit.data, hit.at);
-    return NextResponse.json({ ok: false, code: "ENGINE_UNREACHABLE", error: `Yahoo did not return ${index} candles: ${why}` }, { status: 502, headers: NO_STORE });
+    // Yahoo answered but has no bars for that day (before the open, a holiday, older than 5 days): not an outage.
+    if (failure == null) return NextResponse.json({ ok: false, code: "NOT_FOUND", error: `No ${index} 5-minute candles for ${date ?? "the latest session"} yet.` }, { status: 404, headers: NO_STORE });
+    return NextResponse.json({ ok: false, code: "ENGINE_UNREACHABLE", error: `Yahoo did not return ${index} candles: ${failure}` }, { status: 502, headers: NO_STORE });
   }
   const at = Date.now();
   cache.set(key, { at, data: feed });

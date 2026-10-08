@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import { DEFAULT_CONFIG } from "../../config";
 import { InMemoryRepository } from "../../repo/memory";
 import { buildFetchers } from "./index";
-import { bingNewsRssUrl, parseRssItems, unwrapBingLink } from "./rss";
+import { bingNewsRssUrl, fetchBingNews, parseRssItems, unwrapBingLink } from "./rss";
 
 const T0 = Date.parse("2026-10-07T12:00:00Z");
 
@@ -65,6 +65,19 @@ describe("RSS parsing", () => {
     expect(u.searchParams.get("format")).toBe("rss");
     expect(u.searchParams.get("mkt")).toBe("en-IN");
     expect(u.searchParams.get("qft")).toBe('sortbydate="1"');
+  });
+
+  it("asks Bing for another market when given one", async () => {
+    expect(new URL(bingNewsRssUrl("gold price", "en-US")).searchParams.get("mkt")).toBe("en-US");
+    const urls: string[] = [];
+    const fetchImpl = async (input: string | URL | Request) => {
+      urls.push(String(input));
+      return new Response(BING_XML, { status: 200 });
+    };
+    const items = await fetchBingNews("gold price", { fetchImpl, market: "en-US" });
+    await fetchBingNews("Nifty", { fetchImpl });
+    expect(items).toHaveLength(1);
+    expect(urls.map((u) => new URL(u).searchParams.get("mkt"))).toEqual(["en-US", "en-IN"]);
   });
 });
 
