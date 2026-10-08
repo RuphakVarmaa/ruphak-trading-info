@@ -1,10 +1,12 @@
 import { describe, expect, it } from "vitest";
+import { accountConfig } from "../accounts";
 import { defaultCalendar } from "../calendar/calendar";
 import { istAt } from "../clock";
 import { DEFAULT_CONFIG } from "../config";
 import { sample } from "../repo/contract";
+import { accountRepository } from "../repo/accountRepo";
 import { InMemoryRepository } from "../repo/memory";
-import type { Conviction, OptionContract, PlanDecision, Position } from "../types";
+import type { Conviction, Fill, OptionContract, Order, PlanDecision, Position } from "../types";
 import { ReadModel, llmUsageKey, positionView } from "./readModel";
 
 const NOW = istAt("2026-10-07", "11:00");
@@ -166,5 +168,66 @@ describe("read model", () => {
     expect(pnl.equityCurve.at(-1)?.equity).toBe(501_650);
     const st = await model.getState();
     expect(st.caps.dailyLossUsed).toBe(250);
+  });
+});
+
+describe("read model for the ₹10k account", () => {
+  const cfg10k = accountConfig(DEFAULT_CONFIG, "small10k");
+  const accounts = [
+    { id: "main", label: "Main account", shortLabel: "Main", paperOnly: false, capitalRupees: 500_000 },
+    { id: "small10k", label: "₹10k account", shortLabel: "₹10k", paperOnly: true, capitalRupees: 10_000 },
+  ];
+
+  async function setupBoth() {
+    const base = new InMemoryRepository(DEFAULT_CONFIG, NOW);
+    const small = accountRepository(base, "small10k", cfg10k, () => NOW);
+    const ctx = { calendar: defaultCalendar, now: NOW, liveTradingEnabled: true, version: "test", accounts };
+    const main = new ReadModel({ ...ctx, repo: base, cfg: DEFAULT_CONFIG, account: accounts[0] });
+    const tenK = new ReadModel({ ...ctx, repo: small, cfg: cfg10k, account: accounts[1] });
+    return { base, small, main, tenK };
+  }
+
+  const order = (id: string): Order =>
+    ({ id, refId: `R${id}AAAAAAAA`.slice(0, 10), contract, side: "BUY", qty: 65, type: "LIMIT", product: "MIS", reason: "ENTRY", filledQty: 65, status: "FILLED", mode: "PAPER", createdMs: NOW, updatedMs: NOW }) as Order;
+  const fill = (id: string, orderId: string): Fill =>
+    ({ id, orderId, t: NOW, qty: 65, price: 50, slippageTicks: 0, charges: { brokerage: 20, stt: 0, exchangeTxn: 1, sebi: 0, stampDuty: 0, ipft: 0, gst: 4, total: 25 } }) as Fill;
+
+  it("describes the account: ₹10,000 capital, paper only", async () => {
+    const { tenK } = await setupBoth();
+    const s = await tenK.getState();
+    expect(s.account?.id).toBe("small10k");
+    expect(s.accounts?.map((a) => a.id)).toEqual(["main", "small10k"]);
+    expect(s.liveTradingEnabled).toBe(false);
+    expect(s.caps.dailyLossCap).toBe(2_500);
+    const pnl = await tenK.getPnl(5);
+    expect(pnl.startingEquity).toBe(10_000);
+  });
+
+  it("never shows one account's orders, fills or positions in the other's view", async () => {
+    const { base, small, main, tenK } = await setupBoth();
+    await base.orders.save(order("m1"));
+    await base.fills.append(fill("fm", "m1"));
+    await small.orders.save(order("s1"));
+    await small.fills.append(fill("fs", "s1"));
+    await base.positions.save(position({ id: "pm" }));
+    await small.positions.save(position({ id: "ps" }));
+
+    const mainOrders = await main.getOrders("2026-10-07");
+    expect(mainOrders.orders.map((o) => o.id)).toEqual(["m1"]);
+    expect(mainOrders.fills.map((f) => f.id)).toEqual(["fm"]);
+    const smallOrders = await tenK.getOrders("2026-10-07");
+    expect(smallOrders.orders.map((o) => [o.id, o.mode])).toEqual([["s1", "PAPER"]]);
+    expect(smallOrders.fills.map((f) => f.id)).toEqual(["fs"]);
+    expect((await main.getPositions()).map((p) => p.id)).toEqual(["pm"]);
+    expect((await tenK.getPositions()).map((p) => p.id)).toEqual(["ps"]);
+  });
+
+  it("shows its own kill switch, not main's", async () => {
+    const { base, small, tenK, main } = await setupBoth();
+    await base.settings.update({ killSwitch: true, killReason: "main only" }, "test");
+    expect((await tenK.getState()).killSwitch).toBe(false);
+    await small.settings.update({ killSwitch: true, killReason: "₹10k only" }, "test");
+    expect((await tenK.getState()).heartbeat.phase).toBe("KILLED");
+    expect((await main.getState()).killReason).toBe("main only");
   });
 });

@@ -6,7 +6,7 @@ import { readFileSync, readdirSync } from "node:fs";
 import { afterAll, beforeAll } from "vitest";
 import { getPlatformProxy } from "wrangler";
 import { DEFAULT_CONFIG } from "../../../../src/engine/config";
-import { repositoryContract } from "../../../../src/engine/repo/contract";
+import { accountScopeContract, repositoryContract } from "../../../../src/engine/repo/contract";
 import { D1Repository } from "./d1Repository";
 
 type Proxy = Awaited<ReturnType<typeof getPlatformProxy<{ DB: D1Database }>>>;
@@ -36,9 +36,12 @@ afterAll(async () => {
   await proxy?.dispose();
 });
 
-repositoryContract("D1", async () => {
+async function freshRepository(): Promise<D1Repository> {
   // Fresh tables for every test.
   for (const t of TABLES) await proxy.env.DB.prepare(`DELETE FROM ${t}`).run();
   counter++;
   return new D1Repository(proxy.env.DB, DEFAULT_CONFIG, () => Date.parse("2026-10-07T05:00:00Z") + counter);
-});
+}
+
+repositoryContract("D1", freshRepository);
+accountScopeContract("D1", freshRepository);

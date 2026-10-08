@@ -3,8 +3,11 @@
  * repository's tests and by the D1 repository's integration test.
  */
 import { describe, expect, it } from "vitest";
+import { accountConfig } from "../accounts";
+import { DEFAULT_CONFIG } from "../config";
 import type { Repository } from "../ports";
-import type { ArticleCluster, DayLedger, NormalizedArticle, Order, Position, ScoredEvent, TradeRecord } from "../types";
+import type { ArticleCluster, DayLedger, Fill, NormalizedArticle, Order, Position, ScoredEvent, TradeRecord } from "../types";
+import { accountRepository } from "./accountRepo";
 
 const T = Date.parse("2026-10-07T05:00:00Z");
 
@@ -149,6 +152,90 @@ export function repositoryContract(name: string, make: () => Promise<Repository>
       expect((await repo.heartbeat.read())?.phase).toBe("OPEN");
       await repo.audit.append({ ts: T, actor: "a", action: "x" });
       expect((await repo.audit.recent(5))[0].action).toBe("x");
+    });
+  });
+}
+
+/**
+ * Account scoping on top of a Repository implementation: a paper account's books share the tables
+ * with main's but never mix with them, and its settings and kv keys are its own.
+ */
+export function accountScopeContract(name: string, make: () => Promise<Repository>): void {
+  const cfg10k = accountConfig(DEFAULT_CONFIG, "small10k");
+  const scoped = (base: Repository) => accountRepository(base, "small10k", cfg10k, () => T);
+  const contract = { index: "NIFTY", exchange: "NSE", tradingSymbol: "S", growwSymbol: "G", exchangeToken: "1", expiry: "2026-10-13", strike: 22600, type: "CE", lotSize: 65, tickSize: 0.05 } as const;
+  const order = (id: string, over: Partial<Order> = {}): Order =>
+    ({ contract, side: "BUY", qty: 65, type: "LIMIT", product: "MIS", reason: "ENTRY", filledQty: 65, mode: "PAPER", id, refId: `R${id}AAAAAAAA`.slice(0, 10), status: "FILLED", createdMs: T, updatedMs: T, ...over }) as Order;
+
+  describe(`Account scope: ${name}`, () => {
+    it("keeps the ₹10k account's orders, fills, positions and trades apart from main's", async () => {
+      const base = await make();
+      const small = scoped(base);
+      await base.orders.save(order("m1"));
+      await small.orders.save(order("s1"));
+      await base.fills.append({ id: "fm", orderId: "m1", t: T, qty: 65, price: 50, charges: { brokerage: 20, stt: 0, exchange: 0, sebi: 0, stamp: 0, ipft: 0, gst: 0, total: 20 }, slippageTicks: 0 } as unknown as Fill);
+      await small.fills.append({ id: "fs", orderId: "s1", t: T, qty: 65, price: 50, charges: { brokerage: 20, stt: 0, exchange: 0, sebi: 0, stamp: 0, ipft: 0, gst: 0, total: 20 }, slippageTicks: 0 } as unknown as Fill);
+      expect((await base.orders.between(T - 1, T + 1, "PAPER")).map((o) => o.id)).toEqual(["m1"]);
+      const mine = await small.orders.between(T - 1, T + 1);
+      expect(mine.map((o) => [o.id, o.mode])).toEqual([["s1", "PAPER"]]);
+      expect(await small.orders.get("m1")).toBeNull();
+      expect((await small.orders.get("s1"))?.mode).toBe("PAPER");
+      expect((await small.fills.between(T - 1, T + 1)).map((f) => f.orderId)).toEqual(["s1"]);
+
+      const p = { id: "p", mode: "PAPER", status: "OPEN", index: "NIFTY" } as unknown as Position;
+      await base.positions.save({ ...p, id: "pm" });
+      await small.positions.save({ ...p, id: "ps" });
+      expect((await base.positions.open("PAPER")).map((x) => x.id)).toEqual(["pm"]);
+      expect((await small.positions.open("PAPER")).map((x) => [x.id, x.mode])).toEqual([["ps", "PAPER"]]);
+      expect(await small.positions.get("pm")).toBeNull();
+
+      await base.trades.append({ positionId: "pm", mode: "PAPER", exitMs: T } as unknown as TradeRecord);
+      await small.trades.append({ positionId: "ps", mode: "PAPER", exitMs: T } as unknown as TradeRecord);
+      expect((await base.trades.recent(5, "PAPER")).map((t) => t.positionId)).toEqual(["pm"]);
+      expect((await small.trades.recent(5, "PAPER")).map((t) => [t.positionId, t.mode])).toEqual([["ps", "PAPER"]]);
+    });
+
+    it("keeps separate ledgers", async () => {
+      const base = await make();
+      const small = scoped(base);
+      const l = { date: "2026-10-07", mode: "PAPER", realized: 10 } as unknown as DayLedger;
+      await base.ledger.save(l);
+      await small.ledger.save({ ...l, realized: -500 });
+      expect((await base.ledger.get("2026-10-07", "PAPER"))?.realized).toBe(10);
+      const own = await small.ledger.get("2026-10-07", "PAPER");
+      expect(own?.realized).toBe(-500);
+      expect(own?.mode).toBe("PAPER");
+      expect(await small.ledger.range("2026-10-01", "2026-10-31", "PAPER")).toHaveLength(1);
+    });
+
+    it("refuses LIVE books and signal-performance writes", async () => {
+      const small = scoped(await make());
+      await expect(small.orders.save(order("x", { mode: "LIVE" }))).rejects.toThrow(/paper-only/);
+      await expect(small.perf.upsertMany([])).rejects.toThrow(/signal performance/);
+    });
+
+    it("derives its caps from the account config and keeps its own kill switch", async () => {
+      const base = await make();
+      const small = scoped(base);
+      const s = await small.settings.get();
+      expect(s.mode).toBe("PAPER");
+      expect(s.dailyLossCapInr).toBe(2_500);
+      expect(s.maxPremiumPerTradeInr).toBe(5_000);
+      expect(s.maxOpenPositions).toBe(1);
+      await small.settings.update({ killSwitch: true, killReason: "test" }, "tester");
+      expect((await small.settings.get()).killSwitch).toBe(true);
+      expect((await base.settings.get()).killSwitch).toBe(false);
+      await expect(small.settings.update({ mode: "LIVE" }, "tester")).rejects.toThrow(/paper-only/);
+    });
+
+    it("prefixes its own kv keys and shares the rest", async () => {
+      const base = await make();
+      const small = scoped(base);
+      await small.state.set("decision:last:NIFTY", { t: 1 });
+      expect(await base.state.get("decision:last:NIFTY")).toBeNull();
+      await base.state.set("health:yahoo", { ok: true });
+      expect(await small.state.get("health:yahoo")).toEqual({ ok: true });
+      expect(await small.perf.all("PAPER")).toEqual(await base.perf.all("PAPER"));
     });
   });
 }

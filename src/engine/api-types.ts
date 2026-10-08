@@ -130,6 +130,19 @@ export interface EngineStateDTO {
     llmInputTokensToday: number;
     llmOutputTokensToday: number;
   };
+  /** The account this state describes. Absent from older engines and the mock (main). */
+  account?: AccountView;
+  /** Every account the engine runs, main first. Absent from older engines and the mock. */
+  accounts?: AccountView[];
+}
+
+/** A paper account: "main" is the engine's own book; others follow its signals with their own capital. */
+export interface AccountView {
+  id: string;
+  label: string;
+  shortLabel: string;
+  paperOnly: boolean;
+  capitalRupees: number;
 }
 
 // ---------------------------------------------------------------------------

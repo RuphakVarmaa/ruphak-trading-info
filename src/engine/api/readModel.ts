@@ -7,6 +7,7 @@ import {
   SIGNAL_SOURCE_LABELS,
   contractLabel,
   taxonomyTab,
+  type AccountView,
   type ChargesView,
   type DailyPnlView,
   type EngineStateDTO,
@@ -62,6 +63,10 @@ export interface ReadContext {
   liveTradingEnabled: boolean;
   version?: string;
   loopIntervalSec?: number;
+  /** The account `repo` is scoped to (main when absent). */
+  account?: AccountView;
+  /** Every account the engine runs, for the dashboard's switcher. */
+  accounts?: AccountView[];
 }
 
 /** Daily LLM usage counters kept in repo.state under `llm:usage:<IST date>`. */
@@ -266,10 +271,12 @@ export class ReadModel {
       stale: now - q.asOf > quoteStaleMs,
     }));
     const armed = settings.armedUntil !== null && settings.armedUntil > now && !settings.killSwitch;
+    // The heartbeat is engine-wide; its KILLED phase is main's kill switch, so other accounts show their own.
+    const hbPhase = this.ctx.account && this.ctx.account.id !== "main" && hb?.phase === "KILLED" ? (phase === "OPEN" ? "OPEN" : "CLOSED") : hb?.phase;
     return {
       dataSource: "engine",
       mode: settings.mode,
-      liveTradingEnabled: this.ctx.liveTradingEnabled,
+      liveTradingEnabled: this.ctx.liveTradingEnabled && !this.ctx.account?.paperOnly,
       armed,
       armedUntil: settings.armedUntil !== null && settings.armedUntil > now ? istIso(settings.armedUntil) : null,
       killSwitch: settings.killSwitch,
@@ -284,7 +291,7 @@ export class ReadModel {
       },
       heartbeat: {
         lastTickAt: hb?.lastTickMs ? istIso(hb.lastTickMs) : null,
-        phase: settings.killSwitch ? "KILLED" : (hb?.phase ?? "IDLE"),
+        phase: settings.killSwitch ? "KILLED" : (hbPhase ?? "IDLE"),
         loopIntervalSec: this.ctx.loopIntervalSec ?? 30,
         consecutiveErrors: hb?.consecutiveErrors ?? 0,
         version: hb?.version ?? this.ctx.version ?? null,
@@ -306,6 +313,8 @@ export class ReadModel {
         llmInputTokensToday: usage?.inputTokens ?? 0,
         llmOutputTokensToday: usage?.outputTokens ?? 0,
       },
+      ...(this.ctx.account ? { account: this.ctx.account } : {}),
+      ...(this.ctx.accounts ? { accounts: this.ctx.accounts } : {}),
     };
   }
 
@@ -440,7 +449,12 @@ export class ReadModel {
   async getOrders(date: string): Promise<{ orders: OrderView[]; fills: FillView[] }> {
     const from = istMidnight(date);
     const to = from + DAY_MS - 1;
-    const [orders, fills] = await Promise.all([this.ctx.repo.orders.between(from, to), this.ctx.repo.fills.between(from, to)]);
+    const { repo } = this.ctx;
+    // Ask per mode: other accounts' books live in the same tables under their own stored modes.
+    const [paper, live, allFills] = await Promise.all([repo.orders.between(from, to, "PAPER"), repo.orders.between(from, to, "LIVE"), repo.fills.between(from, to)]);
+    const orders = [...paper, ...live];
+    const ids = new Set(orders.map((o) => o.id));
+    const fills = allFills.filter((f) => ids.has(f.orderId));
     return {
       orders: orders
         .sort((a, b) => b.createdMs - a.createdMs)
