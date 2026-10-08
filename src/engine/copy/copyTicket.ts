@@ -121,6 +121,25 @@ export function entryQuantity(p: Pick<Position, "status" | "qty" | "exitedQty">)
   return p.status === "CLOSED" ? Math.max(p.qty, p.exitedQty ?? 0) : p.qty + (p.exitedQty ?? 0);
 }
 
+/** A tick price as quotes carry it (two decimals). */
+const tickPrice = (x: number) => Math.round(x * 100) / 100;
+
+/** Highest tick price at which `fires` holds, for exits that fire at or below a level (stop, trail). */
+function highestFiringTick(level: number, tick: number, fires: (bid: number) => boolean): number {
+  let g = roundToTick(level, tick, "down");
+  for (let i = 0; i < 3 && !fires(g) && g > tick; i++) g = tickPrice(g - tick);
+  for (let i = 0; i < 3 && fires(tickPrice(g + tick)); i++) g = tickPrice(g + tick);
+  return g;
+}
+
+/** Lowest tick price at which `fires` holds, for levels reached from below (target, trail start). */
+function lowestFiringTick(level: number, tick: number, fires: (bid: number) => boolean): number {
+  let g = roundToTick(level, tick, "up");
+  for (let i = 0; i < 3 && !fires(g); i++) g = tickPrice(g + tick);
+  for (let i = 0; i < 3 && g > tick && fires(tickPrice(g - tick)); i++) g = tickPrice(g - tick);
+  return g;
+}
+
 export function copyTicketView(i: CopyTicketInput): CopyTicketView {
   const { position: p, plan, account } = i;
   const c = p.contract;
@@ -130,20 +149,23 @@ export function copyTicketView(i: CopyTicketInput): CopyTicketView {
   const spot = plan?.refSpot ?? indicators?.spot ?? 0;
   const dir = p.side === "BULL" ? 1 : -1;
   const skipBeyondSpot = plan && plan.expectedMovePct > 0 && spot > 0 ? round2(spot * (1 + (dir * plan.expectedMovePct) / 200)) : null;
-  // Levels on the contract's tick, at the first price where the engine's own check fires (it
-  // compares the bid, which moves in ticks, with the raw level): it sells at a bid at or below the
-  // stop or trail (round down) or at or above the target (round up), and the trail starts once the
-  // bid reaches its start (round up). The engine's exit logic itself is unchanged.
+  // Levels on the contract's tick, at the first price where the engine's own check fires. It
+  // compares the bid (a tick price) with the raw float level, exactly as evaluateExits does: it sells
+  // at a bid at or below the stop or trail, at or above the target, and the trail starts once the
+  // bid reaches its start. Rounding alone can land a tick off (41.00 x 1.6 = 65.60000000000001, so
+  // the engine sells at 65.65, not 65.60), so each level is checked with that same comparison.
   const tick = c.tickSize > 0 ? c.tickSize : 0.05;
-  const stop = roundToTick(stopPrice(p), tick, "down");
-  const target = roundToTick(targetPrice(p), tick, "up");
-  const trailActivateAt = roundToTick(p.avgEntry * (1 + p.stops.trailActivatePct / 100), tick, "up");
+  const stopAt = stopPrice(p);
+  const targetAt = targetPrice(p);
+  const stop = highestFiringTick(stopAt, tick, (bid) => bid <= stopAt);
+  const target = lowestFiringTick(targetAt, tick, (bid) => bid >= targetAt);
+  const trailActivateAt = lowestFiringTick(p.avgEntry * (1 + p.stops.trailActivatePct / 100), tick, (peak) => trailPrice({ ...p, peakPremium: peak }) !== null);
   const risk = (p.avgEntry - stop) * entryQty + p.entryCharges + computeCharges("SELL", stop, entryQty, c.exchange, istDate(p.entryMs)).total;
   const priceSource = quoteSourceOf(plan) === "groww" ? "broker" : "model";
   const open = p.status === "OPEN";
   const mark = p.markPremium > 0 ? p.markPremium : p.avgEntry;
   const rawTrail = open ? trailPrice(p) : null;
-  const trail = rawTrail === null ? null : roundToTick(rawTrail, tick, "down");
+  const trail = rawTrail === null ? null : highestFiringTick(rawTrail, tick, (bid) => bid <= rawTrail);
   const prevClose = indicators?.prevDayClose ?? 0;
   const searchText = `${c.index} ${c.strike} ${c.type}`;
   const label = expiryLabel(c.expiry);

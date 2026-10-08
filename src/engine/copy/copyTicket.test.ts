@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { accountSpec } from "../accounts";
+import { accountConfig, accountSpec } from "../accounts";
 import { computeCharges } from "../broker/charges";
 import { istAt } from "../clock";
 import { DEFAULT_CONFIG } from "../config";
@@ -235,6 +235,37 @@ describe("the engine's entry limit", () => {
     expect(t.steps[1]).toContain("the engine's limit was ₹62.50");
     expect(copyEntryText(view({ entryOrder: { type: "MARKET" } }), null)).not.toContain("limit ₹");
   });
+});
+
+describe("ticket levels are exactly where the engine's exits fire", () => {
+  const configs = { main: DEFAULT_CONFIG, small5k: accountConfig(DEFAULT_CONFIG, "small5k") };
+  const tickUp = (x: number) => Math.round((x + 0.05) * 100) / 100;
+  const tickDown = (x: number) => Math.round((x - 0.05) * 100) / 100;
+  const bidAt = (bid: number): Quote => ({ symbol: contract.tradingSymbol, bid, ask: tickUp(bid), bidQty: 0, askQty: 0, ltp: bid, t: T, source: "synthetic" });
+
+  for (const [name, cfg] of Object.entries(configs)) {
+    it(`for every fill from ₹20 to ₹400 in ₹0.05 steps (${name}: stop, target, trail start, trail)`, () => {
+      const s = { ...stops, stopPct: cfg.exits.stopPct, targetPct: cfg.exits.targetPct, trailActivatePct: cfg.exits.trailActivatePct, trailGivebackPct: cfg.exits.trailGivebackPct };
+      const ctx = { nowMs: T };
+      const misses: string[] = [];
+      for (let k = 400; k <= 8_000; k++) {
+        const fill = Math.round(k * 5) / 100;
+        const p = position({ avgEntry: fill, peakPremium: fill, markPremium: fill, stops: s });
+        const { levels } = copyTicketView({ position: p, plan: null, account: TEN_K, timeStopMinPnlPct: 10 });
+        const reason = (bid: number, pos: Position = p) => evaluateExits(pos, bidAt(bid), ctx, cfg)?.reason;
+        if (reason(levels.stop) !== "STOP" || reason(tickUp(levels.stop)) === "STOP") misses.push(`stop ${fill}: ${levels.stop}`);
+        if (reason(levels.target) !== "TARGET" || reason(tickDown(levels.target)) === "TARGET") misses.push(`target ${fill}: ${levels.target}`);
+        // The trail turns on once the peak reaches its start (the engine's own trailPrice).
+        if (trailPrice({ ...p, peakPremium: levels.trailActivateAt }) === null || trailPrice({ ...p, peakPremium: tickDown(levels.trailActivateAt) }) !== null) misses.push(`trail start ${fill}: ${levels.trailActivateAt}`);
+        // With the trail on (peak ten ticks past its start), it sells at the shown level, not a tick above.
+        const peak = Math.round((levels.trailActivateAt + 0.5) * 100) / 100;
+        const on = { ...p, peakPremium: peak, markPremium: peak };
+        const trail = copyTicketView({ position: on, plan: null, account: TEN_K, timeStopMinPnlPct: 10 }).levels.trail!;
+        if (reason(trail, on) !== "TRAIL" || reason(tickUp(trail), on) === "TRAIL") misses.push(`trail ${fill} (peak ${peak}): ${trail}`);
+      }
+      expect(misses.slice(0, 6)).toEqual([]);
+    });
+  }
 });
 
 describe("copy ticket levels on the ₹0.05 tick", () => {
