@@ -61,7 +61,7 @@ export default function SiteHeader({
   mode,
   extra,
 }: {
-  active: "desk" | "live" | "backtest" | null;
+  active: "desk" | "live" | "copy" | "backtest" | null;
   mode?: EngineMode | null;
   /** Page-specific status text shown before the mode badge (e.g. metals price source). */
   extra?: ReactNode;
@@ -97,9 +97,10 @@ export default function SiteHeader({
             </p>
           </div>
         </Link>
-        <nav aria-label="Primary" style={{ display: "flex", gap: 4 }}>
+        <nav aria-label="Primary" style={{ display: "flex", flexWrap: "wrap", gap: 4 }}>
           <NavLink href="/" label="DESK" active={active === "desk"} />
           <NavLink href="/live" label="LIVE P&L" active={active === "live"} />
+          <NavLink href="/copy" label="COPY TRADE" active={active === "copy"} />
           <NavLink href="/backtest" label="BACKTEST" active={active === "backtest"} />
         </nav>
       </div>

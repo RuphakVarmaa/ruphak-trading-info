@@ -94,11 +94,12 @@ src/engine/            pure TypeScript engine: runs in Workers, Node scripts and
   pipeline/            ingest, scoring, trading, position and end-of-day cycles
   backtest/            day-by-day replay, metrics, walk-forward, Yahoo history loader
   api/readModel.ts     repository state -> dashboard DTOs
+  copy/copyTicket.ts   copy tickets: a paper trade laid out for copying by hand, and its Telegram texts
 workers/engine/        engine Worker: TradingEngineDO, IngestDO, BacktestDO, crons, queue consumer, EngineAdmin RPC, D1 repository
 migrations/            D1 schema (drizzle-kit)
 relay/                 static-IP order relay (Node 22 + Hono), see relay/README.md
 scripts/               backtest, fetch-history, bootstrap-events, score-batch, trigger-cron
-src/app, src/components, src/lib, src/hooks   Next.js dashboard (India Index Desk, blotter, /backtest, /events)
+src/app, src/components, src/lib, src/hooks   Next.js dashboard (India Index Desk, blotter, /live, /copy, /backtest, /events)
 docs/RESEARCH.md       survey of public algo-trading projects, the Groww wire contract, charges and pitfalls
 ```
 
@@ -201,7 +202,9 @@ It creates the resources and fills in their IDs, migrates D1, deploys the engine
 
 ### Telegram
 
-Create a bot with @BotFather and set `TELEGRAM_BOT_TOKEN` and `TELEGRAM_CHAT_ID`. Alerts cover entries, exits, kill trips, DEGRADED state, stale heartbeats, token and instrument failures, LLM budget exhaustion and the daily summary.
+Create a bot with @BotFather and set `TELEGRAM_BOT_TOKEN` and `TELEGRAM_CHAT_ID` as engine secrets (`wrangler secret put` or the Cloudflare dashboard: Workers & Pages → ruphak-engine → Settings → Variables and Secrets). Without them every alert is only logged. Alerts cover entries, trailing stops turning on and exits (as copy-trade messages, see below), kill trips, DEGRADED state, stale heartbeats, token and instrument failures, LLM budget exhaustion and the daily summary.
+
+Check delivery with `curl -X POST -H "Authorization: Bearer $ADMIN_TOKEN" https://<engine-host>/ops/telegram-test`: it answers `{"ok":true,"enabled":true}` once a test message has reached the chat.
 
 The `/status`, `/kill [reason]` and `/disarm` commands need a public URL for the engine. Either set `workers_dev: true` or add a route in `workers/engine/wrangler.jsonc`, set `TELEGRAM_WEBHOOK_SECRET`, then register the webhook:
 
@@ -254,10 +257,10 @@ Reproduce with `npm run backtest -- --from 2026-07-23 --to 2026-10-07 --no-event
 
 A second paper book, `small10k` (`src/engine/accounts.ts`), follows the main account's signals at the same moments.
 
-- **What it trades:** one lot (65) of the NIFTY option nearest the money whose premium is ₹40–70, so ₹2,600–4,550 a lot.
+- **What it trades:** one lot of the NIFTY or SENSEX option nearest the money that costs about ₹2,600–4,500 a lot: a premium of ₹40–70 for NIFTY's 65 units, ₹130–210 for SENSEX's 20. SENSEX is searched up to 20 strikes out because its weekly expiry (Thursday) is further away than NIFTY's (Tuesday) on most days. The bands are `selection.byIndex` in `src/engine/config.ts`.
 - **Its own limits:**
   - risk 15% of equity per trade, sized from current equity and free cash;
-  - one position at a time, 3 entries a day;
+  - one position at a time across both indices (`sizing.maxOpenTotal`), 3 entries a day;
   - stop −35%, target +60%;
   - daily loss cap 25%, weekly loss cap 40%;
   - a check that one more stop-out cannot break the daily cap.
@@ -277,7 +280,16 @@ Backtest, NIFTY only, no news, 23 Jul – 8 Oct 2026 (54 sessions), main at defa
 - **No stable exit settings.** The chosen stop and target changed in every fold (stop −30% to −50%, target 50% or 80%), so the account keeps −35% / +60%. The time-stop floor of 10% was chosen in every fold and is the default already.
 - **Small accounts swing hard.** One stop costs ₹1,000–1,600 (10–16% of the account); drawdowns of 35–50% happened inside two months.
 
-Reproduce with `npm run backtest -- --from 2026-07-23 --to 2026-10-08 --index NIFTY --no-events --account small10k` (add `--band 60-100`, `--stop`, `--target`, or `--walk-forward --train-days 28 --test-days 14`). In the dashboard, pick "₹10k" in the backtest form's Account field. Enable it on the engine with `ACCOUNTS="main,small10k"`, then use `/live?account=small10k`.
+Adding SENSEX, at production limits (main: 2 open per index and 2 in total, 8 entries a day), no news, same 54 sessions:
+
+| Account | NIFTY only | NIFTY + SENSEX | SENSEX's own trades |
+|---|---|---|---|
+| Main (at the money) | 31 trades, −₹15,793 | 51 trades, −₹9,596 | 27 trades, −₹11,600 |
+| ₹10k (one cheaper lot) | 17 trades, −₹4,743 | 19 trades, −₹4,899 | 8 trades, −₹355 |
+
+Main's total loses less with SENSEX only because SENSEX entries took slots from some losing NIFTY trades; SENSEX's own trades lost money. It adds trades, not edge.
+
+Reproduce with `npm run backtest -- --from 2026-07-23 --to 2026-10-08 --index NIFTY --no-events --account small10k` (`--index BOTH` adds SENSEX; add `--band 60-100` for NIFTY's band, `--stop`, `--target`, or `--walk-forward --train-days 28 --test-days 14`). In the dashboard, pick "₹10k" in the backtest form's Account field. Enable it on the engine with `ACCOUNTS="main,small10k"`, then use `/live?account=small10k`.
 
 **Paper to live go/no-go:**
 
@@ -286,6 +298,25 @@ Reproduce with `npm run backtest -- --from 2026-07-23 --to 2026-10-08 --index NI
 - The shuffled-events placebo is close to zero.
 - The scorer evaluation passes.
 - **At least 6 weeks of forward paper trading** that agrees with the backtest.
+
+## Copy trading by hand
+
+`/copy` on the dashboard (`/copy?account=small10k` for the ₹10k account) lays out each paper trade so it can be repeated by hand in a personal broker account:
+
+- **What to buy:** index, strike, CE or PE, expiry, lots and quantity, the text to search for, and the exchange symbol (copy buttons for both).
+- **Levels:** the engine's fill, stop, target, where the trailing stop starts (and its level once on), time stop and 15:05 square-off, and the rupees lost if the stop hits. A "your fill price" box recomputes the levels from your own price.
+- **Too late to copy:** an index level past which half of the expected move has already happened.
+- **Why:** conviction against its threshold, the regime, every signal that voted with its share and notes, the edge (expected move against the move priced into the option) and every check before the trade.
+- **Price action:** the index's 5-minute candles for the day with VWAP, the 09:15–09:30 opening range and the BUY and SELL times, plus the indicator readings at entry.
+
+The page refreshes every 5 seconds in market hours. "Turn on sound and desktop alerts" makes it chime and show a desktop notification when a trade opens or closes, while the tab is open. On a phone, the Telegram alerts (above) carry the same ticket: BUY with the levels and setup, "trailing stop on", and SELL with the reason, each with a link to the page.
+
+Limits worth knowing before copying with real money:
+
+- **The strategy has not shown an edge.** Every backtest above lost money; copying it will probably lose money too.
+- **Prices are models.** Without Groww keys the engine prices options with Black-Scholes on India VIX (the ticket says "model price"); your broker's price will differ, so set the stop and target from your own fill.
+- **Data is late.** Yahoo's index data lags by about a minute, the engine decides every 30 seconds, and a Telegram message takes a few seconds more. Use the "too late to copy" level.
+- **Exits are the engine's.** Besides the stop and target, it sells on its trailing stop, its time stop and when the signals turn. Only the SELL alert tells you about those.
 
 ## Limitations
 
@@ -320,9 +351,10 @@ Engine Worker variables (`workers/engine/wrangler.jsonc`):
 | `LLM_MODEL`, `LLM_EFFORT` | `@cf/zai-org/glm-5.3`, `low` | Scorer model and reasoning effort (low, medium or high; GLM maps them to low, high and max) |
 | `LLM_DAILY_INPUT_TOKEN_BUDGET`, `LLM_DAILY_OUTPUT_TOKEN_BUDGET` | 3,000,000 / 1,000,000 | Daily cap. The lexicon scores once the cap is reached. |
 | `CAPITAL_INR` | 500000 | Capital used for sizing and loss caps |
-| `INDICES` | `NIFTY` | Indices to trade, comma-separated (`NIFTY,SENSEX` trades both; they share the daily limits). Unset or invalid means both. |
+| `INDICES` | `NIFTY,SENSEX` | Indices to trade, comma-separated (`NIFTY,SENSEX` trades both; they share the daily limits). Unset or invalid means both. |
 | `MAX_TRADES_PER_DAY` | `8` | Most entries per day across the indices (1 to 12). The stored daily order cap (`maxOrdersPerDay`, 2 orders per trade plus reserve) must be raised with it. The loss-streak halt and daily loss cap still apply. Unset or invalid means 4. |
 | `MAX_OPEN_PER_INDEX` | `2` | Most positions open at once on one index (1 to 3). They share the 4-entries-a-day and loss limits. Unset or invalid means 1. |
-| `ACCOUNTS` | `main` | Paper accounts to run, comma-separated; main is always on. `main,small10k` adds the ₹10,000 account above, which follows main's signals with its own pinned settings (the variables above do not apply to it). Telegram `/kill` stops every account. |
+| `ACCOUNTS` | `main,small10k` | Paper accounts to run, comma-separated; main is always on. `main,small10k` adds the ₹10,000 account above, which follows main's signals with its own pinned settings (the variables above do not apply to it). Telegram `/kill` stops every account. |
+| `DASHBOARD_URL` | the dashboard's workers.dev URL | Base URL for the links to `/copy` in Telegram alerts; empty means no links. |
 
 Secrets: see `.dev.vars.example`. Every strategy parameter lives in `src/engine/config.ts`, and backtests and live trading read the same values.

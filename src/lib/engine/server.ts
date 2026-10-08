@@ -49,12 +49,18 @@ const RPC_METHODS = [
   "getPerformance",
   "getScheduled",
   "getBacktest",
+  "getCopyTickets",
   "verifyAdmin",
   "setArmed",
   "setKillSwitch",
   "setMode",
   "startBacktest",
 ] as const satisfies readonly (keyof EngineApi)[];
+
+// Every EngineApi method must be forwarded: a method missing from RPC_METHODS fails to compile here.
+type Unforwarded = Exclude<keyof EngineApi, (typeof RPC_METHODS)[number]>;
+const ALL_FORWARDED: [Unforwarded] extends [never] ? true : Unforwarded = true;
+void ALL_FORWARDED;
 
 /**
  * Workers RPC returns thenables and objects that are not plain (proxies / null prototypes);

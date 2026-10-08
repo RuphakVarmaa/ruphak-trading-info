@@ -6,8 +6,8 @@ import { useEngineState } from "@/hooks/useEngineState";
 
 const fmtCapital = (rupees: number) => (rupees >= 100_000 ? `₹${(rupees / 100_000).toFixed(rupees % 100_000 === 0 ? 0 : 1)}L` : `₹${Math.round(rupees / 1000)}k`);
 
-/** Switches the Live page between paper accounts. Hidden when the engine runs only main (or in mock mode). */
-export default function AccountSwitcher() {
+/** Switches a page (Live P&L, Copy trades) between paper accounts. Hidden when the engine runs only main (or in mock mode). */
+export default function AccountSwitcher({ basePath = "/live" }: { basePath?: "/live" | "/copy" }) {
   const { state } = useEngineState();
   const accounts = state?.accounts ?? [];
   if (accounts.length < 2) return null;
@@ -19,7 +19,7 @@ export default function AccountSwitcher() {
         return (
           <Link
             key={a.id}
-            href={a.id === "main" ? "/live" : `/live?account=${encodeURIComponent(a.id)}`}
+            href={a.id === "main" ? basePath : `${basePath}?account=${encodeURIComponent(a.id)}`}
             aria-current={active ? "page" : undefined}
             style={{
               padding: "6px 12px",
