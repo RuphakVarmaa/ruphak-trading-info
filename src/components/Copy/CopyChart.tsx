@@ -1,8 +1,7 @@
 "use client";
 
 /**
- * The index chart on /copy, kept behind one small component so it is a one-line swap: replace the
- * <IntradayCandles … /> line below with LiveIndexChart from @/components/Market once it lands.
+ * The index chart on /copy: the live 1-minute chart for today's session, 5-minute candles otherwise.
  */
 import type { CopyTicketView, IndexId, SessionPhase } from "@/engine/api-types";
 import { C } from "@/components/shared/colors";
@@ -11,6 +10,9 @@ import { EmptyState, Skeleton } from "@/components/shared/ui";
 import { usePolled } from "@/hooks/usePolled";
 import { indexPrice } from "@/lib/copy/prices";
 import type { IntradayFeed } from "@/lib/market/intraday";
+import type { LiveIndex } from "@/lib/market/liveIndices";
+import { useLiveIndices, type LiveIndicesState } from "@/hooks/useLiveIndices";
+import { LiveIndexCard, LiveIndexChart, type ChartMarks } from "@/components/Market";
 import CandleChart from "./CandleChart";
 
 export interface CopyChartProps {
@@ -27,8 +29,38 @@ export interface CopyChartProps {
   today?: string | null;
 }
 
+/**
+ * Today's session comes from the continuous 1-minute feed (/api/market/live, refreshed every 1.5 s in
+ * market hours) with its freshness badge; an older session, or the feed being down, falls back to the
+ * 5-minute candles.
+ */
 export default function CopyChart(props: CopyChartProps) {
+  const live = useLiveIndices();
+  const idx = live.data?.indices.find((i) => i.index === props.index) ?? null;
+  const wantsLatest = props.date == null || props.date === props.today;
+  if (wantsLatest && idx && idx.bars.length > 0 && (props.date == null || idx.session === props.date || props.date === props.today)) {
+    return <LiveChart index={idx} ticket={props.ticket} live={live} />;
+  }
+  if (wantsLatest && live.freshness === "loading" && !live.error) return <Skeleton height={260} />;
   return <IntradayCandles {...props} />;
+}
+
+function LiveChart({ index, ticket, live }: { index: LiveIndex; ticket: CopyTicketView | null; live: LiveIndicesState }) {
+  const t = ticket && ticket.index === index.index && ticket.entry.at.slice(0, 10) === index.session ? ticket : null;
+  const exitMs = t?.exit ? Date.parse(t.exit.at) : null;
+  const exitBar = exitMs != null ? [...index.bars].reverse().find((b) => b.t <= exitMs) : undefined;
+  const marks: ChartMarks = t
+    ? {
+        entry: { t: Date.parse(t.entry.at), price: t.entry.spot, side: "BUY" },
+        ...(exitMs != null && exitBar ? { exit: { t: exitMs, price: exitBar.c } } : {}),
+        ...(t.status === "OPEN" && t.entry.skipBeyondSpot != null ? { skipBeyond: t.entry.skipBeyondSpot } : {}),
+      }
+    : {};
+  return (
+    <LiveIndexCard index={index} freshness={live.freshness} ageMs={live.ageMs} source={live.data?.source ?? "Yahoo Finance"}>
+      <LiveIndexChart index={index} height={240} marks={marks} />
+    </LiveIndexCard>
+  );
 }
 
 /** The index's 5-minute candles for the session, with VWAP, the opening range and the trade's marks. */
