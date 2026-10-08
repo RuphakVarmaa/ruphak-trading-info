@@ -452,6 +452,20 @@ function deepMerge<T>(base: T, patch: unknown): T {
   return out as T;
 }
 
+/**
+ * Parses a comma-separated index list such as "NIFTY" or "NIFTY,SENSEX". Unknown names and
+ * duplicates are dropped; undefined when nothing valid remains, so the default list is kept.
+ */
+export function parseIndices(raw: string | undefined): IndexId[] | undefined {
+  const known = Object.keys(DEFAULT_CONFIG.indexSpecs);
+  const out: IndexId[] = [];
+  for (const part of (raw ?? "").split(",")) {
+    const name = part.trim().toUpperCase();
+    if (known.includes(name) && !out.includes(name as IndexId)) out.push(name as IndexId);
+  }
+  return out.length > 0 ? out : undefined;
+}
+
 /** Returns DEFAULT_CONFIG overridden by `overrides`, validated. Throws on invalid values. */
 export function makeConfig(overrides: DeepPartial<EngineConfig> = {}): EngineConfig {
   return withOverrides(DEFAULT_CONFIG, overrides);

@@ -78,7 +78,9 @@
     // ($1.40/M input, $4.40/M output) these cap spend at about $8.60 a day.
     "LLM_DAILY_INPUT_TOKEN_BUDGET": "3000000",
     "LLM_DAILY_OUTPUT_TOKEN_BUDGET": "1000000",
-    "CAPITAL_INR": "500000"
+    "CAPITAL_INR": "500000",
+    // Indices the engine trades, comma-separated: "NIFTY,SENSEX" trades both. Both share the daily limits.
+    "INDICES": "NIFTY"
   },
   "env": {
     "preview": {
@@ -92,7 +94,8 @@
         "LLM_EFFORT": "low",
         "LLM_DAILY_INPUT_TOKEN_BUDGET": "300000",
         "LLM_DAILY_OUTPUT_TOKEN_BUDGET": "100000",
-        "CAPITAL_INR": "500000"
+        "CAPITAL_INR": "500000",
+        "INDICES": "NIFTY,SENSEX"
       },
       "d1_databases": [
         {

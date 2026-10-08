@@ -291,5 +291,6 @@ Engine Worker variables (`workers/engine/wrangler.jsonc`):
 | `LLM_MODEL`, `LLM_EFFORT` | `@cf/zai-org/glm-5.3`, `low` | Scorer model and reasoning effort (low, medium or high; GLM maps them to low, high and max) |
 | `LLM_DAILY_INPUT_TOKEN_BUDGET`, `LLM_DAILY_OUTPUT_TOKEN_BUDGET` | 3,000,000 / 1,000,000 | Daily cap. The lexicon scores once the cap is reached. |
 | `CAPITAL_INR` | 500000 | Capital used for sizing and loss caps |
+| `INDICES` | `NIFTY` | Indices to trade, comma-separated (`NIFTY,SENSEX` trades both; they share the daily limits). Unset or invalid means both. |
 
 Secrets: see `.dev.vars.example`. Every strategy parameter lives in `src/engine/config.ts`, and backtests and live trading read the same values.

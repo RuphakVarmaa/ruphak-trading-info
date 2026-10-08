@@ -4,7 +4,7 @@
  * Secrets are read from `env` only; nothing secret is ever logged or returned.
  */
 import { TradingCalendar, defaultCalendar } from "../../../src/engine/calendar/calendar";
-import { makeConfig, type EngineConfig } from "../../../src/engine/config";
+import { makeConfig, parseIndices, type EngineConfig } from "../../../src/engine/config";
 import { AnthropicLlmClient } from "../../../src/engine/events/llm/anthropicClient";
 import { DEFAULT_WORKERS_AI_MODEL, WorkersAiLlmClient, type ResponseFormatMode } from "../../../src/engine/events/llm/workersAiClient";
 import type { LlmClient, Logger } from "../../../src/engine/ports";
@@ -54,6 +54,7 @@ export function engineConfig(env: Env): EngineConfig {
   const provider = llmProvider(env);
   return makeConfig({
     capitalRupees: num(env.CAPITAL_INR, 500_000),
+    indices: parseIndices(env.INDICES),
     llm: {
       enabled: llmAvailable(env),
       model: env.LLM_MODEL || (provider === "anthropic" ? "claude-opus-5-5" : DEFAULT_WORKERS_AI_MODEL),

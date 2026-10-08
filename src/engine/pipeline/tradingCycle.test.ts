@@ -127,6 +127,17 @@ describe("trading cycle replay of 7 Oct 2026", () => {
     }
   });
 
+  it("trades only the configured indices", async () => {
+    const cfg = makeConfig({ indices: ["NIFTY"] });
+    const { deps, entries } = await replayDay(cfg, false, { noEvents: true });
+    expect(entries.length).toBeGreaterThanOrEqual(1);
+    expect(entries.every((e) => e.index === "NIFTY")).toBe(true);
+    const decisions = await deps.repo.decisions.between(istAt(DAY, "09:00"), istAt(DAY, "16:00"));
+    expect(decisions.length).toBeGreaterThan(0);
+    expect(decisions.every((d) => d.index === "NIFTY")).toBe(true);
+    expect(await deps.repo.positions.open("BACKTEST")).toEqual([]);
+  });
+
   it("never trades when the kill switch is engaged", async () => {
     const cfg = makeConfig({
       conviction: { thresholds: { TREND_UP: 0.05, TREND_DOWN: 0.05, RANGE: 0.05, HIGH_VOL: 0.05, EVENT: 0.05 } },
