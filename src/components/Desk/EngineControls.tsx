@@ -5,7 +5,6 @@ import type { EngineMode } from "@/engine/api-types";
 import { useEngineState, useNow, type ActionResult } from "@/hooks/useEngineState";
 import { alpha, C } from "@/components/shared/colors";
 import { fmtCountdown, fmtInr, fmtIstHm } from "@/components/shared/format";
-import { ModeBadge } from "@/components/shared/SiteHeader";
 import { Btn, ConfirmDialog, inputStyle, microLabel, Panel, PanelHeader, Skeleton } from "@/components/shared/ui";
 
 type DialogKind = "arm" | "kill" | "reset" | "mode" | null;
@@ -87,7 +86,7 @@ function AdminTokenPopover() {
       setOpen(false);
       buttonRef.current?.focus();
     } else {
-      setError(res.code === "UNAUTHORIZED" ? "Token rejected." : res.error);
+      setError(res.error);
     }
   };
 
@@ -165,7 +164,7 @@ function AdminTokenPopover() {
                 style={inputStyle}
               />
               {(error || admin.error) && (
-                <div role="alert" style={{ fontSize: 10, color: C.red }}>
+                <div role="alert" style={{ fontSize: 12.5, color: C.red }}>
                   ✗ {error ?? admin.error}
                 </div>
               )}
@@ -213,7 +212,7 @@ export default function EngineControls() {
 
   const offline = status === "offline" || state == null;
   const canAdmin = admin.verified && !offline && pending == null;
-  const disabledTitle = !admin.verified ? "Enter the admin token (🔑 ADMIN) to enable" : offline ? "Engine offline" : undefined;
+  const disabledTitle = !admin.verified ? "Enter the admin token (🔑 Admin) to enable" : offline ? "The engine is not answering" : undefined;
 
   const open = (kind: DialogKind) => {
     setDialogError(null);
@@ -378,7 +377,10 @@ export default function EngineControls() {
       {state ? (
         <>
           <ControlRow label="Mode" hint="PAPER simulates every order. LIVE also needs the Worker's LIVE_TRADING key and an arm.">
-            <ModeBadge mode={state.mode} />
+            {/* The PAPER/LIVE badge is in the site header; here the mode is plain text. */}
+            <span style={{ fontSize: 13, color: state.mode === "LIVE" ? C.red : C.textSoft, whiteSpace: "nowrap" }}>
+              {state.mode === "LIVE" ? "Live: real orders when armed" : "Paper: every order simulated"}
+            </span>
             <span
               title="Worker var LIVE_TRADING: the first of three keys for a live order"
               style={{ fontSize: 11, fontFamily: "var(--font-num)", color: state.liveTradingEnabled ? C.orange : C.muted3, whiteSpace: "nowrap" }}

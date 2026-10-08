@@ -20,9 +20,9 @@ import {
   useSyncExternalStore,
   type ReactNode,
 } from "react";
-import type { EngineMode, EngineStateDTO, SessionPhase } from "@/engine/api-types";
+import type { EngineMode, EngineStateDTO, PositionView, SessionPhase } from "@/engine/api-types";
 import type { EngineSlices, EngineSnapshot, SliceKey } from "@/lib/engine/types";
-import { storeAdminToken, useStoredAdminToken, verifyAdminToken } from "./adminToken";
+import { storeAdminToken, useStoredAdminToken, verifyAdminToken, type VerifyResult } from "./adminToken";
 import { EnvelopeError, errorText, fetchEnvelope } from "./engineFetch";
 
 export type ConnectionStatus = "loading" | "live" | "stale" | "offline";
@@ -118,6 +118,16 @@ function clockOffsetFrom(engineNowIso: string, localMs: number): number {
   return Number.isFinite(off) && Math.abs(off) >= CLOCK_DEADBAND_MS ? Math.round(off) : 0;
 }
 
+/** A plain sentence for a failed token check (the raw server message is not shown). */
+function verifyErrorText(res: Exclude<VerifyResult, { ok: true }>): string {
+  if (res.code === "UNAUTHORIZED") return "The admin token was not accepted.";
+  if (res.code === "ADMIN_DISABLED") return "Admin actions are turned off on this server.";
+  return "Could not check the token: the engine is not answering.";
+}
+
+/** Ids of the open positions, to notice an entry or an exit between polls. */
+const positionKey = (p: PositionView[] | null | undefined) => (p == null ? null : p.map((x) => x.id).sort().join(","));
+
 function emptyMeta(intervalMs: number): TierMeta {
   return { lastOkAt: null, lastAttemptAt: null, failures: 0, intervalMs, nextAt: null, lastError: null };
 }
@@ -179,6 +189,7 @@ export function EngineProvider({ initial, account, children }: { initial: Engine
   const metaRef = useRef<Record<TierName, TierMeta>>(initialMeta(initial));
   const phaseRef = useRef<SessionPhase | null>(initial?.state?.market.phase ?? null);
   const offsetRef = useRef(clockOffsetMs);
+  const positionsKeyRef = useRef<string | null>(positionKey(initial?.positions));
   const runTierRef = useRef<(tier: TierName, bust?: boolean) => Promise<void>>(async () => {});
 
   // ---------------------------------------------------------------------------
@@ -230,6 +241,13 @@ export function EngineProvider({ initial, account, children }: { initial: Engine
         }
       });
       if (okCount > 0) setSlices((prev) => ({ ...prev, ...(updates as Partial<EngineSlices>) }));
+      // A position opened or closed: fetch the P&L summary now, so realized P&L and charges move with it.
+      if (tier === "fast" && updates.positions !== undefined) {
+        const key = positionKey(updates.positions as PositionView[]);
+        const changed = positionsKeyRef.current != null && key !== positionsKeyRef.current;
+        positionsKeyRef.current = key;
+        if (changed) setTimeout(() => void runTier("slow", true), 0);
+      }
       if (src) setSource(src);
       const state = updates.state as EngineStateDTO | undefined;
       if (state) {
@@ -308,7 +326,7 @@ export function EngineProvider({ initial, account, children }: { initial: Engine
     void verifyAdminToken(token).then((res) => {
       if (cancelled) return;
       setVerifiedToken(res.ok ? token : null);
-      setChecked({ token, error: res.ok ? null : res.error });
+      setChecked({ token, error: res.ok ? null : verifyErrorText(res) });
     });
     return () => {
       cancelled = true;
@@ -348,7 +366,7 @@ export function EngineProvider({ initial, account, children }: { initial: Engine
             setVerifiedToken(null);
             setChecked({ token, error: "Token rejected by the server." });
           }
-          return { ok: false, code: err.code, error: err.message };
+          return { ok: false, code: err.code, error: errorText(err) };
         }
         return { ok: false, code: "ENGINE_UNREACHABLE", error: errorText(err) };
       } finally {
@@ -371,7 +389,7 @@ export function EngineProvider({ initial, account, children }: { initial: Engine
         const candidate = value.trim();
         if (!candidate) return { ok: false, code: "BAD_REQUEST", error: "Token is empty." };
         const res = await verifyAdminToken(candidate);
-        if (!res.ok) return res;
+        if (!res.ok) return { ok: false, code: res.code, error: verifyErrorText(res) };
         setVerifiedToken(candidate);
         setChecked({ token: candidate, error: null });
         storeAdminToken(candidate);

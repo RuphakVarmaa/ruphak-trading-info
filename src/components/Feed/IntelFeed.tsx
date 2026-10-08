@@ -46,7 +46,7 @@ export default function IntelFeed({ items, loading, error, stale }: IntelFeedPro
               <Skeleton width="60%" height={14} style={{ marginTop: 6 }} />
             </div>
           ))}
-        {error && <EmptyState>Headlines are unavailable right now ({error}). Retrying every five minutes.</EmptyState>}
+        {error && <EmptyState>Headlines are unavailable right now. {error} Retrying every five minutes.</EmptyState>}
         {!loading && !error && filteredItems.length === 0 && <EmptyState>No headlines in this category.</EmptyState>}
         {filteredItems.map((item) => (
           <article key={item.id} style={{ padding: '14px 18px', borderTop: `1px solid ${C.borderSoft}` }}>

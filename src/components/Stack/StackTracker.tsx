@@ -97,7 +97,7 @@ export default function StackTracker({ prices }: StackTrackerProps) {
   return (
     <div style={{ display: 'grid', gap: 14 }}>
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(150px, 1fr))', gap: 12 }}>
-        <StatTile label="Total value" value={priced ? money(summary.totalValueUsd) : '—'} color={C.gold} sub={priced ? undefined : 'waiting for live prices'} />
+        <StatTile label="Total value" value={priced ? money(summary.totalValueUsd) : '—'} color={C.textStrong} sub={priced ? undefined : 'waiting for live prices'} />
         <StatTile label="Cost basis" value={money(summary.totalCostBasis)} color={C.textSoft} />
         <StatTile label="Gain / loss" value={priced ? `${summary.totalGainLoss >= 0 ? '+' : ''}${money(summary.totalGainLoss)}` : '—'} color={priced ? pnlColor(summary.totalGainLoss) : C.muted} />
         <StatTile label="Return" value={priced ? `${summary.totalGainLossPercent >= 0 ? '+' : ''}${summary.totalGainLossPercent.toFixed(2)}%` : '—'} color={priced ? pnlColor(summary.totalGainLossPercent) : C.muted} />

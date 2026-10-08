@@ -5,7 +5,10 @@ import { alpha, C } from "@/components/shared/colors";
 import { fmtAge, fmtIstTime } from "@/components/shared/format";
 import { Btn } from "@/components/shared/ui";
 
-/** Shown only when the FAST tier is stale or offline; the desk keeps rendering last good data. */
+/**
+ * Shown only while the engine data is out of date or the engine is not answering; the Desk keeps
+ * showing the last data it received. Plain sentences only: the error codes stay in the poller.
+ */
 export default function ConnectionBanner() {
   const { status, tiers, actions } = useEngineState();
   const now = useClientNow();
@@ -16,8 +19,15 @@ export default function ConnectionBanner() {
   const fast = tiers.fast;
   const offline = status === "offline";
   const color = offline ? C.red : C.orange;
-  const age = now != null && fast.lastOkAt != null ? fmtAge(now - fast.lastOkAt) : null;
+  const age = now != null && fast.lastOkAt != null ? fmtAge(Math.max(0, now - fast.lastOkAt)) : null;
   const retry = now != null && fast.nextAt != null ? fmtAge(Math.max(0, fast.nextAt - now)) : null;
+
+  const title = offline ? "The engine is not answering." : "The data on this page is out of date.";
+  const lastData =
+    fast.lastOkAt == null
+      ? "No engine data has arrived yet."
+      : `Showing the last data received, from ${fmtIstTime(fast.lastOkAt + offset)} IST${age ? ` (${age} ago)` : ""}.`;
+  const why = fast.failures > 0 && fast.lastError ? ` ${fast.lastError}` : "";
 
   return (
     <div
@@ -26,31 +36,25 @@ export default function ConnectionBanner() {
       style={{
         display: "flex",
         alignItems: "center",
-        gap: 12,
+        gap: "8px 14px",
         flexWrap: "wrap",
-        padding: "10px 14px",
-        fontSize: 12,
-        border: `1px solid ${alpha(color, 0.4)}`,
+        padding: "12px 16px",
+        fontSize: 13.5,
+        lineHeight: 1.5,
+        border: `1px solid ${alpha(color, 0.45)}`,
         borderRadius: 12,
-        background: alpha(color, 0.08),
+        background: alpha(color, 0.07),
         color: C.textSoft,
       }}
     >
-      <strong style={{ color, letterSpacing: "0.08em", fontSize: 10, whiteSpace: "nowrap" }}>
-        {offline ? "✗ ENGINE OFFLINE" : "⚠ STALE DATA"}
-      </strong>
-      <span style={{ minWidth: 0 }}>
-        {fast.lastOkAt == null
-          ? "No engine data received yet."
-          : offline
-            ? `Showing last good data from ${fmtIstTime(fast.lastOkAt + offset)} IST${age ? ` (${age} ago)` : ""}.`
-            : `Last update ${age ?? "—"} ago; showing last good data.`}
-        {fast.failures > 0 && ` ${fast.failures} failed poll${fast.failures > 1 ? "s" : ""}${fast.lastError ? ` (${fast.lastError})` : ""}.`}
-        {retry && ` Next retry in ${retry}.`}
-        {offline && " Admin controls are disabled."}
+      <span style={{ minWidth: 0, flex: "1 1 260px" }}>
+        <strong style={{ color, fontWeight: 600 }}>{title}</strong> {lastData}
+        {why}
+        {retry ? ` Trying again in ${retry}.` : ""}
+        {offline ? " Engine controls are off until it answers." : ""}
       </span>
-      <Btn variant="outline" style={{ marginLeft: "auto" }} onClick={() => actions.refresh()}>
-        ↻ RETRY NOW
+      <Btn variant="outline" onClick={() => actions.refresh()}>
+        Try again now
       </Btn>
     </div>
   );

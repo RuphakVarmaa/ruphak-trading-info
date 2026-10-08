@@ -1,7 +1,8 @@
 @import "tailwindcss";
 
 :root {
-  /* One light theme for every page: the C colour tokens (components/shared/colors.ts) read these. */
+  /* One light theme for every page, and the only copy of it: the C colour tokens (components/shared/colors.ts)
+     read these. Text colours are at least 4.5:1 on the page (#faf9f5) and on cards (#fff). */
   color-scheme: light;
   --c-bg: #faf9f5;
   --c-panel: #ffffff;
@@ -13,10 +14,13 @@
   --c-thead: #f3f1ea;
   --c-navActive: #efede4;
   --c-track: #e6e3d8;
-  --c-gold: #c96442;
+  /* Terracotta accent for text, links and buttons: 5.15:1 on the page, 5.42:1 on cards, white on it 5.42:1. */
+  --c-gold: #a9502e;
+  /* The brighter brand terracotta, for lines, bars and tints only (never text): 3.7:1 on the page. */
+  --c-goldBright: #c96442;
   --c-green: #2f7d4f;
   --c-red: #c2412d;
-  --c-orange: #b5650d;
+  --c-orange: #a35a0c;
   --c-blue: #2f6db5;
   --c-purple: #7a5bc7;
   --c-text: #141413;
@@ -24,8 +28,8 @@
   --c-textSoft: #3d3d3a;
   --c-textDim: #4b4a46;
   --c-muted: #5f5e58;
-  --c-muted2: #6f6e68;
-  --c-muted3: #8a8981;
+  --c-muted2: #66655f;
+  --c-muted3: #6f6e68;
   --viz-1: #2a78d6;
   --viz-2: #eb6834;
   --viz-3: #1baf7a;
@@ -150,11 +154,6 @@ a {
   100% { transform: scale(0.8); opacity: 0.7; }
 }
 
-@keyframes glow {
-  0%, 100% { box-shadow: 0 0 4px rgba(255,179,0,0.3); }
-  50% { box-shadow: 0 0 12px rgba(255,179,0,0.6); }
-}
-
 /* ---------------------------------------------------------------------------
    India Index Desk: animation helpers and layout-only responsive classes.
    Components keep their inline styles; these rules only restack layouts on
@@ -267,20 +266,6 @@ dialog::backdrop {
   .legacy-core > :first-child > :last-child {
     height: auto !important;
   }
-  /* metals ticker bar (before the grid) scrolls sideways; status bar (after it) wraps */
-  div:has(+ .legacy-core) {
-    overflow-x: auto !important;
-  }
-  .legacy-core + div {
-    height: auto !important;
-    flex-wrap: wrap;
-    gap: 4px 12px;
-    padding: 6px 14px !important;
-  }
-  .legacy-core + div > :first-child {
-    flex-wrap: wrap;
-    row-gap: 2px;
-  }
 }
 
 /* Backtest: settings beside the results on wide screens, stacked on narrow ones. */
@@ -323,5 +308,53 @@ details[open] > summary::before {
 @media (max-width: 520px) {
   .hide-sm {
     display: none !important;
+  }
+}
+
+/* Rows of figure tiles: never more than `--tile-max` across, never narrower than `--tile-min`. */
+.tile-row {
+  display: grid;
+  gap: 12px;
+  grid-template-columns: repeat(auto-fit, minmax(max(var(--tile-min, 170px), calc((100% - (var(--tile-max, 6) - 1) * 12px) / var(--tile-max, 6))), 1fr));
+}
+
+/* Quote tape: one line of index and cross-asset prices; wraps onto more lines on narrow screens. */
+.quote-tape {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 6px 22px;
+  padding: 12px 18px;
+}
+
+/* A disclosure styled as a card: the summary row is the header. */
+details.card-disclosure > summary {
+  cursor: pointer;
+  padding: 14px 18px;
+  display: flex;
+  align-items: baseline;
+  flex-wrap: wrap;
+  gap: 4px 12px;
+}
+details.card-disclosure > summary:hover {
+  background: var(--c-panelAlt);
+}
+details.card-disclosure[open] > summary {
+  border-bottom: 1px solid var(--c-border);
+}
+/* Inline "Details" toggles inside cards. */
+details.inline-disclosure > summary {
+  cursor: pointer;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--c-gold);
+  padding: 2px 0;
+}
+
+/* Phones: the five page tabs fit on one row. */
+@media (max-width: 480px) {
+  .site-nav a {
+    padding: 7px 8px !important;
+    font-size: 13px !important;
   }
 }

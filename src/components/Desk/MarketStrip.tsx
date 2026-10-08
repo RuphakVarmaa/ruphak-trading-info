@@ -2,49 +2,71 @@
 
 import type { IndexQuote } from "@/engine/api-types";
 import { useEngineState, useNow } from "@/hooks/useEngineState";
-import { ageColor, C, dirColor, dirGlyph } from "@/components/shared/colors";
+import { C, dirColor, dirGlyph } from "@/components/shared/colors";
 import { fmtAge, fmtIstHm, fmtNum, fmtPct } from "@/components/shared/format";
-import { Dot, Skeleton } from "@/components/shared/ui";
+import { EmptyState, Panel, Skeleton } from "@/components/shared/ui";
 
-function QuoteCard({ q, open }: { q: IndexQuote; open: boolean }) {
+/** The engine may send no change when it has no previous close: treat it as unknown, never as zero. */
+type TapeQuote = Omit<IndexQuote, "change" | "changePct"> & { change: number | null; changePct: number | null };
+
+function TapeItem({ q }: { q: TapeQuote }) {
   const now = useNow();
   const ageMs = now != null ? Math.max(0, now - Date.parse(q.asOf)) : null;
-  const color = q.change == null ? C.muted : dirColor(q.change);
   const decimals = q.key === "USDINR" ? 3 : 2;
+  const known = q.change != null && q.changePct != null && Number.isFinite(q.change) && Number.isFinite(q.changePct);
+  const asOf = `${fmtIstHm(q.asOf)} IST${ageMs != null ? `, ${fmtAge(ageMs)} ago` : ""}`;
   return (
-    <div
-      title={`${q.label} · as of ${fmtIstHm(q.asOf)} IST${ageMs != null ? ` (${fmtAge(ageMs)} ago)` : ""}${q.stale ? " · stale" : ""}`}
-      style={{ background: C.panel, border: `1px solid ${C.border}`, borderRadius: 12, padding: "12px 14px", minWidth: 0, boxShadow: "var(--shadow-card)" }}
+    <span
+      title={`${q.label}: ${fmtNum(q.price, decimals)} · ${known ? "change vs the previous close" : "no previous close, so no change"} · as of ${asOf}${q.stale ? " · stale" : ""}`}
+      style={{ display: "inline-flex", alignItems: "baseline", gap: 7, whiteSpace: "nowrap", minWidth: 0 }}
     >
-      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 6 }}>
-        <span style={{ fontSize: 11, fontWeight: 700, color: C.muted, letterSpacing: "0.04em", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{q.label}</span>
-        <Dot color={open ? ageColor(ageMs, q.stale) : q.stale ? C.red : C.muted3} size={6} />
-      </div>
-      <div className="tnum" style={{ fontSize: 18, fontWeight: 700, fontFamily: "var(--font-num)", color: q.stale ? C.muted : C.textStrong, marginTop: 6, whiteSpace: "nowrap" }}>
+      <span style={{ fontSize: 12.5, color: C.muted2 }}>{q.label}</span>
+      <span className="tnum" style={{ fontSize: 14, fontWeight: 600, color: q.stale ? C.muted : C.textStrong }}>
         {fmtNum(q.price, decimals)}
-      </div>
-      <div className="tnum" style={{ fontSize: 12, fontWeight: 700, fontFamily: "var(--font-num)", color, marginTop: 2, whiteSpace: "nowrap" }}>
-        {q.change == null || q.changePct == null ? (
-          <span title="No previous close from the source yet">— no previous close</span>
-        ) : (
-          <>
-            {dirGlyph(q.change)} {fmtNum(Math.abs(q.change), decimals)} ({fmtPct(Math.abs(q.changePct), 2, false)})
-          </>
-        )}
-      </div>
-    </div>
+      </span>
+      {known ? (
+        <span className="tnum" style={{ fontSize: 13, color: dirColor(q.change!) }}>
+          {dirGlyph(q.change!)} {fmtPct(Math.abs(q.changePct!), 2, false)}
+        </span>
+      ) : (
+        <span className="tnum" style={{ fontSize: 13, color: C.muted2 }} aria-label="change unknown">
+          —
+        </span>
+      )}
+      {q.stale && (
+        <span className="tnum" style={{ fontSize: 12.5, color: C.orange }}>
+          stale · {fmtIstHm(q.asOf)}
+        </span>
+      )}
+    </span>
   );
 }
 
-/** Index and cross-asset prices the engine reads, one card each. */
+/** Index and cross-asset prices the engine reads, as one line: price and change versus the previous close. */
 export default function MarketStrip() {
   const { state } = useEngineState();
-  const open = state?.market.phase === "OPEN";
+  const quotes = (state?.quotes ?? []) as TapeQuote[];
+  const newest = quotes.reduce<string | null>((m, q) => (m == null || Date.parse(q.asOf) > Date.parse(m) ? q.asOf : m), null);
   return (
-    <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(150px, 1fr))", gap: 10 }}>
-      {state
-        ? state.quotes.map((q) => <QuoteCard key={q.key} q={q} open={open} />)
-        : Array.from({ length: 7 }, (_, i) => <Skeleton key={i} height={84} style={{ borderRadius: 12 }} />)}
-    </div>
+    <Panel>
+      {state == null ? (
+        <div className="quote-tape" aria-busy>
+          <Skeleton height={18} />
+        </div>
+      ) : quotes.length === 0 ? (
+        <EmptyState style={{ padding: "14px 18px" }}>No prices from the engine yet.</EmptyState>
+      ) : (
+        <div className="quote-tape" aria-label="Market prices">
+          {quotes.map((q) => (
+            <TapeItem key={q.key} q={q} />
+          ))}
+          {newest && (
+            <span className="tnum" style={{ marginLeft: "auto", fontSize: 12.5, color: C.muted2, whiteSpace: "nowrap" }} title="Prices come from the engine (Groww and Yahoo Finance); hover a price for its own time">
+              as of {fmtIstHm(newest)} IST
+            </span>
+          )}
+        </div>
+      )}
+    </Panel>
   );
 }

@@ -1,50 +1,55 @@
 "use client";
 
-import type { PnlResponse } from "@/engine/api-types";
+import type { CSSProperties } from "react";
+import { useClientNow, useEngineState } from "@/hooks/useEngineState";
 import { C, pnlColor } from "@/components/shared/colors";
-import { fmtInr, fmtPct } from "@/components/shared/format";
+import { fmtAge, fmtInr } from "@/components/shared/format";
 import { Skeleton, StatTile } from "@/components/shared/ui";
 
-const glyph = (n: number) => (n > 0 ? "▲ " : n < 0 ? "▼ " : "");
+/** At most four tiles across (see .tile-row in globals.css). */
+const FOUR_ACROSS = { "--tile-max": 4 } as CSSProperties;
 
-export default function PnlTiles({ pnl }: { pnl: PnlResponse | null }) {
-  const grid = { display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(150px, 1fr))", gap: 12 } as const;
+const glyph = (n: number) => (n > 0 ? "▲ " : n < 0 ? "▼ " : "");
+
+/**
+ * Today's P&L on the engine's marks, computed the way the Live P&L page does when its live feed is off:
+ * realized P&L and charges from the engine's P&L summary, unrealized from the engine's latest mark of
+ * each open position (refreshed about every 30 s), so both pages agree.
+ */
+export default function PnlTiles() {
+  const { pnl, positions, tiers } = useEngineState();
+  const now = useClientNow();
   if (!pnl) {
     return (
-      <div style={grid}>
-        {Array.from({ length: 6 }, (_, i) => (
-          <Skeleton key={i} height={74} style={{ borderRadius: 8 }} />
+      <div className="tile-row" style={FOUR_ACROSS}>
+        {Array.from({ length: 4 }, (_, i) => (
+          <Skeleton key={i} height={96} style={{ borderRadius: 14 }} />
         ))}
       </div>
     );
   }
   const t = pnl.today;
-  const windowChange = t.equityEnd - pnl.startingEquity;
-  const windowPct = pnl.startingEquity ? (windowChange / pnl.startingEquity) * 100 : 0;
+  const open = positions ?? [];
+  const unrealized = open.length > 0 ? open.reduce((s, p) => s + (p.ltp == null ? 0 : (p.ltp - p.avgPrice) * p.qty), 0) : t.unrealized;
+  const net = t.realized + unrealized - t.charges;
+  const equity = t.equityEnd - t.net + net;
+  const updated = tiers.fast.lastOkAt != null && now != null ? `updated ${fmtAge(Math.max(0, now - tiers.fast.lastOkAt))} ago` : null;
   return (
-    <div style={grid}>
-      <StatTile
-        hero
-        label="Net P&L today"
-        value={`${glyph(t.net)}${fmtInr(t.net, { sign: true })}`}
-        color={pnlColor(t.net)}
-        sub={`realized + unrealized − charges · ${pnl.mode}`}
-      />
-      <StatTile label="Realized" value={`${glyph(t.realized)}${fmtInr(t.realized, { sign: true })}`} color={pnlColor(t.realized)} sub="closed trades, gross" />
-      <StatTile label="Unrealized" value={`${glyph(t.unrealized)}${fmtInr(t.unrealized, { sign: true })}`} color={pnlColor(t.unrealized)} sub="open positions at mark" />
-      <StatTile label="Charges today" value={fmtInr(t.charges, { decimals: 2 })} color={C.textSoft} sub="brokerage, STT, exchange, GST" />
-      <StatTile label="Trades today" value={String(t.trades)} color={C.textSoft} sub="closed round trips" />
-      <StatTile
-        label="Equity"
-        value={fmtInr(t.equityEnd)}
-        color={C.gold}
-        sub={
-          <span style={{ color: pnlColor(windowChange) }}>
-            {glyph(windowChange)}
-            {fmtInr(windowChange, { sign: true })} ({fmtPct(windowPct, 1)}) over {pnl.history.length}d
-          </span>
-        }
-      />
+    <div style={{ display: "grid", gap: 8 }}>
+      <div className="tile-row" style={FOUR_ACROSS}>
+        <StatTile hero label="Net P&L today" value={`${glyph(net)}${fmtInr(net, { sign: true })}`} color={pnlColor(net)} sub={`after charges · equity ${fmtInr(equity)}`} />
+        <StatTile
+          label="Realized"
+          value={`${glyph(t.realized)}${fmtInr(t.realized, { sign: true })}`}
+          color={pnlColor(t.realized)}
+          sub={`${t.trades} trade${t.trades === 1 ? "" : "s"} closed, before charges`}
+        />
+        <StatTile label="Unrealized" value={`${glyph(unrealized)}${fmtInr(unrealized, { sign: true })}`} color={pnlColor(unrealized)} sub={`${open.length} open, at the engine's mark`} />
+        <StatTile label="Charges" value={fmtInr(t.charges, { decimals: 2 })} color={C.textSoft} sub="brokerage, STT, fees, GST" />
+      </div>
+      <div className="tnum" style={{ fontSize: 12.5, color: C.muted2 }}>
+        Engine marks, refreshed about every 30 s{updated ? ` · ${updated}` : ""} · {pnl.mode === "LIVE" ? "live account" : "paper account"}. The Live P&amp;L page adds a 2-second live estimate while the market is open.
+      </div>
     </div>
   );
 }
