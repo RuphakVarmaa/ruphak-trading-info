@@ -82,7 +82,9 @@
     // Indices the engine trades, comma-separated: "NIFTY,SENSEX" trades both. Both share the daily limits.
     "INDICES": "NIFTY",
     // Most positions open at once on one index (1 to 3). They share the 4-entries-a-day and loss limits.
-    "MAX_OPEN_PER_INDEX": "2"
+    "MAX_OPEN_PER_INDEX": "2",
+    // Most entries per day across the indices (1 to 12). The 2-losses-in-a-row halt and the daily loss cap still apply.
+    "MAX_TRADES_PER_DAY": "8"
   },
   "env": {
     "preview": {
@@ -98,7 +100,8 @@
         "LLM_DAILY_OUTPUT_TOKEN_BUDGET": "100000",
         "CAPITAL_INR": "500000",
         "INDICES": "NIFTY,SENSEX",
-        "MAX_OPEN_PER_INDEX": "1"
+        "MAX_OPEN_PER_INDEX": "1",
+        "MAX_TRADES_PER_DAY": "4"
       },
       "d1_databases": [
         {

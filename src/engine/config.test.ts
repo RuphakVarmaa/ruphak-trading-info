@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { DEFAULT_CONFIG, makeConfig, parseIndices, parseMaxOpenPerIndex } from "./config";
+import { DEFAULT_CONFIG, makeConfig, parseIndices, parseMaxOpenPerIndex, parseMaxTradesPerDay } from "./config";
 
 describe("parseIndices", () => {
   it("reads one index or a comma-separated list", () => {
@@ -37,6 +37,26 @@ describe("parseMaxOpenPerIndex", () => {
     const cfg = makeConfig({ sizing: { maxOpenPerIndex: parseMaxOpenPerIndex("2") } });
     expect(cfg.sizing.maxOpenPerIndex).toBe(2);
     expect(cfg.sizing.maxTradesPerDay).toBe(DEFAULT_CONFIG.sizing.maxTradesPerDay);
+    expect(cfg.sizing.maxCombinedPremiumPct).toBe(DEFAULT_CONFIG.sizing.maxCombinedPremiumPct);
+  });
+});
+
+describe("parseMaxTradesPerDay", () => {
+  it("reads an integer from 1 to 12", () => {
+    expect(parseMaxTradesPerDay("8")).toBe(8);
+    expect(parseMaxTradesPerDay(" 12 ")).toBe(12);
+    expect(parseMaxTradesPerDay("1")).toBe(1);
+  });
+
+  it("returns undefined for anything else, so the default of 4 stays", () => {
+    for (const bad of [undefined, "", "0", "13", "-2", "3.5", "many"]) expect(parseMaxTradesPerDay(bad)).toBeUndefined();
+    expect(makeConfig({ sizing: { maxTradesPerDay: parseMaxTradesPerDay("x") } }).sizing.maxTradesPerDay).toBe(4);
+  });
+
+  it("overrides only that sizing key", () => {
+    const cfg = makeConfig({ sizing: { maxTradesPerDay: parseMaxTradesPerDay("8"), maxOpenPerIndex: parseMaxOpenPerIndex("2") } });
+    expect(cfg.sizing.maxTradesPerDay).toBe(8);
+    expect(cfg.sizing.maxOpenPerIndex).toBe(2);
     expect(cfg.sizing.maxCombinedPremiumPct).toBe(DEFAULT_CONFIG.sizing.maxCombinedPremiumPct);
   });
 });

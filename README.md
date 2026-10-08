@@ -292,6 +292,7 @@ Engine Worker variables (`workers/engine/wrangler.jsonc`):
 | `LLM_DAILY_INPUT_TOKEN_BUDGET`, `LLM_DAILY_OUTPUT_TOKEN_BUDGET` | 3,000,000 / 1,000,000 | Daily cap. The lexicon scores once the cap is reached. |
 | `CAPITAL_INR` | 500000 | Capital used for sizing and loss caps |
 | `INDICES` | `NIFTY` | Indices to trade, comma-separated (`NIFTY,SENSEX` trades both; they share the daily limits). Unset or invalid means both. |
+| `MAX_TRADES_PER_DAY` | `8` | Most entries per day across the indices (1 to 12). The stored daily order cap (`maxOrdersPerDay`, 2 orders per trade plus reserve) must be raised with it. The loss-streak halt and daily loss cap still apply. Unset or invalid means 4. |
 | `MAX_OPEN_PER_INDEX` | `2` | Most positions open at once on one index (1 to 3). They share the 4-entries-a-day and loss limits. Unset or invalid means 1. |
 
 Secrets: see `.dev.vars.example`. Every strategy parameter lives in `src/engine/config.ts`, and backtests and live trading read the same values.

@@ -477,6 +477,17 @@ export function parseMaxOpenPerIndex(raw: string | undefined): number | undefine
   return n >= 1 && n <= 3 ? n : undefined;
 }
 
+/**
+ * Parses the most entries the engine may take in a day (an integer from 1 to 12). Anything else
+ * returns undefined, so the default stays.
+ */
+export function parseMaxTradesPerDay(raw: string | undefined): number | undefined {
+  const text = (raw ?? "").trim();
+  if (!/^\d+$/.test(text)) return undefined;
+  const n = Number(text);
+  return n >= 1 && n <= 12 ? n : undefined;
+}
+
 /** Returns DEFAULT_CONFIG overridden by `overrides`, validated. Throws on invalid values. */
 export function makeConfig(overrides: DeepPartial<EngineConfig> = {}): EngineConfig {
   return withOverrides(DEFAULT_CONFIG, overrides);
