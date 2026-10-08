@@ -17,7 +17,7 @@
 import type { CopyTicketView, GateResult, IndexId, OrderReason, PositionView, Regime, SessionPhase, SignalView } from "@/engine/api-types";
 import { DEFAULT_CONFIG } from "@/engine/config";
 import { istParts } from "@/lib/ist";
-import type { Freshness } from "@/lib/market/liveIndices";
+import type { Freshness, LiveIndicesFeed } from "@/lib/market/liveIndices";
 import { buyLimit, ceilTick, floorTick, indexLevel, indexPrice, rupees, wholeRupees } from "./prices";
 
 /** A trade younger than this can still be copied (if the index has not run past its skip level). */
@@ -62,6 +62,27 @@ export interface FeedInput {
   hidden?: boolean;
 }
 
+/** The live feed state as useLiveIndices() gives it. */
+export interface LiveFeedState {
+  data: LiveIndicesFeed | null;
+  freshness: Freshness;
+  ageMs: number | null;
+  error: string | null;
+}
+
+/** The feed input for one index: stale when the payload, or this index's own value, is a repeat. */
+export function feedInput(live: LiveFeedState, index: IndexId, hidden: boolean): FeedInput {
+  const quote = live.data?.indices.find((i) => i.index === index) ?? null;
+  return {
+    freshness: live.freshness,
+    ageMs: live.ageMs,
+    price: quote?.price ?? null,
+    error: live.error != null,
+    sourceStale: live.data?.stale === true || quote?.stale === true,
+    hidden,
+  };
+}
+
 export interface ActionInput {
   index: IndexId;
   /** Account id ("main", "small10k", any other). Only used in the alert identity. */
@@ -91,6 +112,8 @@ export interface ActionInput {
    * its quantity (engine issue COPY-1), and selling more than you hold opens a short: EXIT NOW uses this.
    */
   openQty?: ReadonlyMap<string, number>;
+  /** Exits the user has acknowledged ("I've sold"): they stop showing as EXIT NOW. */
+  acked?: ReadonlySet<string>;
   /** The engine's entry window, "HH:MM" IST (defaults: the engine's config, 09:25–14:30). */
   entryFrom?: string;
   entryTo?: string;
@@ -395,6 +418,11 @@ export function convictionTrigger(s: SignalView): string {
 
 const NONE_TODAY = "None today: this check resets at the next session.";
 
+/** The engine cancels its own unfilled entry after 30 s; a copier's limit order would sit all day. */
+export const CANCEL_UNFILLED = "Not filled within about a minute? Cancel it — don't chase.";
+/** Before a market sell: an open stop-loss or target order could also fill and leave you short. */
+export const CANCEL_EXITS = "First cancel your open stop-loss and target orders. If your stop-loss already filled, you are out — do nothing more.";
+
 /** An engine detail with error-code prefixes ("ENGINE_UNREACHABLE: ", "HTTP_403: ") taken out. */
 export function plainDetail(detail: string): string {
   return detail.replace(/\b[A-Z][A-Z0-9]*(?:_[A-Z0-9]+)+:\s*/g, "").replace(/\s+/g, " ").trim();
@@ -603,6 +631,7 @@ function openAction(input: ActionInput, t: CopyTicketView, others: string[]): In
         ? [`The engine's latest mark ${rupees(t.live.mark)}${t.live.markAt ? ` (${hm(t.live.markAt)})` : ""} is already above the limit: the order may not fill. Don't raise the limit.`]
         : []),
       ...(skip ? [] : ["The engine gave no skip level for this trade: the limit is the only cap."]),
+      CANCEL_UNFILLED,
       ...others,
     ];
     a.notice = { title: `ENTER NOW · ${t.index}`, body: order };
@@ -628,7 +657,7 @@ function openAction(input: ActionInput, t: CopyTicketView, others: string[]): In
           : `Opened at ${hm(t.entry.at)} IST, ${shortAge(ageMs)} ago: too late to copy.`;
   const markLine = t.live ? `Engine mark ${rupees(t.live.mark)}${t.live.markAt ? ` at ${hm(t.live.markAt)}` : ""} (${t.live.movePct >= 0 ? "+" : "−"}${Math.abs(t.live.movePct).toFixed(1)}% on the premium).` : null;
   const trailLine = trailOn ? [`Holding it? Raise your stop-loss to ${rupees(x.trail!)}: the engine sells if the premium falls back there.`] : [];
-  a.details = [why, ...trailLine, ...(markLine ? [markLine] : []), `The time stop at ${hm(x.timeStopAt)} sells unless the premium is at least ${rupees(x.timeStopKeep)}.`, ...others];
+  a.details = [why, "Cancel any unfilled buy order for it.", ...trailLine, ...(markLine ? [markLine] : []), `The time stop at ${hm(x.timeStopAt)} sells unless the premium is at least ${rupees(x.timeStopKeep)}.`, ...others];
   a.notice = trailOn
     ? { title: `TRAILING STOP ON · ${t.index}`, body: `${name}: raise your stop-loss to ${rupees(x.trail!)}. Target ${rupees(x.target)}, out by ${hm(x.squareOffAt)}.` }
     : { title: `MANAGE · ${t.index}`, body: `${name}: ${a.order}` };
@@ -642,11 +671,14 @@ function exitAction(input: ActionInput, t: CopyTicketView, others: string[]): In
   const reason = EXIT_WORDS[x.reason] ?? "closed";
   const a = base(input, "EXIT_NOW", t);
   const qty = sellQty(t, input.openQty);
+  const late = input.nowMs - msOf(x.at) > EXIT_WINDOW_MS;
   a.headline = `SELL ${name} now — ${reason}`;
   a.order = sellOrderText(t, reason, qty);
   a.pnl = x.pnl;
   a.details = [
+    CANCEL_EXITS,
     `The engine sold at ${rupees(x.premium)} at ${hm(x.at)} IST after ${x.holdMin} min: ${wholeRupees(x.pnl, true)} after charges (${x.reasonText.toLowerCase()}).`,
+    ...(late ? [`That was ${shortAge(input.nowMs - msOf(x.at))} ago. If you still hold it, sell now.`] : []),
     qty !== t.qty ? `Sell the ${qty} qty shown while it was open: the closed record lists ${t.qty}, and selling more than you hold opens a short.` : "Sell only the quantity you actually hold.",
     ...others,
   ];
@@ -730,18 +762,26 @@ export function deriveIndexAction(input: ActionInput): IndexAction {
   const all = input.tickets;
   const mine = (all ?? []).filter((t) => t.index === index);
   const open = mine.filter((t) => t.status === "OPEN").sort(newestFirst);
-  const recentExit = mine
-    .filter((t) => t.status === "CLOSED" && t.exit && input.nowMs - msOf(t.exit.at) <= EXIT_WINDOW_MS && input.nowMs - msOf(t.exit.at) >= -60_000)
+  // An exit stays EXIT NOW for 10 min, and while the market is open for as long as this tab saw the
+  // trade open and the user has not said "I've sold". It outranks any other open trade on the index.
+  const pendingExit = mine
+    .filter((t) => {
+      if (t.status !== "CLOSED" || !t.exit || input.acked?.has(t.id)) return false;
+      const age = input.nowMs - msOf(t.exit.at);
+      if (age < -60_000) return false;
+      return age <= EXIT_WINDOW_MS || (input.phase === "OPEN" && (input.openQty?.has(t.id) ?? false));
+    })
     .sort((a, b) => msOf(b.exit!.at) - msOf(a.exit!.at));
+  const alsoOpen = (list: CopyTicketView[]) => list.map((t) => `Also open: ${t.index} ${t.contract.strike} ${t.contract.optionType} (since ${hm(t.entry.at)}).`);
 
-  if (open.length > 0) {
+  if (pendingExit.length > 0) {
     const others = [
-      ...open.slice(1).map((t) => `Also open: ${t.index} ${t.contract.strike} ${t.contract.optionType} (since ${hm(t.entry.at)}).`),
-      ...recentExit.map((t) => `Also: sell ${t.index} ${t.contract.strike} ${t.contract.optionType} if you still hold it (${EXIT_WORDS[t.exit!.reason]} at ${hm(t.exit!.at)}).`),
+      ...pendingExit.slice(1).map((t) => `Also: sell ${t.index} ${t.contract.strike} ${t.contract.optionType} if you still hold it (${EXIT_WORDS[t.exit!.reason]} at ${hm(t.exit!.at)}).`),
+      ...alsoOpen(open),
     ];
-    return openAction(input, open[0], others);
+    return exitAction(input, pendingExit[0], others);
   }
-  if (recentExit.length > 0) return exitAction(input, recentExit[0], []);
+  if (open.length > 0) return openAction(input, open[0], alsoOpen(open.slice(1)));
 
   if (all == null) {
     // The trade list is not available: fall back to the engine's open positions for the levels.
@@ -781,12 +821,12 @@ export function nowLine(a: IndexAction | null, t: CopyTicketView | null): string
         return `Holding ${name}? Keep the stop at ${rupees(x.trail != null && x.trail > x.stop ? x.trail : x.stop)} and sell by ${hm(x.squareOffAt)} IST. Not holding it? Don't chase it.`;
       case "EXIT_NOW": {
         const qty = Number(/= (\d+) qty/.exec(a.order ?? "")?.[1] ?? t.qty);
-        return `Sell your ${qty} qty of ${name} now at market (${a.headline.split(" — ")[1] ?? "the engine sold"}).`;
+        return `Cancel your open stop-loss and target orders, then sell your ${qty} qty of ${name} at market (${a.headline.split(" — ")[1] ?? "the engine sold"}). If your stop-loss already filled, you are out.`;
       }
       default:
         break;
     }
   }
-  if (t.status === "CLOSED" && t.exit) return `${name} closed at ${hm(t.exit.at)} IST (${EXIT_WORDS[t.exit.reason]}): nothing to do.`;
+  if (t.status === "CLOSED" && t.exit) return `${name} closed at ${hm(t.exit.at)} IST (${EXIT_WORDS[t.exit.reason]}). If you still hold it, sell now; otherwise nothing to do.`;
   return `${name} is open: follow the stop-loss ${rupees(x.stop)} and target ${rupees(x.target)}, out by ${hm(x.squareOffAt)} IST.`;
 }

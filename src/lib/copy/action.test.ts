@@ -243,15 +243,15 @@ describe("EXIT NOW", () => {
     const doubled = { ...closed("STOP", "10:12:40", -2555), qty: 130, lots: 2 };
     const a = deriveIndexAction(input({ tickets: [doubled], nowMs: ms("10:15"), openQty: new Map([["pos-nifty-1005", 65]]) }));
     expect(a.order).toBe("SELL NIFTY 22600 CE 13-Oct · 1 lot = 65 qty · market order now · stop-loss hit");
-    expect(a.details[1]).toBe("Sell the 65 qty shown while it was open: the closed record lists 130, and selling more than you hold opens a short.");
+    expect(a.details[2]).toBe("Sell the 65 qty shown while it was open: the closed record lists 130, and selling more than you hold opens a short.");
     const unseen = deriveIndexAction(input({ tickets: [closed("STOP", "10:12:40", -2555)], nowMs: ms("10:15") }));
-    expect(unseen.details[1]).toBe("Sell only the quantity you actually hold.");
+    expect(unseen.details[2]).toBe("Sell only the quantity you actually hold.");
   });
 
   it("reports the engine's exit price and P&L", () => {
     const a = deriveIndexAction(input({ tickets: [closed("STOP", "10:12:40", -2555)], nowMs: ms("10:15") }));
     expect(a.pnl).toBe(-2555);
-    expect(a.details[0]).toBe("The engine sold at ₹99.70 at 10:12 IST after 8 min: −₹2,555 after charges (x).");
+    expect(a.details[1]).toBe("The engine sold at ₹99.70 at 10:12 IST after 8 min: −₹2,555 after charges (x).");
   });
 
   it("goes back to WAIT more than 10 minutes after the exit", () => {
@@ -274,12 +274,13 @@ describe("EXIT NOW", () => {
     expect(a.details[0]).toContain("still lists NIFTY 22600 CE as open");
   });
 
-  it("keeps a new trade first but reminds about a fresh exit on the same index", () => {
+  it("puts a fresh exit ahead of a new trade on the same index, and mentions the new one", () => {
     const first = closed("TARGET", "10:06", 4400, 214);
     const second = niftyTicket({ id: "pos-2", entry: { at: at("10:07") } });
     const a = deriveIndexAction(input({ tickets: [first, second], nowMs: ms("10:08") }));
-    expect(a.kind).toBe("ENTER_NOW");
-    expect(a.details.join(" ")).toContain("Also: sell NIFTY 22600 CE if you still hold it (target hit at 10:06).");
+    expect(a.kind).toBe("EXIT_NOW");
+    expect(a.ticket?.id).toBe("pos-nifty-1005");
+    expect(a.details.join(" ")).toContain("Also open: NIFTY 22600 CE (since 10:07).");
   });
 });
 
@@ -459,9 +460,9 @@ describe("helpers", () => {
     const manage = deriveIndexAction(input({ tickets: [niftyTicket()] }));
     expect(nowLine(manage, manage.ticket)).toBe("Holding NIFTY 22600 CE? Keep the stop at ₹99.75 and sell by 15:05 IST. Not holding it? Don't chase it.");
     const exit = deriveIndexAction(input({ tickets: [closed("STOP", "10:12:40", -2555)], nowMs: ms("10:15") }));
-    expect(nowLine(exit, exit.ticket)).toBe("Sell your 65 qty of NIFTY 22600 CE now at market (stop-loss hit).");
+    expect(nowLine(exit, exit.ticket)).toBe("Cancel your open stop-loss and target orders, then sell your 65 qty of NIFTY 22600 CE at market (stop-loss hit). If your stop-loss already filled, you are out.");
     const old = closed("STOP", "10:12:40", -2555);
-    expect(nowLine(null, old)).toBe("NIFTY 22600 CE closed at 10:12 IST (stop-loss hit): nothing to do.");
+    expect(nowLine(null, old)).toBe("NIFTY 22600 CE closed at 10:12 IST (stop-loss hit). If you still hold it, sell now; otherwise nothing to do.");
   });
 });
 

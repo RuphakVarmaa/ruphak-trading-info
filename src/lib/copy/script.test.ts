@@ -13,12 +13,13 @@ describe("paperScript", () => {
       "Choose strike 22600 CE (call) and tap BUY.",
       "Quantity: 1 lot = 65 (lot size 65).",
       "Order type LIMIT at ₹145.35 or less: the engine paid ₹142.50 at 10:05 IST (a model price: Groww's will differ); the limit is the engine fill ₹142.50 plus 2% room. Don't place it if NIFTY is already above 22,631.",
+      "If it is not filled within about a minute, cancel it — don't chase (the engine cancels its own unfilled entry after 30 s).",
       "Once filled, place the stop-loss: SELL 65 qty, stop-loss (SL) order, trigger ₹99.75, limit ₹97.75 (−30% on the engine's fill; from your own fill F the trigger is F × 0.70). The limit sits 2% under the trigger so the order fills in a fast fall.",
       "Target ₹213.75 (+50%): sell there. Keep one exit order per lot: when the premium nears the target, change the stop-loss into a LIMIT SELL at ₹213.75, or use an OCO order if your app has one. Two open SELL orders for one lot can leave you short.",
       "Trail: once the premium reaches ₹185.25 (+30%), raise the stop so it gives back at most 50% of the gain from the peak: at ₹185.25 the stop goes to ₹163.85, and it rises with every new high.",
       "Time stop 12:05 IST: sell then unless the premium is at least ₹156.75 (+10%).",
       "Latest exit 15:05 IST: sell whatever is left.",
-      "Sell at once whenever this page shows EXIT NOW for this trade.",
+      "Whenever this page shows EXIT NOW for this trade: first cancel your stop-loss and target orders (if the stop-loss already filled, you are out — do nothing more), then sell at market.",
     ]);
   });
 
@@ -28,15 +29,15 @@ describe("paperScript", () => {
     expect(s[2]).toBe("Choose strike 81500 PE (put) and tap BUY.");
     expect(s[3]).toBe("Quantity: 1 lot = 20 (lot size 20).");
     expect(s[4]).toBe("Order type LIMIT at ₹171.75 or less: the engine paid ₹168.35 at 10:20 IST; the limit is the engine fill ₹168.35 plus 2% room. Don't place it if SENSEX is already below 81,234.");
-    expect(s[5]).toContain("trigger ₹109.40, limit ₹107.20 (−35% on the engine's fill; from your own fill F the trigger is F × 0.65)");
-    expect(s[6]).toContain("Target ₹269.40 (+60%)");
+    expect(s[6]).toContain("trigger ₹109.40, limit ₹107.20 (−35% on the engine's fill; from your own fill F the trigger is F × 0.65)");
+    expect(s[7]).toContain("Target ₹269.40 (+60%)");
   });
 
   it("numbers the steps for 'Copy all steps'", () => {
     const text = scriptText(niftyTicket());
     expect(text.split("\n")[0]).toBe("BUY NIFTY 22600 CE (13 Oct) · Main · Tue 13 Oct 2026");
     expect(text).toContain("\n1. Open the F&O");
-    expect(text).toContain("\n11. Sell at once");
+    expect(text).toContain("\n12. Whenever this page shows EXIT NOW");
   });
 
   it("puts every stop-loss limit on the tick, under its trigger", () => {

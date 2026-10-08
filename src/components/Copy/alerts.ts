@@ -11,10 +11,10 @@
 import { useEffect, useRef, useSyncExternalStore } from "react";
 import type { CopyTicketView, IndexId } from "@/engine/api-types";
 import { EXIT_WINDOW_MS, EXIT_WORDS, hm, KIND_LABEL, type ActionKind, type IndexAction } from "@/lib/copy/action";
+import { decideAlert } from "@/lib/copy/alertRules";
 import { readSeen, readSession, writeSeen, writeSession } from "./clientStores";
 
 const INDICES: readonly IndexId[] = ["NIFTY", "SENSEX"];
-export const PAUSE_ALERT_DELAY_MS = 3_000;
 
 // ---------------------------------------------------------------------------
 // Sound, vibration, notifications
@@ -186,18 +186,22 @@ export function useActionAlerts(actions: Record<IndexId, IndexAction> | null, ac
     for (const index of INDICES) {
       const a = acts[index];
       const key = statusKey(account, index);
-      const prev = readSession(key);
-      if (prev === a.statusKey) continue;
-      if (prev == null || !a.alert) {
-        // The first look in this tab, or a status that never alerts: remember it quietly.
-        writeSession(key, a.statusKey);
+      const enteredKey = `copy:entered:${account}`;
+      const entered = new Set<string>(JSON.parse(readSession(enteredKey) ?? "[]") as string[]);
+      const d = decideAlert(a, { last: readSession(key), entered });
+      const remember = () => {
+        writeSession(key, d.record);
+        if (d.enteredId && !entered.has(d.enteredId)) writeSession(enteredKey, JSON.stringify([...entered, d.enteredId].slice(-50)));
+      };
+      if (!d.fire) {
+        if (readSession(key) !== d.record || d.enteredId) remember();
         continue;
       }
       const fire = () => {
-        writeSession(key, a.statusKey);
+        remember();
         if (readOn()) announce(a);
       };
-      if (a.kind === "PAUSED") timers.push(setTimeout(fire, PAUSE_ALERT_DELAY_MS));
+      if (d.delayMs > 0) timers.push(setTimeout(fire, d.delayMs));
       else fire();
     }
     return () => timers.forEach(clearTimeout);

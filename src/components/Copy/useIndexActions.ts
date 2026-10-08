@@ -10,9 +10,9 @@ import { useEffect, useMemo } from "react";
 import type { CopyTicketView, EngineStateDTO, IndexId, PositionView, SessionPhase, SignalView } from "@/engine/api-types";
 import { useClientNow, useEngineState, useNow, type ConnectionStatus } from "@/hooks/useEngineState";
 import { useLiveIndices, type LiveIndicesState } from "@/hooks/useLiveIndices";
-import { deriveIndexAction, type FeedInput, type IndexAction } from "@/lib/copy/action";
+import { deriveIndexAction, feedInput, type IndexAction } from "@/lib/copy/action";
 import { istDate, nextSessionOpen, sessionPhaseAt, toIstIso } from "@/lib/ist";
-import { latchSkip, readSeen, useDocumentHidden, useSeenTickets, useSkipLatch, writeSeen } from "./clientStores";
+import { latchSkip, readSeen, useAckedExits, useDocumentHidden, useSeenTickets, useSkipLatch, writeSeen } from "./clientStores";
 import { useSharedPoll, type PollState } from "./sharedPoll";
 
 export const INDICES: readonly IndexId[] = ["NIFTY", "SENSEX"];
@@ -55,17 +55,6 @@ function phaseAt(now: number, state: EngineStateDTO | null): SessionPhase {
   return sessionPhaseAt(now);
 }
 
-function feedFor(live: LiveIndicesState, index: IndexId, hidden: boolean): FeedInput {
-  const quote = live.data?.indices.find((i) => i.index === index) ?? null;
-  return {
-    freshness: live.freshness,
-    ageMs: live.ageMs,
-    price: quote?.price ?? null,
-    error: live.error != null,
-    sourceStale: live.data?.stale === true,
-    hidden,
-  };
-}
 
 export function ticketsUrl(date: string | null, account: string): string | null {
   if (!date) return null;
@@ -110,6 +99,7 @@ export function useIndexActions(accountProp?: string): CopyData {
   const holidayName = sameDayState ? state.market.holidayName : null;
 
   const seen = useSeenTickets(accountId, date);
+  const acked = useAckedExits(accountId, date);
   const openQty = useMemo(() => new Map(Object.entries(seen?.openQty ?? {})), [seen]);
 
   const actions = useMemo(() => {
@@ -128,13 +118,14 @@ export function useIndexActions(accountProp?: string): CopyData {
         phase,
         nextOpenAt,
         holidayName,
-        feed: feedFor(live, index, hidden),
+        feed: feedInput(live, index, hidden),
         skipLatched: latched,
         openQty,
+        acked,
       });
     }
     return out;
-  }, [now, accountId, signals, tickets.data, tickets.error, ticketsAgeMs, positions, phase, nextOpenAt, holidayName, live, hidden, latched, openQty]);
+  }, [now, accountId, signals, tickets.data, tickets.error, ticketsAgeMs, positions, phase, nextOpenAt, holidayName, live, hidden, latched, openQty, acked]);
 
   // Remember the quantity each trade showed while open (first sighting wins).
   useEffect(() => {
