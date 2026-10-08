@@ -5,20 +5,25 @@
  *   npm run backtest -- --from 2026-08-10 --to 2026-10-07 --placebo           # + no-events and shuffled-events baselines
  *   npm run backtest -- --from 2026-07-01 --to 2026-10-07 --walk-forward      # out-of-sample folds (slow)
  *   npm run backtest -- --from 2026-07-23 --to 2026-10-08 --index NIFTY --no-events --account small10k   # + the ₹10k account
+ *   npm run backtest -- --from 2026-07-23 --to 2026-10-08 --no-events --prod-limits --account small5k    # + the ₹5k account
  *   npm run backtest -- ... --account small10k --walk-forward --train-days 28 --test-days 14             # fit its exits out of sample
  *   options: --index NIFTY|SENSEX|BOTH  --events .cache/events/scored.json  --no-events
- *            --account small10k (follower account; --stop/--target/--band 40-70 then apply to it)
+ *            --account small10k|small5k (follower account; --stop/--target/--band 40-70 then apply to it)
  *            --threshold-delta 0.1  --stop 30  --target 50  --seed 7  --out reports/name.json
  *            --gain 1.2  --min-edge 0.10  --min-evi 0.35  --min-active 0.30  --kem 1.0   (strategy overrides)
+ *            --prod-limits (main at the production limits: 2 open per index, 2 in total, 8 entries a day)
+ *            --max-open-per-index 2  --max-open-total 2  --max-trades-per-day 8   (main's limits one by one)
+ *            --save-history .cache/history/snap.json  --history .cache/history/snap.json   (replay identical data)
  *
  * History: Groww 5-minute index candles cached by `npm run fetch-history` when present (multi-year),
  * otherwise Yahoo (about 60 days of 5-minute bars). Option prices are synthetic (Black-Scholes on
- * India VIX); the report says so.
+ * India VIX); the report says so. --history replays a snapshot saved by --save-history instead of
+ * fetching, so before/after comparisons see the same bars.
  */
 import type { BacktestParams } from "../src/engine/api-types";
 import { loadYahooHistory, type MarketHistory } from "../src/engine/backtest/history";
 import { attribution } from "../src/engine/backtest/metrics";
-import { accountConfig, accountSpec, parseAccountId } from "../src/engine/accounts";
+import { ACCOUNT_IDS, accountConfig, accountSpec, parseAccountId } from "../src/engine/accounts";
 import { configForParams, runBacktest, runBacktestAccounts, type BacktestOutput } from "../src/engine/backtest/runBacktest";
 import { followerExitGrid, makeFolds, walkForward, walkForwardFollower } from "../src/engine/backtest/walkForward";
 import { addDays, istDate } from "../src/engine/clock";
@@ -49,13 +54,28 @@ const opt = (name: string): number | undefined => {
   if (!Number.isFinite(v)) fail(`--${name} must be a number`);
   return v;
 };
-const account = parseAccountId(str(args, "account", "main")) ?? fail("--account must be main or small10k");
+const account = parseAccountId(str(args, "account", "main")) ?? fail(`--account must be one of ${ACCOUNT_IDS.join(", ")}`);
 const follows = account !== "main";
 // With a follower account, --stop/--target apply to the follower; main keeps its default exits.
 const mainParams = follows ? { ...params, stopPct: Math.abs(DEFAULT_CONFIG.exits.stopPct), targetPct: DEFAULT_CONFIG.exits.targetPct } : params;
+// Main's position and entry limits. --prod-limits uses production's: MAX_OPEN_PER_INDEX 2 and
+// MAX_TRADES_PER_DAY 8 (workers/engine/wrangler.jsonc) and 2 open positions in total (main's stored
+// settings). Follower accounts pin their own limits, so these never reach them.
+const prodLimits = args["prod-limits"] === true;
+const limit = (name: string, prod: number, ok: (n: number) => boolean): number | undefined => {
+  const v = opt(name) ?? (prodLimits ? prod : undefined);
+  if (v !== undefined && !ok(v)) fail(`--${name} is out of range`);
+  return v;
+};
+const mainLimits = {
+  maxOpenPerIndex: limit("max-open-per-index", 2, (n) => Number.isInteger(n) && n >= 1 && n <= 3),
+  maxOpenTotal: limit("max-open-total", 2, (n) => Number.isInteger(n) && n >= 1),
+  maxTradesPerDay: limit("max-trades-per-day", 8, (n) => Number.isInteger(n) && n >= 1 && n <= 12),
+};
 const cfg = withOverrides(configForParams(DEFAULT_CONFIG, mainParams), {
   conviction: { gain: opt("gain"), minActiveWeight: opt("min-active") },
   gates: { minEdgeRatio: opt("min-edge"), minExpectedVsImplied: opt("min-evi"), kEM: opt("kem") },
+  sizing: mainLimits,
 });
 const band = str(args, "band", undefined);
 const bandMatch = band ? /^(\d+(?:\.\d+)?)-(\d+(?:\.\d+)?)$/.exec(band) : null;
@@ -71,7 +91,20 @@ const followerCfg = follows
 function strategyOf(c: typeof cfg) {
   const { gain, minActiveWeight, thresholds, counterTrendThreshold, priorWeights } = c.conviction;
   const { minEdgeRatio, minExpectedVsImplied, kEM } = c.gates;
-  return { gain, minActiveWeight, thresholds, counterTrendThreshold, priorWeights, minEdgeRatio, minExpectedVsImplied, kEM, stopPct: c.exits.stopPct, targetPct: c.exits.targetPct };
+  const { maxOpenPerIndex, maxOpenTotal, maxTradesPerDay } = c.sizing;
+  return {
+    gain,
+    minActiveWeight,
+    thresholds,
+    counterTrendThreshold,
+    priorWeights,
+    minEdgeRatio,
+    minExpectedVsImplied,
+    kEM,
+    stopPct: c.exits.stopPct,
+    targetPct: c.exits.targetPct,
+    limits: { maxOpenPerIndex, maxOpenTotal: maxOpenTotal ?? null, maxTradesPerDay },
+  };
 }
 
 function mergeCandles(a: Candle[] = [], b: Candle[] = []): Candle[] {
@@ -81,13 +114,27 @@ function mergeCandles(a: Candle[] = [], b: Candle[] = []): Candle[] {
   return [...m.values()].sort((x, y) => x.t - y.t);
 }
 
-async function loadHistory(): Promise<MarketHistory & { source: string }> {
+async function fetchHistory(): Promise<MarketHistory & { source: string }> {
   console.log("Loading Yahoo history (5m ~60 days, daily 2 years)...");
   const yahoo = await loadYahooHistory({ dailyRange: "2y" });
   const cached = readJson<Record<string, Candle[]>>(".cache/history/groww-5m.json");
   if (!cached) return { ...yahoo, source: "yahoo" };
   for (const [sym, arr] of Object.entries(cached)) yahoo.candles[sym] = mergeCandles(arr, yahoo.candles[sym]);
   return { ...yahoo, source: "groww cache + yahoo" };
+}
+
+/** Fetched history, or a snapshot saved earlier with --save-history (--history path). */
+async function loadHistory(): Promise<MarketHistory & { source: string }> {
+  const snapshot = str(args, "history", undefined);
+  if (snapshot) {
+    const h = readJson<MarketHistory & { source: string; savedAt?: string }>(snapshot) ?? fail(`No history snapshot at ${snapshot}.`);
+    console.log(`Replaying the history snapshot ${snapshot} (${h.source}, saved ${h.savedAt ?? "?"}).`);
+    return { ...h, source: `snapshot of ${h.source}` };
+  }
+  const h = await fetchHistory();
+  const save = str(args, "save-history", undefined);
+  if (save) console.log(`Saved the history snapshot to ${writeJson(save, { ...h, savedAt: new Date().toISOString() })}.`);
+  return h;
 }
 
 function loadEvents(): ScoredEvent[] {
@@ -123,6 +170,15 @@ function report(name: string, out: BacktestOutput): void {
     byExit.set(t.exitReason, e);
   }
   if (byExit.size) console.log("\nBy exit: " + [...byExit].map(([k, v]) => `${k} ${v.n} (₹${Math.round(v.pnl)})`).join(", "));
+  const byIndex = new Map<string, { n: number; wins: number; pnl: number }>();
+  for (const t of out.trades) {
+    const e = byIndex.get(t.index) ?? { n: 0, wins: 0, pnl: 0 };
+    e.n++;
+    if (t.pnl >= 0) e.wins++;
+    e.pnl += t.pnl;
+    byIndex.set(t.index, e);
+  }
+  if (byIndex.size) console.log("By index: " + [...byIndex].map(([k, v]) => `${k} ${v.n} trades, ${v.wins} won (₹${Math.round(v.pnl)})`).join("; "));
   for (const n of out.notes) console.log(`note: ${n}`);
 }
 

@@ -6,7 +6,7 @@
 import { withOverrides, type DeepPartial, type EngineConfig } from "./config";
 import type { TradingMode } from "./types";
 
-export const ACCOUNT_IDS = ["main", "small10k"] as const;
+export const ACCOUNT_IDS = ["main", "small10k", "small5k"] as const;
 export type AccountId = (typeof ACCOUNT_IDS)[number];
 
 export interface AccountSpec {
@@ -57,6 +57,50 @@ export const ACCOUNTS: Record<AccountId, AccountSpec> = {
         useCurrentEquity: true,
       },
       risk: { dailyLossCapPct: 25, weeklyLossCapPct: 40, maxConsecutiveLossesPerDay: 2, prospectiveLossCap: true },
+      exits: { stopPct: -35, targetPct: 60 },
+    },
+  },
+  small5k: {
+    id: "small5k",
+    label: "₹5k account",
+    shortLabel: "₹5k",
+    paperOnly: true,
+    configPatch: {
+      capitalRupees: 5_000,
+      indices: ["NIFTY", "SENSEX"],
+      // One lot of the strike nearest the money: ₹40–60 for NIFTY's 65 units (at most ₹3,900 a lot
+      // plus charges) and ₹130–222 for SENSEX's 20. ₹222 is the highest premium at which one SENSEX
+      // lot plus Groww's round-trip charges stays within ₹4,500 (₹4,440 + about ₹58); ₹130 buys the
+      // same ₹2,600 a lot as NIFTY's ₹40, as for the ₹10k account. ₹60 sits further out than the
+      // ₹10k account's ₹70, so NIFTY is searched up to 12 strikes out (600 points, about 2.4%, as
+      // far as SENSEX's 20 strikes of 100).
+      selection: {
+        mode: "PREMIUM_BAND",
+        minPremium: 40,
+        maxPremium: 60,
+        maxOtmSteps: 12,
+        maxQuotes: 4,
+        byIndex: { SENSEX: { minPremium: 130, maxPremium: 222, maxOtmSteps: 20 } },
+      },
+      sizing: {
+        // One lot risks 18–31% of ₹5,000 at the stop. 25% covers a ₹60 NIFTY lot through the
+        // one-lot allowance; no trade may risk more than 30% (₹1,500, the daily loss cap).
+        defaultRiskPct: 25,
+        minRiskPct: 20,
+        maxRiskPctPerTrade: 30,
+        // A lot may use up to 90% of equity (₹4,500), so the top of either band still fits.
+        maxPremiumPctPerTrade: 90,
+        maxCombinedPremiumPct: 90,
+        maxLots: 1,
+        maxOpenPerIndex: 1,
+        // One position at a time across NIFTY and SENSEX.
+        maxOpenTotal: 1,
+        maxTradesPerDay: 2,
+        useCurrentEquity: true,
+      },
+      // ₹1,500 a day at most. With at most 2 entries a day, stopping after one loss in a row means
+      // stopping for the day after any losing trade.
+      risk: { dailyLossCapPct: 30, weeklyLossCapPct: 40, maxConsecutiveLossesPerDay: 1, prospectiveLossCap: true },
       exits: { stopPct: -35, targetPct: 60 },
     },
   },

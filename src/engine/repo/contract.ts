@@ -237,5 +237,40 @@ export function accountScopeContract(name: string, make: () => Promise<Repositor
       expect(await small.state.get("health:yahoo")).toEqual({ ok: true });
       expect(await small.perf.all("PAPER")).toEqual(await base.perf.all("PAPER"));
     });
+
+    it("keeps the ₹5k and ₹10k accounts apart from each other, with their own caps and kill switches", async () => {
+      const base = await make();
+      const tenK = scoped(base);
+      const fiveK = accountRepository(base, "small5k", accountConfig(DEFAULT_CONFIG, "small5k"), () => T);
+      await base.orders.save(order("m1"));
+      await tenK.orders.save(order("t1"));
+      await fiveK.orders.save(order("f1"));
+      expect((await base.orders.between(T - 1, T + 1, "PAPER")).map((o) => o.id)).toEqual(["m1"]);
+      expect((await tenK.orders.between(T - 1, T + 1)).map((o) => o.id)).toEqual(["t1"]);
+      expect((await fiveK.orders.between(T - 1, T + 1)).map((o) => [o.id, o.mode])).toEqual([["f1", "PAPER"]]);
+      expect(await fiveK.orders.get("t1")).toBeNull();
+      expect(await tenK.orders.get("f1")).toBeNull();
+
+      const p = { id: "p", mode: "PAPER", status: "OPEN", index: "NIFTY" } as unknown as Position;
+      await tenK.positions.save({ ...p, id: "pt" });
+      await fiveK.positions.save({ ...p, id: "pf" });
+      expect((await tenK.positions.open("PAPER")).map((x) => x.id)).toEqual(["pt"]);
+      expect((await fiveK.positions.open("PAPER")).map((x) => x.id)).toEqual(["pf"]);
+
+      const l = { date: "2026-10-07", mode: "PAPER", realized: -1_200 } as unknown as DayLedger;
+      await fiveK.ledger.save(l);
+      expect(await tenK.ledger.get("2026-10-07", "PAPER")).toBeNull();
+      expect((await fiveK.ledger.get("2026-10-07", "PAPER"))?.realized).toBe(-1_200);
+
+      const s = await fiveK.settings.get();
+      expect(s.dailyLossCapInr).toBe(1_500);
+      expect(s.maxPremiumPerTradeInr).toBe(4_500);
+      expect(s.maxOpenPositions).toBe(1);
+      await fiveK.settings.update({ killSwitch: true, killReason: "₹5k only" }, "tester");
+      expect((await fiveK.settings.get()).killSwitch).toBe(true);
+      expect((await tenK.settings.get()).killSwitch).toBe(false);
+      expect((await base.settings.get()).killSwitch).toBe(false);
+      await expect(fiveK.orders.save(order("x", { mode: "LIVE" }))).rejects.toThrow(/small5k is a paper-only account/);
+    });
   });
 }

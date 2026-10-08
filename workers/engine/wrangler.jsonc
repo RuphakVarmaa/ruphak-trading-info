@@ -85,9 +85,10 @@
     "MAX_OPEN_PER_INDEX": "2",
     // Most entries per day across the indices (1 to 12). The 2-losses-in-a-row halt and the daily loss cap still apply.
     "MAX_TRADES_PER_DAY": "8",
-    // Paper accounts to run, comma-separated; main is always on. "small10k" adds the ₹10,000 account
-    // that follows main's signals with one cheaper out-of-the-money lot (src/engine/accounts.ts).
-    "ACCOUNTS": "main,small10k",
+    // Paper accounts to run, comma-separated; main is always on. "small10k" and "small5k" add the
+    // ₹10,000 and ₹5,000 accounts that follow main's signals with one cheaper out-of-the-money lot
+    // (src/engine/accounts.ts).
+    "ACCOUNTS": "main,small10k,small5k",
     // Dashboard base URL for the links in copy-trade alerts (empty: no links).
     "DASHBOARD_URL": "https://ruphak-dashboard.sanjaysenthilkumar.workers.dev"
   },
@@ -107,7 +108,7 @@
         "INDICES": "NIFTY,SENSEX",
         "MAX_OPEN_PER_INDEX": "1",
         "MAX_TRADES_PER_DAY": "4",
-        "ACCOUNTS": "main,small10k",
+        "ACCOUNTS": "main,small10k,small5k",
         "DASHBOARD_URL": ""
       },
       "d1_databases": [

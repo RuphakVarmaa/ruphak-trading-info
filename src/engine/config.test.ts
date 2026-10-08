@@ -41,6 +41,15 @@ describe("parseMaxOpenPerIndex", () => {
   });
 });
 
+describe("index specs", () => {
+  it("uses the exchange lot sizes and weekly expiry days checked on 8 Oct 2026 (docs/FNO.md)", () => {
+    const { NIFTY, SENSEX } = DEFAULT_CONFIG.indexSpecs;
+    // NSE/FAOP/70616: NIFTY 65 from the January 2026 series. BSE: SENSEX 20 (25 from the January 2027 expiries).
+    expect(NIFTY).toMatchObject({ exchange: "NSE", lotSize: 65, strikeStep: 50, weeklyExpiryWeekday: 2 });
+    expect(SENSEX).toMatchObject({ exchange: "BSE", lotSize: 20, strikeStep: 100, weeklyExpiryWeekday: 4 });
+  });
+});
+
 describe("parseMaxTradesPerDay", () => {
   it("reads an integer from 1 to 12", () => {
     expect(parseMaxTradesPerDay("8")).toBe(8);
