@@ -33,6 +33,26 @@ describe("Desk quotes when Yahoo's daily chart lags a session (DF-2)", () => {
   });
 });
 
+describe("Desk quotes without a previous close (DF-4)", () => {
+  it("leave the change unknown instead of printing 0.00%", () => {
+    const s: MarketSnapshot = {
+      t: istAt("2026-10-09", "00:40"),
+      candles: { "BZ=F": [bar("2026-10-09", "00:30", 65.2), bar("2026-10-09", "00:35", 65.4)] },
+      daily: {},
+      ltp: {},
+      dataAgeSec: 0,
+    };
+    const brent = quoteRows(s).find((q) => q.key === "BRENT")!;
+    expect(brent.price).toBe(65.4);
+    expect(brent.change).toBeNull();
+    expect(brent.changePct).toBeNull();
+    // With one, the change is computed as before.
+    const known = quoteRows({ ...s, daily: { "BZ=F": [bar("2026-10-08", "00:00", 65)] } }).find((q) => q.key === "BRENT")!;
+    expect(known.change).toBeCloseTo(0.4, 6);
+    expect(known.changePct).toBeCloseTo((0.4 / 65) * 100, 6);
+  });
+});
+
 describe("Desk quote times (DF-5)", () => {
   it("use the source's last trade time instead of the engine's tick", () => {
     const traded = istAt("2026-10-09", "09:57") + 30_000;

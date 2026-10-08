@@ -822,8 +822,9 @@ export interface QuoteRow {
   key: string;
   label: string;
   price: number;
-  change: number;
-  changePct: number;
+  /** Versus the previous close; null when that close is unknown (never an invented 0). */
+  change: number | null;
+  changePct: number | null;
   asOf: number;
 }
 

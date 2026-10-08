@@ -74,8 +74,9 @@ export interface IndexQuote {
   key: string;
   label: string;
   price: number;
-  change: number;
-  changePct: number;
+  /** Versus the previous close; null when that close is unknown (show "—", not 0.00%). */
+  change: number | null;
+  changePct: number | null;
   /** ISO timestamp of the observation. */
   asOf: string;
   stale: boolean;
