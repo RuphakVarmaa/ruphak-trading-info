@@ -21,33 +21,61 @@ export interface LiveIndex {
   label: string;
   /** Upstream symbol, e.g. "^NSEI". */
   symbol: string;
+  /** The source's last price (2 decimals). */
   price: number;
-  /** The previous session's close (from the daily chart, calendar-checked); null when unknown. */
+  /**
+   * Close of the trading day before the last price's day (from the daily chart, calendar-checked); null
+   * when unknown. Never the 1-minute chart's meta.previousClose, which can be two sessions old.
+   */
   prevClose: number | null;
+  /** price - prevClose (2 decimals); null without a previous close. */
   change: number | null;
+  /** Percent (3 decimals); null without a previous close. */
   changePct: number | null;
+  /** Open of the session's first 1-minute bar. */
   open: number | null;
+  /** The session's high and low as the source reports them for the day (bars' extremes when it does not). */
   high: number | null;
   low: number | null;
-  /** Session VWAP of the 1-minute bars (typical price, equal weights: index volume is 0); null before the open. */
+  /**
+   * VWAP of `bars` (running mean of the typical price, equal weights: index volume is 0); null while the
+   * session has no bars. Before the open it is the previous session's, like the bars.
+   */
   vwap: number | null;
-  /** 09:15–09:30 IST high and low; null until 09:30. */
+  /** High and low of the session's 09:15–09:29 bars; null until a bar at or after 09:30 IST is in. */
   openingRange: { high: number; low: number } | null;
   /** IST date (YYYY-MM-DD) of the bars: the previous session before the open. */
   session: string;
   /** IST ISO time of the last trade the source reports. */
   asOf: string;
-  /** Today's 1-minute bars, oldest first. */
+  /** The session's 1-minute bars from 09:15 through the 15:30 closing print, oldest first. */
   bars: LiveIndexBar[];
+  /**
+   * True when this symbol failed in the latest upstream fetch and its last good value (at most two
+   * minutes old, see `fetchedAt`) is served instead. Absent means false.
+   */
+  stale?: boolean;
+  /** ISO time of the upstream fetch this entry came from. */
+  fetchedAt?: string;
+  /**
+   * Set only in a `?since=` update: `bars` then holds just the bars from this time (epoch ms) on, and the
+   * earlier ones are unchanged (see mergeBars). useLiveIndices merges them, so its data never carries it.
+   */
+  barsFrom?: number;
 }
 
 export interface LiveVix {
   price: number;
+  /** Close of the trading day before the last value's day (daily chart, calendar-checked); null when unknown. */
   prevClose: number | null;
   change: number | null;
   changePct: number | null;
   /** IST ISO time of the last value. */
   asOf: string;
+  /** As on LiveIndex: the last good value served after a failed fetch. Absent means false. */
+  stale?: boolean;
+  /** ISO time of the upstream fetch this value came from. */
+  fetchedAt?: string;
 }
 
 export interface LiveIndicesFeed {
@@ -64,7 +92,12 @@ export interface LiveIndicesFeed {
   fetchedAt: string;
   /** True when the upstream failed and the last good payload is being served. */
   stale: boolean;
+  /** Indices with no price in this payload (failed, and no good value in the last two minutes). */
   missing: LiveIndexId[];
+  /** Why the exchange is shut today ("Dussehra", "Weekend") when marketPhase is HOLIDAY. */
+  holidayName?: string | null;
+  /** IST ISO time of the next session open (09:15) by the exchange calendar. */
+  nextOpenAt?: string;
 }
 
 /** Client poll interval while the market is open or in pre-open, and otherwise. */
@@ -83,4 +116,81 @@ export function freshnessOf(lastOkAt: number | null, now: number | null): Freshn
   if (age <= STALE_AFTER_MS) return "live";
   if (age <= OFFLINE_AFTER_MS) return "stale";
   return "offline";
+}
+
+/** A bar's typical price, (high + low + close) / 3. */
+export const typicalPrice = (b: LiveIndexBar): number => (b.h + b.l + b.c) / 3;
+
+/**
+ * Running session VWAP at each bar's close: the mean typical price so far. Yahoo reports index volume
+ * as 0, so every bar weighs the same (as the engine's VWAP does without volume). Pure.
+ */
+export function runningVwap(bars: readonly LiveIndexBar[]): number[] {
+  const out: number[] = [];
+  let sum = 0;
+  for (let i = 0; i < bars.length; i++) {
+    sum += typicalPrice(bars[i]);
+    out.push(sum / (i + 1));
+  }
+  return out;
+}
+
+// ---------------------------------------------------------------------------
+// Updates: a poll can ask for the bars since a time instead of the whole session (a few hundred bytes
+// instead of ~50 KB every 1.5 s); the client merges them into what it has.
+// ---------------------------------------------------------------------------
+
+/** How far back an update re-sends bars, so a bar Yahoo revises after the fact is picked up. */
+export const SINCE_OVERLAP_MS = 5 * 60_000;
+
+/** IST date (YYYY-MM-DD) of an instant. */
+const istDateOfMs = (ms: number): string => new Date(ms + 330 * 60_000).toISOString().slice(0, 10);
+
+/** The `since` to ask with after `feed` (its last bars minus the overlap); null to ask for everything. Pure. */
+export function sinceFor(feed: LiveIndicesFeed | null): number | null {
+  if (!feed || feed.indices.length === 0 || feed.missing.length > 0) return null;
+  const lasts = feed.indices.map((i) => i.bars[i.bars.length - 1]?.t);
+  if (lasts.some((t) => t == null)) return null;
+  return Math.min(...(lasts as number[])) - SINCE_OVERLAP_MS;
+}
+
+/** Server side: each index of the same IST day as `since` keeps only its bars from `since` on (marked barsFrom). Pure. */
+export function barsSince(feed: LiveIndicesFeed, since: number): LiveIndicesFeed {
+  const day = istDateOfMs(since);
+  return { ...feed, indices: feed.indices.map((i) => (i.session === day ? { ...i, bars: i.bars.filter((b) => b.t >= since), barsFrom: since } : i)) };
+}
+
+/**
+ * Client side: `next` with every `since` update joined to the earlier bars of `prev`. Null when an index
+ * cannot be joined (no earlier bars of that session): ask for the whole feed instead. Pure.
+ */
+export function mergeBars(prev: LiveIndicesFeed | null, next: LiveIndicesFeed): LiveIndicesFeed | null {
+  if (next.indices.every((i) => i.barsFrom == null)) return next;
+  const indices: LiveIndex[] = [];
+  for (const entry of next.indices) {
+    const { barsFrom, ...rest } = entry;
+    if (barsFrom == null) {
+      indices.push(entry);
+      continue;
+    }
+    const before = prev?.indices.find((i) => i.index === entry.index);
+    if (!before || before.session !== entry.session) return null;
+    indices.push({ ...rest, bars: [...before.bars.filter((b) => b.t < barsFrom), ...entry.bars] });
+  }
+  return { ...next, indices };
+}
+
+/** Epoch ms of an IST wall-clock time ("HH:MM") on a YYYY-MM-DD date. */
+export const istTimeOn = (date: string, hhmm: string): number => Date.parse(`${date}T${hhmm}:00+05:30`);
+
+/**
+ * High and low of the session's 09:15–09:29 bars once a bar at or after 09:30 IST exists (from then on
+ * those bars are final); null before that, or without a bar in the window. Pure.
+ */
+export function openingRangeOf(bars: readonly LiveIndexBar[], session: string): { high: number; low: number } | null {
+  const start = istTimeOn(session, "09:15");
+  const end = istTimeOn(session, "09:30");
+  const window = bars.filter((b) => b.t >= start && b.t < end);
+  if (window.length === 0 || !bars.some((b) => b.t >= end)) return null;
+  return { high: Math.max(...window.map((b) => b.h)), low: Math.min(...window.map((b) => b.l)) };
 }

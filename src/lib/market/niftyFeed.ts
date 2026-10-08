@@ -67,8 +67,31 @@ export function prevSessionClose(daily: YahooChart, session: string, calendar?: 
   return Math.round(bar.c * 100) / 100;
 }
 
-/** `prevClose` is the previous session's close (see prevSessionClose); null leaves the change unknown. */
-export function buildNiftyFeed(nifty: YahooChart, vix: YahooChart | null, prevClose: number | null, nowMs: number, wantExpiry: string | null): NiftyFeed | null {
+/** Yahoo's own day high and low (chart meta regularMarketDayHigh/Low, which the shared parser drops). */
+export interface DayRange {
+  high: number | null;
+  low: number | null;
+}
+
+/**
+ * Yahoo's day range when it agrees with the session it is meant for: it holds the last price and every
+ * bar's close. Null otherwise (or when absent). Preferred over the bars' extremes, which can carry a bad
+ * print (SENSEX on 2026-10-08: a 15:25 bar low of 71,188.60 under a day low of 71,327.75).
+ */
+export function checkedDayRange(range: DayRange | null | undefined, closes: readonly number[], price: number): { high: number; low: number } | null {
+  const hi = range?.high;
+  const lo = range?.low;
+  if (hi == null || lo == null || !Number.isFinite(hi) || !Number.isFinite(lo) || !(lo > 0) || lo > hi) return null;
+  const EPS = 0.01;
+  const inside = (x: number) => x >= lo - EPS && x <= hi + EPS;
+  return inside(price) && closes.every(inside) ? { high: hi, low: lo } : null;
+}
+
+/**
+ * `prevClose` is the previous session's close (see prevSessionClose); null leaves the change unknown.
+ * `dayRange` (Yahoo's day high and low for the last trade's day) is used when it agrees with the bars.
+ */
+export function buildNiftyFeed(nifty: YahooChart, vix: YahooChart | null, prevClose: number | null, nowMs: number, wantExpiry: string | null, dayRange?: DayRange | null): NiftyFeed | null {
   const spot = lastPrice(nifty);
   if (!spot) return null;
   const session = niftySession(nifty) ?? istDate(spot.ms);
@@ -76,6 +99,7 @@ export function buildNiftyFeed(nifty: YahooChart, vix: YahooChart | null, prevCl
   const v = vix ? lastPrice(vix) : null;
   const expiries = niftyExpiries(nowMs);
   const expiry = wantExpiry && expiries.includes(wantExpiry) ? wantExpiry : expiries[0];
+  const range = istDate(spot.ms) === session ? checkedDayRange(dayRange, today.map((c) => c.c), spot.price) : null;
   return {
     spot: spot.price,
     prevClose,
@@ -85,8 +109,8 @@ export function buildNiftyFeed(nifty: YahooChart, vix: YahooChart | null, prevCl
     session,
     bars: today.map((c) => ({ t: c.t, c: c.c })),
     open: today[0]?.o ?? null,
-    high: today.length ? Math.max(...today.map((c) => c.h)) : null,
-    low: today.length ? Math.min(...today.map((c) => c.l)) : null,
+    high: range?.high ?? (today.length ? Math.max(...today.map((c) => c.h)) : null),
+    low: range?.low ?? (today.length ? Math.min(...today.map((c) => c.l)) : null),
     vix: v?.price ?? null,
     vixAsOf: v ? istIso(v.ms) : null,
     chain: v ? buildNiftyChain({ spot: spot.price, vix: v.price, nowMs, expiry, expiries }) : null,

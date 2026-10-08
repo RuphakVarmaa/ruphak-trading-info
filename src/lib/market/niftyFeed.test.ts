@@ -3,7 +3,8 @@ import { defaultCalendar } from "@/engine/calendar/calendar";
 import { istAt } from "@/engine/clock";
 import type { YahooChart } from "@/engine/market/yahooClient";
 import type { Candle } from "@/engine/types";
-import { buildNiftyFeed, niftySession, prevSessionClose } from "./niftyFeed";
+import { recordedChart } from "./__fixtures__/liveFixtures";
+import { buildNiftyFeed, checkedDayRange, niftySession, prevSessionClose } from "./niftyFeed";
 
 const chart = (candles: Candle[], meta: Partial<YahooChart["meta"]> = {}): YahooChart => ({
   symbol: "^NSEI",
@@ -55,5 +56,28 @@ describe("buildNiftyFeed", () => {
   it("leaves the change unknown without a prior close", () => {
     const f = buildNiftyFeed(nifty, null, null, now, null)!;
     expect(f).toMatchObject({ spot: 22231.8, prevClose: null, change: null, changePct: null });
+  });
+});
+
+describe("day range", () => {
+  // The recorded 2026-10-08 session: the bars' lowest low is 22,180.30; Yahoo's day low is 22,179.90.
+  const recorded = recordedChart("^NSEI 1m");
+  const now = istAt("2026-10-09", "00:41");
+
+  it("prefers Yahoo's day range over the bars' extremes when it agrees with them", () => {
+    expect(buildNiftyFeed(recorded, null, 22603.05, now, null)).toMatchObject({ high: 22599.05078125, low: 22180.30078125 });
+    expect(buildNiftyFeed(recorded, null, 22603.05, now, null, { high: 22599.05, low: 22179.9 })).toMatchObject({ high: 22599.05, low: 22179.9 });
+  });
+
+  it("ignores a day range that leaves out the price or a close, or is for another day", () => {
+    expect(checkedDayRange({ high: 110, low: 90 }, [95, 105], 100)).toEqual({ high: 110, low: 90 });
+    expect(checkedDayRange({ high: 104, low: 90 }, [95, 105], 100)).toBeNull();
+    expect(checkedDayRange({ high: 110, low: 101 }, [105], 100)).toBeNull();
+    expect(checkedDayRange({ high: 90, low: 110 }, [], 100)).toBeNull();
+    expect(checkedDayRange({ high: null, low: 90 }, [], 100)).toBeNull();
+    expect(checkedDayRange(undefined, [], 100)).toBeNull();
+    // A quote from the next day over the old bars: the range belongs to that day, not to the bars.
+    const nextDay = { ...recorded, meta: { ...recorded.meta, regularMarketTime: Math.floor(istAt("2026-10-09", "09:08") / 1000) } };
+    expect(buildNiftyFeed(nextDay, null, 22231.8, now, null, { high: 22599.05, low: 22179.9 })).toMatchObject({ low: 22180.30078125 });
   });
 });
