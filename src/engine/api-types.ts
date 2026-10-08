@@ -405,6 +405,8 @@ export interface CopyTicketView {
     at: string;
     /** The paper fill. */
     premium: number;
+    /** Limit price of the engine's entry order (marketable: a couple of ticks over the ask); null for a market order or when unknown. */
+    limitPrice: number | null;
     costRupees: number;
     charges: number;
     /** "model": Black-Scholes on India VIX (a broker's real price will differ); "broker": a Groww quote. */

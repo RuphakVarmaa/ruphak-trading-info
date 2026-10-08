@@ -203,6 +203,25 @@ describe("copy ticket", () => {
   });
 });
 
+describe("the engine's entry limit", () => {
+  const view = (over: Partial<Parameters<typeof copyTicketView>[0]>) => copyTicketView({ position: position(), plan: plan(), account: TEN_K, timeStopMinPnlPct: 10, ...over });
+
+  it("comes from the entry order, else from the plan; null for a market order", () => {
+    expect(view({}).entry.limitPrice).toBe(62.5);
+    expect(view({ entryOrder: { type: "LIMIT", limitPrice: 62.55 } }).entry.limitPrice).toBe(62.55);
+    expect(view({ entryOrder: { type: "MARKET" } }).entry.limitPrice).toBeNull();
+    expect(view({ plan: plan({ entryType: "MARKET", limitPrice: undefined }) }).entry.limitPrice).toBeNull();
+    expect(view({ plan: null }).entry.limitPrice).toBeNull();
+  });
+
+  it("is in the entry alert and the steps", () => {
+    const t = view({});
+    expect(copyEntryText(t, null).split("\n")[1]).toBe("1 lot = 65 qty · limit ₹62.50 · paper fill ₹62.40 (model price: check the real one) · cost ₹4,056");
+    expect(t.steps[1]).toContain("the engine's limit was ₹62.50");
+    expect(copyEntryText(view({ entryOrder: { type: "MARKET" } }), null)).not.toContain("limit ₹");
+  });
+});
+
 describe("copy ticket levels on the ₹0.05 tick", () => {
   // Entry ₹62.40: the raw stop is ₹40.56, the target ₹99.84 and the trail start ₹81.12.
   const t = copyTicketView({ position: position({ peakPremium: 90.05, markPremium: 88 }), plan: plan(), account: TEN_K, timeStopMinPnlPct: 10 });
@@ -303,7 +322,7 @@ describe("copy alert texts", () => {
   it("has everything needed to copy the entry", () => {
     const text = copyEntryText(open, link);
     expect(text.split("\n")[0]).toBe("🟢 COPY ₹10k · BUY NIFTY 25000 PE (13 Oct)");
-    expect(text).toContain("1 lot = 65 qty · paper fill ₹62.40 (model price: check the real one) · cost ₹4,056");
+    expect(text).toContain("1 lot = 65 qty · limit ₹62.50 · paper fill ₹62.40 (model price: check the real one) · cost ₹4,056");
     expect(text).toContain("Skip if NIFTY is already below 25,000 (it was 25,050)");
     expect(text).toContain("Stop −35% → ₹40.55 · Target +60% → ₹99.85");
     expect(text).toContain("time stop 11:50 unless +10% · out by 15:05");

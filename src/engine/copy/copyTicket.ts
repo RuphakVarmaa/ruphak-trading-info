@@ -7,7 +7,7 @@ import { SIGNAL_SOURCE_LABELS, contractLabel, type AccountView, type CopyTicketV
 import { computeCharges } from "../broker/charges";
 import { MINUTE_MS, istDate, istIso, istParts, weekdayOf } from "../clock";
 import { stopPrice, targetPrice, trailPrice } from "../strategy/exits";
-import type { IndicatorView, OrderReason, Position, Quote, Regime, SignalComponent, TradePlan } from "../types";
+import type { IndicatorView, Order, OrderReason, Position, Quote, Regime, SignalComponent, TradePlan } from "../types";
 import { roundToTick } from "../util/math";
 
 const MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
@@ -45,6 +45,14 @@ export interface CopyTicketInput {
   timeStopMinPnlPct: number;
   /** Readings to show when the plan predates TradePlan.indicators (main's decision for the plan). */
   fallbackIndicators?: IndicatorView | null;
+  /** The entry order, for its limit price; without it the plan's limit is used (the order is sent with it). */
+  entryOrder?: Pick<Order, "type" | "limitPrice"> | null;
+}
+
+/** The engine's entry limit: the order's, else the plan's; null for a market order or without either. */
+function entryLimit(order: CopyTicketInput["entryOrder"], plan: TradePlan | null): number | null {
+  const src = order ?? (plan ? { type: plan.entryType, limitPrice: plan.limitPrice } : null);
+  return src && src.type === "LIMIT" && typeof src.limitPrice === "number" && src.limitPrice > 0 ? round2(src.limitPrice) : null;
 }
 
 const round2 = (x: number) => Math.round(x * 100) / 100;
@@ -132,10 +140,11 @@ export function copyTicketView(i: CopyTicketInput): CopyTicketView {
   const searchText = `${c.index} ${c.strike} ${c.type}`;
   const label = expiryLabel(c.expiry);
   const fill = round2(p.avgEntry);
+  const limitPrice = entryLimit(i.entryOrder, plan);
 
   const steps = [
     `Search "${searchText}" in your broker app and pick the ${label} expiry.`,
-    `Buy ${lots} lot${lots === 1 ? "" : "s"} (${entryQty} qty) with a limit order near the ask. The engine's ${p.mode === "LIVE" ? "live" : "paper"} fill was ₹${fill.toFixed(2)}${priceSource === "model" ? ", a model price: the real one will differ" : ""}.`,
+    `Buy ${lots} lot${lots === 1 ? "" : "s"} (${entryQty} qty) with a limit order near the ask${limitPrice !== null ? ` (the engine's limit was ₹${limitPrice.toFixed(2)})` : ""}. The engine's ${p.mode === "LIVE" ? "live" : "paper"} fill was ₹${fill.toFixed(2)}${priceSource === "model" ? ", a model price: the real one will differ" : ""}.`,
     ...(skipBeyondSpot !== null
       ? [`Skip it if ${c.index} is already ${dir > 0 ? "above" : "below"} ${Math.round(skipBeyondSpot).toLocaleString("en-IN")}: half of the expected move has happened.`]
       : []),
@@ -172,6 +181,7 @@ export function copyTicketView(i: CopyTicketInput): CopyTicketView {
     entry: {
       at: istIso(p.entryMs),
       premium: fill,
+      limitPrice,
       costRupees: round2(p.avgEntry * entryQty),
       charges: round2(p.entryCharges),
       priceSource,
@@ -296,7 +306,7 @@ export function copyEntryText(t: CopyTicketView, link: string | null): string {
   const lv = t.levels;
   const lines = [
     `🟢 COPY ${tag} · ${t.headline}`,
-    `${t.lots} lot = ${t.qty} qty · ${t.mode === "LIVE" ? "live" : "paper"} fill ${prem(t.entry.premium)}${t.entry.priceSource === "model" ? " (model price: check the real one)" : ""} · cost ${inr(t.entry.costRupees)}`,
+    `${t.lots} lot = ${t.qty} qty · ${t.entry.limitPrice !== null ? `limit ${prem(t.entry.limitPrice)} · ` : ""}${t.mode === "LIVE" ? "live" : "paper"} fill ${prem(t.entry.premium)}${t.entry.priceSource === "model" ? " (model price: check the real one)" : ""} · cost ${inr(t.entry.costRupees)}`,
   ];
   if (t.entry.skipBeyondSpot !== null) lines.push(`Skip if ${t.index} is already ${t.side === "BULL" ? "above" : "below"} ${level(t.entry.skipBeyondSpot)} (it was ${level(t.entry.spot)})`);
   lines.push(`Stop ${pct(lv.stopPct, 0)} → ${prem(lv.stop)} · Target ${pct(lv.targetPct, 0)} → ${prem(lv.target)}`);

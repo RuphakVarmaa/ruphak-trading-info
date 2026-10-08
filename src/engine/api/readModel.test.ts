@@ -233,8 +233,12 @@ describe("read model for the ₹10k account", () => {
     await base.positions.save(position({ id: "m-yesterday", planId: "plan-m", entryMs: NOW - 86_400_000, status: "CLOSED", qty: 0, exitedQty: 65, exitMs: NOW - 86_000_000, avgExit: 90, exitReason: "STOP", realized: -650, exitCharges: 40 }));
     await small.positions.save(position({ id: "s-open", planId: "plan-s" }));
 
+    // The entry order's limit (here not the plan's) is what the ticket shows.
+    await base.orders.save({ ...order("e-open"), positionId: "m-open", planId: "plan-m", limitPrice: 100.15 });
     const mine = await main.getCopyTickets("2026-10-07");
     expect(mine.map((t) => [t.id, t.status])).toEqual([["m-open", "OPEN"], ["m-closed", "CLOSED"]]);
+    expect(mine[0].entry.limitPrice).toBe(100.15);
+    expect(mine[1].entry.limitPrice).toBeNull();
     expect(mine[0].account.id).toBe("main");
     expect(mine[0].setup?.conviction).toBe(-0.6);
     expect(mine[1].exit?.pnl).toBeCloseTo(1_950 - 28 - 40, 2);
