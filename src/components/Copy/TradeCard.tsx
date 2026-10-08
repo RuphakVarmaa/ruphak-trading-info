@@ -63,18 +63,17 @@ function SizeCheckRows({ t }: { t: CopyTicketView }) {
         Size check <span style={{ fontWeight: 400, color: C.muted }}>(bought at the {rupees(copyLimit(t).price)} limit, stopped at {rupees(x.stop)}, both orders&apos; charges included)</span>
       </div>
       {rows.map((r) => (
-        <div key={r.label} className="tnum" style={{ display: "grid", gap: 2, padding: "8px 10px", borderRadius: 8, background: r.fits ? C.panelAlt : alpha(C.red, 0.06), border: `1px solid ${r.fits ? C.border : alpha(C.red, 0.45)}` }}>
+        <div key={r.label} className="tnum" style={{ display: "grid", gap: 2, padding: "8px 10px", borderRadius: 8, background: r.warning == null ? C.panelAlt : alpha(C.red, 0.06), border: `1px solid ${r.warning == null ? C.border : alpha(C.red, 0.45)}` }}>
           <span style={{ fontSize: 13, color: C.textStrong, fontWeight: 600 }}>
             {r.label}
             {r.label.includes("₹") ? "" : ` (${wholeRupees(r.capital)})`}: {r.lots} lot{r.lots === 1 ? "" : "s"} = {r.qty} qty
           </span>
-          {r.fits ? (
+          {r.fits && (
             <span style={{ fontSize: 13, color: C.textSoft, lineHeight: 1.45 }}>
-              needs {wholeRupees(r.needs)} ({r.costPctOfCapital.toFixed(1)}% of capital) · loss at the stop <b style={{ color: C.red }}>{wholeRupees(-r.maxLoss)}</b> ({r.lossPctOfCapital.toFixed(1)}% of capital)
+              needs {wholeRupees(r.needs)} ({r.costPctOfCapital.toFixed(1)}% of capital) · loss at the stop <b style={{ color: C.red }}>{wholeRupees(-r.maxLoss)}</b> ({r.lossPctOfCapital.toFixed(1)}% of capital; the most one trade may lose is {wholeRupees(r.lossCap)})
             </span>
-          ) : (
-            <span style={{ fontSize: 13, color: C.red, fontWeight: 600, lineHeight: 1.45 }}>✗ {r.warning}</span>
           )}
+          {r.warning && <span style={{ fontSize: 13, color: C.red, fontWeight: 600, lineHeight: 1.45 }}>✗ {r.warning}</span>}
         </div>
       ))}
     </div>

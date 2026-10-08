@@ -18,6 +18,7 @@ import { indexPrice, wholeRupees } from "@/lib/copy/prices";
 import { fmtDateKey } from "@/components/shared/format";
 import AlertsToggle from "./AlertsToggle";
 import { useActionAlerts, useMissedTradeAlerts } from "./alerts";
+import { ackExit } from "./clientStores";
 import { CopyAction } from "./CopyButton";
 import { plainError } from "./sharedPoll";
 import { TONE_COLOR } from "./tone";
@@ -124,6 +125,15 @@ function IndexRow({ index, a, d, compact }: { index: IndexId; a: IndexAction | n
           tone={a.kind === "MANAGE" ? "quiet" : "action"}
           style={{ width: "100%", maxWidth: compact ? 260 : 360, justifySelf: "start" }}
         />
+      )}
+      {a.kind === "EXIT_NOW" && t && d.date && (
+        <button
+          type="button"
+          onClick={() => ackExit(d.account.id, d.date!, t.id)}
+          style={{ minHeight: 44, maxWidth: compact ? 260 : 360, padding: "8px 16px", borderRadius: 10, border: `1px solid ${C.borderStrong}`, background: C.panel, color: C.textStrong, fontSize: 14, fontWeight: 600, cursor: "pointer", justifySelf: "start" }}
+        >
+          I&apos;ve sold it (or never bought it): clear
+        </button>
       )}
 
       {details.length > 0 && (

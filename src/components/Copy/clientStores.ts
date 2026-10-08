@@ -125,6 +125,53 @@ export function useSeenTickets(account: string, date: string | null): SeenTicket
 }
 
 // ---------------------------------------------------------------------------
+// Exits acknowledged with "I've sold" (per account and date, for this tab)
+// ---------------------------------------------------------------------------
+
+const ackListeners = new Set<() => void>();
+const ackCache = new Map<string, ReadonlySet<string>>();
+const NO_ACKS: ReadonlySet<string> = new Set();
+const ackKey = (account: string, date: string) => `copy:acked:${account}:${date}`;
+
+function readAcked(account: string, date: string): ReadonlySet<string> {
+  const key = ackKey(account, date);
+  let v = ackCache.get(key);
+  if (!v) {
+    try {
+      const raw = readSession(key);
+      const ids = raw ? (JSON.parse(raw) as unknown) : [];
+      v = new Set(Array.isArray(ids) ? ids.filter((x): x is string => typeof x === "string") : []);
+    } catch {
+      v = new Set();
+    }
+    ackCache.set(key, v);
+  }
+  return v;
+}
+
+export function ackExit(account: string, date: string, id: string): void {
+  const next = new Set([...readAcked(account, date), id]);
+  ackCache.set(ackKey(account, date), next);
+  writeSession(ackKey(account, date), JSON.stringify([...next]));
+  ackListeners.forEach((l) => l());
+}
+
+function subscribeAcks(cb: () => void) {
+  ackListeners.add(cb);
+  return () => {
+    ackListeners.delete(cb);
+  };
+}
+
+export function useAckedExits(account: string, date: string | null): ReadonlySet<string> {
+  return useSyncExternalStore(
+    subscribeAcks,
+    () => (date ? readAcked(account, date) : NO_ACKS),
+    () => NO_ACKS,
+  );
+}
+
+// ---------------------------------------------------------------------------
 // Tab visibility
 // ---------------------------------------------------------------------------
 
