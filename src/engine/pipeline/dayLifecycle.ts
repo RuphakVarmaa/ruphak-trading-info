@@ -3,7 +3,7 @@ import { DAY_MS, istDate, istMidnight } from "../clock";
 import { gradeDecisions } from "../evaluation/outcomes";
 import { updatePerformance } from "../evaluation/signalPerformance";
 import type { EngineDeps } from "../ports";
-import { MARKET_SYMBOLS, type IndexId, type SignalPerformance } from "../types";
+import { MARKET_SYMBOLS, type IndexId, type SignalOutcome, type SignalPerformance } from "../types";
 import { loadDayLedger } from "./riskState";
 
 export interface EodReport {
@@ -15,35 +15,49 @@ export interface EodReport {
   reEnabled: string[];
 }
 
-export async function runEndOfDay(deps: EngineDeps, opts: { lookbackDays?: number } = {}): Promise<EodReport> {
+export interface EndOfDayOptions {
+  lookbackDays?: number;
+  /** Grade today's decisions (false for accounts that follow main's signals: main grades them). */
+  grade?: boolean;
+  /** Update per-source performance (false for accounts that follow main's signals). */
+  performance?: boolean;
+}
+
+export async function runEndOfDay(deps: EngineDeps, opts: EndOfDayOptions = {}): Promise<EodReport> {
   const { cfg, repo } = deps;
   const now = deps.clock.now();
   const date = istDate(now);
   const dayStart = istMidnight(date);
 
   // 1) Grade today's decisions with the day's 5-minute candles.
-  const snap = await deps.market.snapshot(now);
-  const candles: Record<string, typeof snap.candles[string]> = {};
-  for (const index of cfg.indices) candles[index] = snap.candles[MARKET_SYMBOLS[index as IndexId]] ?? [];
-  const decisions = await repo.decisions.between(dayStart, now);
-  const graded = gradeDecisions(decisions, candles, deps.calendar, now);
-  await repo.outcomes.upsertMany(graded);
+  let graded: SignalOutcome[] = [];
+  if (opts.grade !== false) {
+    const snap = await deps.market.snapshot(now);
+    const candles: Record<string, typeof snap.candles[string]> = {};
+    for (const index of cfg.indices) candles[index] = snap.candles[MARKET_SYMBOLS[index as IndexId]] ?? [];
+    const decisions = await repo.decisions.between(dayStart, now);
+    graded = gradeDecisions(decisions, candles, deps.calendar, now);
+    await repo.outcomes.upsertMany(graded);
+  }
 
   // 2) Per-source performance over recent trades, with shadow records from graded decisions.
   const lookback = (opts.lookbackDays ?? 30) * DAY_MS;
   const previous = await repo.perf.all(deps.mode);
-  const perf = updatePerformance(
-    {
-      mode: deps.mode,
-      nowMs: now,
-      trades: await repo.trades.recent(cfg.decay.windowTrades * 6, deps.mode),
-      decisions: await repo.decisions.between(now - lookback, now),
-      outcomes: await repo.outcomes.between(now - lookback, now),
-      previous,
-    },
-    cfg,
-  );
-  await repo.perf.upsertMany(perf);
+  let perf = previous;
+  if (opts.performance !== false) {
+    perf = updatePerformance(
+      {
+        mode: deps.mode,
+        nowMs: now,
+        trades: await repo.trades.recent(cfg.decay.windowTrades * 6, deps.mode),
+        decisions: await repo.decisions.between(now - lookback, now),
+        outcomes: await repo.outcomes.between(now - lookback, now),
+        previous,
+      },
+      cfg,
+    );
+    await repo.perf.upsertMany(perf);
+  }
   const was = new Map(previous.map((p) => [`${p.source}:${p.index}`, p.enabled]));
   const newlyDisabled = perf.filter((p) => was.get(`${p.source}:${p.index}`) !== false && !p.enabled).map((p) => `${p.source}/${p.index}`);
   const reEnabled = perf.filter((p) => was.get(`${p.source}:${p.index}`) === false && p.enabled).map((p) => `${p.source}/${p.index}`);

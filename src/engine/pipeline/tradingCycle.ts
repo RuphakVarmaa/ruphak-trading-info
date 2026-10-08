@@ -21,6 +21,7 @@ import type {
   Regime,
   ScoredEvent,
   SessionPhase,
+  SignalPerformance,
   SnapshotRecord,
 } from "../types";
 import { MARKET_SYMBOLS } from "../types";
@@ -52,6 +53,8 @@ export interface CycleReport {
   halted: string | null;
   errors: string[];
   snapshot: MarketSnapshot | null;
+  /** Per-source performance the convictions were built with (shared with follower accounts). */
+  perf?: SignalPerformance[];
 }
 
 const QUOTE_ROWS: { key: string; label: string; symbol: string }[] = [
@@ -90,7 +93,7 @@ export function quoteRows(snap: MarketSnapshot): QuoteRow[] {
   return out;
 }
 
-async function shouldPersistDecision(deps: EngineDeps, d: PlanDecision, everyMs: number): Promise<boolean> {
+export async function shouldPersistDecision(deps: EngineDeps, d: PlanDecision, everyMs: number): Promise<boolean> {
   const key = `decision:last:${d.index}`;
   const last = await deps.repo.state.get<{ t: number; stance: string }>(key);
   const persist = d.plan !== null || !last || last.stance !== d.conviction.stance || d.t - last.t >= everyMs;
@@ -111,6 +114,7 @@ export async function runTradingCycle(deps: EngineDeps, opts: TradingCycleOption
   report.snapshot = snap;
   const events = opts.events ?? (await repo.events.active(now - cfg.events.staleAfterHours * HOUR_MS));
   const perf = await repo.perf.all(deps.mode);
+  report.perf = perf;
   const risk = await loadRiskState(repo, cfg, settings, now, deps.mode);
   const halt = haltReason(risk, cfg);
   report.halted = halt?.detail ?? opts.noEntries ?? null;
