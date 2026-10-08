@@ -8,6 +8,7 @@ import { computeCharges } from "../broker/charges";
 import { MINUTE_MS, istDate, istIso, istParts, weekdayOf } from "../clock";
 import { stopPrice, targetPrice, trailPrice } from "../strategy/exits";
 import type { IndicatorView, OrderReason, Position, Quote, Regime, SignalComponent, TradePlan } from "../types";
+import { roundToTick } from "../util/math";
 
 const MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
 const WEEKDAYS = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
@@ -113,14 +114,20 @@ export function copyTicketView(i: CopyTicketInput): CopyTicketView {
   const spot = plan?.refSpot ?? indicators?.spot ?? 0;
   const dir = p.side === "BULL" ? 1 : -1;
   const skipBeyondSpot = plan && plan.expectedMovePct > 0 && spot > 0 ? round2(spot * (1 + (dir * plan.expectedMovePct) / 200)) : null;
-  const stop = stopPrice(p);
-  const target = targetPrice(p);
-  const trailActivateAt = p.avgEntry * (1 + p.stops.trailActivatePct / 100);
+  // Levels on the contract's tick, at the first price where the engine's own check fires (it
+  // compares the bid, which moves in ticks, with the raw level): it sells at a bid at or below the
+  // stop or trail (round down) or at or above the target (round up), and the trail starts once the
+  // bid reaches its start (round up). The engine's exit logic itself is unchanged.
+  const tick = c.tickSize > 0 ? c.tickSize : 0.05;
+  const stop = roundToTick(stopPrice(p), tick, "down");
+  const target = roundToTick(targetPrice(p), tick, "up");
+  const trailActivateAt = roundToTick(p.avgEntry * (1 + p.stops.trailActivatePct / 100), tick, "up");
   const risk = (p.avgEntry - stop) * entryQty + p.entryCharges + computeCharges("SELL", stop, entryQty, c.exchange, istDate(p.entryMs)).total;
   const priceSource = quoteSourceOf(plan) === "groww" ? "broker" : "model";
   const open = p.status === "OPEN";
   const mark = p.markPremium > 0 ? p.markPremium : p.avgEntry;
-  const trail = open ? trailPrice(p) : null;
+  const rawTrail = open ? trailPrice(p) : null;
+  const trail = rawTrail === null ? null : roundToTick(rawTrail, tick, "down");
   const prevClose = indicators?.prevDayClose ?? 0;
   const searchText = `${c.index} ${c.strike} ${c.type}`;
   const label = expiryLabel(c.expiry);

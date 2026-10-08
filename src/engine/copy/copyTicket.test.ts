@@ -5,8 +5,9 @@ import { istAt } from "../clock";
 import { DEFAULT_CONFIG } from "../config";
 import { NEUTRAL_INDICATORS, NEUTRAL_OPENING_RANGE } from "../market/features";
 import { applyExitFills } from "../pipeline/execution";
+import { evaluateExits, trailPrice } from "../strategy/exits";
 import { createReplayDeps } from "../testing/replayHarness";
-import type { Fill, IndicatorView, OptionContract, Position, TradePlan } from "../types";
+import type { Fill, IndicatorView, OptionContract, Position, Quote, TradePlan } from "../types";
 import { accountTag, copyEntryText, copyExitText, copyLink, copyTicketView, copyTrailText, expiryLabel, setupReasons } from "./copyTicket";
 
 const T = istAt("2026-10-09", "10:20");
@@ -133,12 +134,12 @@ describe("copy ticket", () => {
     expect(t.entry.premium).toBe(62.4);
     expect(t.entry.costRupees).toBeCloseTo(4_056, 2);
     expect(t.entry.priceSource).toBe("model");
-    expect(t.levels.stop).toBeCloseTo(40.56, 2);
-    expect(t.levels.target).toBeCloseTo(99.84, 2);
-    expect(t.levels.trailActivateAt).toBeCloseTo(81.12, 2);
+    expect(t.levels.stop).toBe(40.55);
+    expect(t.levels.target).toBe(99.85);
+    expect(t.levels.trailActivateAt).toBe(81.15);
     expect(t.levels.trail).toBeNull();
     expect(t.levels.timeStopAt).toBe("2026-10-09T11:50:00+05:30");
-    const expectedRisk = (62.4 - 40.56) * 65 + 27.5 + computeCharges("SELL", 40.56, 65, "NSE", "2026-10-09").total;
+    const expectedRisk = (62.4 - 40.55) * 65 + 27.5 + computeCharges("SELL", 40.55, 65, "NSE", "2026-10-09").total;
     expect(t.riskAtStop.rupees).toBe(Math.round(expectedRisk));
     expect(t.riskAtStop.pctOfCapital).toBeCloseTo((expectedRisk / 10_000) * 100, 1);
   });
@@ -199,6 +200,43 @@ describe("copy ticket", () => {
     expect(t.expiryLabel).toBe("Thu 15 Oct");
     expect(t.lots).toBe(1);
     expect(t.entry.costRupees).toBe(3_600);
+  });
+});
+
+describe("copy ticket levels on the ₹0.05 tick", () => {
+  // Entry ₹62.40: the raw stop is ₹40.56, the target ₹99.84 and the trail start ₹81.12.
+  const t = copyTicketView({ position: position({ peakPremium: 90.05, markPremium: 88 }), plan: plan(), account: TEN_K, timeStopMinPnlPct: 10 });
+  const onTick = (x: number) => Math.abs(Math.round(x / 0.05) * 0.05 - x) < 1e-9;
+
+  it("puts every level on a tradable price", () => {
+    for (const x of [t.levels.stop, t.levels.target, t.levels.trailActivateAt, t.levels.trail!]) expect(onTick(x)).toBe(true);
+  });
+
+  it("uses the first tick at which the engine's own check fires", () => {
+    // The engine sells when the bid is at or below the stop or trail, and at or above the target;
+    // the trail starts once the bid has reached its start. Bids move in ticks.
+    expect(t.levels.stop).toBe(40.55);
+    expect(t.levels.target).toBe(99.85);
+    expect(t.levels.trailActivateAt).toBe(81.15);
+    // Trail: the peak ₹90.05 gives back half the gain to ₹76.225, so it sells at ₹76.20.
+    expect(t.levels.trail).toBe(76.2);
+    const p = position({ peakPremium: 90.05 });
+    const q = (bid: number): Quote => ({ symbol: contract.tradingSymbol, bid, ask: bid + 0.1, bidQty: 0, askQty: 0, ltp: bid, t: T, source: "synthetic" });
+    const ctx = { nowMs: T };
+    expect(evaluateExits(p, q(t.levels.stop), ctx, DEFAULT_CONFIG)?.reason).toBe("STOP");
+    expect(evaluateExits(p, q(t.levels.stop + 0.05), ctx, DEFAULT_CONFIG)?.reason).not.toBe("STOP");
+    expect(evaluateExits(p, q(t.levels.target), ctx, DEFAULT_CONFIG)?.reason).toBe("TARGET");
+    expect(evaluateExits(p, q(t.levels.target - 0.05), ctx, DEFAULT_CONFIG)?.reason).not.toBe("TARGET");
+    expect(evaluateExits(p, q(t.levels.trail!), ctx, DEFAULT_CONFIG)?.reason).toBe("TRAIL");
+    expect(evaluateExits(p, q(t.levels.trail! + 0.05), ctx, DEFAULT_CONFIG)).toBeNull();
+    const notYet = position({ peakPremium: t.levels.trailActivateAt - 0.05 });
+    expect(trailPrice(notYet)).toBeNull();
+    expect(trailPrice(position({ peakPremium: t.levels.trailActivateAt }))).not.toBeNull();
+  });
+
+  it("states the risk at the stop the engine would actually hit", () => {
+    expect(t.riskAtStop.rupees).toBe(Math.round((62.4 - 40.55) * 65 + 27.5 + computeCharges("SELL", 40.55, 65, "NSE", "2026-10-09").total));
+    expect(t.steps.find((s) => s.startsWith("Set a stop-loss"))).toContain("(₹40.55 for a ₹62.40 fill). The target is +60% (₹99.85).");
   });
 });
 
@@ -267,7 +305,7 @@ describe("copy alert texts", () => {
     expect(text.split("\n")[0]).toBe("🟢 COPY ₹10k · BUY NIFTY 25000 PE (13 Oct)");
     expect(text).toContain("1 lot = 65 qty · paper fill ₹62.40 (model price: check the real one) · cost ₹4,056");
     expect(text).toContain("Skip if NIFTY is already below 25,000 (it was 25,050)");
-    expect(text).toContain("Stop −35% → ₹40.56 · Target +60% → ₹99.84");
+    expect(text).toContain("Stop −35% → ₹40.55 · Target +60% → ₹99.85");
     expect(text).toContain("time stop 11:50 unless +10% · out by 15:05");
     expect(text).toContain("Why: bearish −0.52 (needs 0.45) on a range-bound day");
     expect(text).toContain("• Opening-range breakout, bearish");
