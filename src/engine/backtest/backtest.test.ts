@@ -212,7 +212,10 @@ describe("backtest with the ₹10k account following main", () => {
     expect(both.main.summary).toEqual(alone.summary);
     const small = both.followers.small10k!;
     expect(small.trades.length).toBeGreaterThan(0);
-    for (const t of small.trades) expect(t.qty).toBe(65);
+    // One lot of whichever index it bought (NIFTY 65, SENSEX 20), one position at a time.
+    for (const t of small.trades) expect(t.qty).toBe(follower.indexSpecs[t.index].lotSize);
+    const sorted = [...small.trades].sort((a, b) => a.entryMs - b.entryMs);
+    for (let i = 1; i < sorted.length; i++) expect(sorted[i].entryMs).toBeGreaterThanOrEqual(sorted[i - 1].exitMs);
     expect(small.ledgers[0].startEquity).toBe(10_000);
     expect(small.summary.netPnl).toBeCloseTo(small.trades.reduce((s, t) => s + t.pnl, 0), 1);
     expect(small.notes.some((n) => n.includes("small10k"))).toBe(true);

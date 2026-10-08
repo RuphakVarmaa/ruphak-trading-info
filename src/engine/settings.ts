@@ -1,4 +1,4 @@
-import type { EngineConfig } from "./config";
+import { maxOpenTotal, type EngineConfig } from "./config";
 import type { EngineSettings, TradingMode } from "./types";
 
 /** Initial engine settings: PAPER mode, disarmed, kill switch off, caps derived from config. */
@@ -8,7 +8,7 @@ export function defaultSettings(cfg: EngineConfig, nowMs: number): EngineSetting
     armedUntil: null,
     killSwitch: false,
     killReason: null,
-    maxOpenPositions: cfg.sizing.maxOpenPerIndex * cfg.indices.length,
+    maxOpenPositions: maxOpenTotal(cfg),
     maxOrdersPerDay: Math.max(8, cfg.sizing.maxTradesPerDay * 2 + 2),
     maxLotsPerOrder: 1,
     dailyLossCapInr: Math.round((cfg.capitalRupees * cfg.risk.dailyLossCapPct) / 100),

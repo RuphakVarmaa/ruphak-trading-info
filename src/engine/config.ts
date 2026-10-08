@@ -76,6 +76,14 @@ export interface IndexSpec {
   ltpSymbol: string;
 }
 
+/** Premium band for PREMIUM_BAND strike selection, per unit of the option. */
+export interface PremiumBand {
+  minPremium: number;
+  maxPremium: number;
+  /** Strikes beyond ATM to consider (defaults to selection.maxOtmSteps). */
+  maxOtmSteps?: number;
+}
+
 export interface EngineConfig {
   capitalRupees: number;
   indices: IndexId[];
@@ -185,6 +193,8 @@ export interface EngineConfig {
     kellyMinTrades: number;
     maxLots: number;
     maxOpenPerIndex: number;
+    /** Positions open at once across all indices; unset means maxOpenPerIndex for each index. */
+    maxOpenTotal?: number;
     maxTradesPerDay: number;
     maxCombinedPremiumPct: number;
     /** Size from the day's starting equity (capital plus prior net P&L) and cap by free cash; small accounts. */
@@ -199,6 +209,8 @@ export interface EngineConfig {
     maxOtmSteps: number;
     /** Most option quotes fetched per pick. */
     maxQuotes: number;
+    /** Per-index band (lot sizes differ, so the same rupees per lot means a different premium). */
+    byIndex: Partial<Record<IndexId, PremiumBand>>;
   };
   exits: {
     stopPct: number;
@@ -412,6 +424,7 @@ export const DEFAULT_CONFIG: EngineConfig = {
     maxPremium: 70,
     maxOtmSteps: 8,
     maxQuotes: 4,
+    byIndex: {},
   },
   exits: {
     stopPct: -30,
@@ -524,6 +537,21 @@ export function withOverrides(base: EngineConfig, overrides: DeepPartial<EngineC
   return cfg;
 }
 
+/** The premium band for an index: its own entry in selection.byIndex, else the shared band. */
+export function premiumBand(cfg: EngineConfig, index: IndexId): Required<PremiumBand> {
+  const own = cfg.selection.byIndex?.[index];
+  return {
+    minPremium: own?.minPremium ?? cfg.selection.minPremium,
+    maxPremium: own?.maxPremium ?? cfg.selection.maxPremium,
+    maxOtmSteps: own?.maxOtmSteps ?? cfg.selection.maxOtmSteps,
+  };
+}
+
+/** Positions that may be open at once across all indices. */
+export function maxOpenTotal(cfg: EngineConfig): number {
+  return cfg.sizing.maxOpenTotal ?? cfg.sizing.maxOpenPerIndex * cfg.indices.length;
+}
+
 const HHMM = /^([01]\d|2[0-3]):[0-5]\d$/;
 
 /** Returns a list of human-readable problems (empty when valid). */
@@ -566,10 +594,16 @@ export function validateConfig(cfg: EngineConfig): string[] {
   if (cfg.sizing.minRiskPct > cfg.sizing.defaultRiskPct) p.push("sizing.minRiskPct must not exceed defaultRiskPct");
   frac("sizing.kellyFraction", cfg.sizing.kellyFraction);
   if (!(cfg.sizing.maxOpenPerIndex >= 1)) p.push("sizing.maxOpenPerIndex must be >= 1");
+  const total = cfg.sizing.maxOpenTotal;
+  if (total !== undefined && !(Number.isInteger(total) && total >= 1)) p.push("sizing.maxOpenTotal must be an integer >= 1");
   const sel = cfg.selection;
   if (sel.mode !== "ATM" && sel.mode !== "PREMIUM_BAND") p.push("selection.mode must be ATM or PREMIUM_BAND");
-  if (!(sel.minPremium > 0 && sel.minPremium < sel.maxPremium)) p.push("selection.minPremium must be > 0 and below maxPremium");
-  if (!(Number.isInteger(sel.maxOtmSteps) && sel.maxOtmSteps >= 0 && sel.maxOtmSteps <= 20)) p.push("selection.maxOtmSteps must be an integer 0-20");
+  const bands: [string, Required<PremiumBand>][] = [["selection", sel]];
+  for (const [k, v] of Object.entries(sel.byIndex ?? {})) if (v) bands.push([`selection.byIndex.${k}`, { ...sel, ...v }]);
+  for (const [name, b] of bands) {
+    if (!(b.minPremium > 0 && b.minPremium < b.maxPremium)) p.push(`${name}.minPremium must be > 0 and below maxPremium`);
+    if (!(Number.isInteger(b.maxOtmSteps) && b.maxOtmSteps >= 0 && b.maxOtmSteps <= 20)) p.push(`${name}.maxOtmSteps must be an integer 0-20`);
+  }
   if (!(Number.isInteger(sel.maxQuotes) && sel.maxQuotes >= 1 && sel.maxQuotes <= 10)) p.push("selection.maxQuotes must be an integer 1-10");
   pos("risk.dailyLossCapPct", cfg.risk.dailyLossCapPct);
   pos("pricing.tradingMinutesPerDay", cfg.pricing.tradingMinutesPerDay);

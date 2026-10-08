@@ -1,6 +1,7 @@
 /**
- * Re-prices open positions from the live NIFTY price, so the Live P&L page can move every couple of
- * seconds instead of on the engine's 30-second marks. Uses the engine's own model (Black-Scholes on
+ * Re-prices open positions on the live feed's index (NIFTY) from its live price, so the Live P&L page
+ * can move every couple of seconds instead of on the engine's 30-second marks. Positions on another
+ * index (SENSEX) keep the engine's marks. Uses the engine's own model (Black-Scholes on
  * India VIX with the modelled spread) and its own rule of marking at the bid. The engine still decides
  * stops and targets on its own cycle; these numbers are the page's live estimate.
  */
@@ -8,9 +9,11 @@ import type { PositionView } from "@/engine/api-types";
 import { defaultCalendar } from "@/engine/calendar/calendar";
 import { DEFAULT_CONFIG } from "@/engine/config";
 import { syntheticQuote } from "@/engine/pricing/syntheticOptionPricer";
-import type { OptionContract } from "@/engine/types";
+import type { IndexId, OptionContract } from "@/engine/types";
 
 export interface LiveInputs {
+  /** The index the live price belongs to; only its positions are re-priced. */
+  index: IndexId;
   spot: number;
   vix: number | null;
   /** IST ISO time the inputs were fetched; shown as the price's "as of". */
@@ -29,7 +32,7 @@ const entryCharges = (p: PositionView): number => Math.max(0, rawUnrealized(p) -
 
 /** The position re-marked at the live price, or unchanged when there is no usable price. */
 export function markLive(p: PositionView, live: LiveInputs | null): PositionView {
-  if (!live || live.vix == null || !(live.vix > 0) || !(live.spot > 0) || p.ltp == null) return p;
+  if (!live || p.index !== live.index || live.vix == null || !(live.vix > 0) || !(live.spot > 0) || p.ltp == null) return p;
   const spec = DEFAULT_CONFIG.indexSpecs[p.index];
   if (!spec) return p;
   const contract: OptionContract = {

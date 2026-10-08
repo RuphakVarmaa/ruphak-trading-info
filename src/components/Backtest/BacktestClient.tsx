@@ -363,8 +363,8 @@ export default function BacktestClient({
                   onChange={(e) => {
                     const account = e.target.value;
                     const exits = ACCOUNT_EXITS[account] ?? ACCOUNT_EXITS.main;
-                    // The ₹10k account trades NIFTY only; main replays alongside it on the same index.
-                    update({ account, stopPct: String(exits.stopPct), targetPct: String(exits.targetPct), ...(account !== "main" ? { index: "NIFTY" as const } : {}) });
+                    // Main replays alongside a follower account on the same indices.
+                    update({ account, stopPct: String(exits.stopPct), targetPct: String(exits.targetPct) });
                   }}
                   style={inputStyle}
                 >

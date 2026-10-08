@@ -4,7 +4,7 @@
  */
 import type { TradingCalendar } from "../calendar/calendar";
 import { istDate } from "../clock";
-import type { EngineConfig } from "../config";
+import { premiumBand, type EngineConfig } from "../config";
 import { atmStrike, nearestListedStrike } from "../instruments/instrumentMaster";
 import { syntheticQuote } from "../pricing/syntheticOptionPricer";
 import type { InstrumentProvider, OptionQuoteSource } from "../ports";
@@ -82,7 +82,7 @@ export interface PremiumBandPick {
  */
 export async function choosePremiumBandContract(a: PremiumBandArgs): Promise<PremiumBandPick> {
   const { cfg, index } = a;
-  const band = cfg.selection;
+  const band = { ...premiumBand(cfg, index), maxQuotes: cfg.selection.maxQuotes };
   const label = "Strike in the premium band";
   const range = `₹${band.minPremium}–${band.maxPremium}`;
   const fail = (contract: OptionContract | null, detail: string): PremiumBandPick => ({ contract, quote: null, gate: { gate: "premium_band", label, passed: false, detail } });

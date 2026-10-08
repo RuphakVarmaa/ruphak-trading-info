@@ -31,9 +31,18 @@ export const ACCOUNTS: Record<AccountId, AccountSpec> = {
     paperOnly: true,
     configPatch: {
       capitalRupees: 10_000,
-      indices: ["NIFTY"],
-      // One lot of the strike nearest the money that costs ₹40–70 (₹2,600–4,550 for 65 units).
-      selection: { mode: "PREMIUM_BAND", minPremium: 40, maxPremium: 70, maxOtmSteps: 8, maxQuotes: 4 },
+      indices: ["NIFTY", "SENSEX"],
+      // One lot of the strike nearest the money that costs about ₹2,600–4,500: ₹40–70 for NIFTY's
+      // 65 units, ₹130–210 for SENSEX's 20 (its weekly expiry is further away on most days, so the
+      // band sits up to 20 strikes out).
+      selection: {
+        mode: "PREMIUM_BAND",
+        minPremium: 40,
+        maxPremium: 70,
+        maxOtmSteps: 8,
+        maxQuotes: 4,
+        byIndex: { SENSEX: { minPremium: 130, maxPremium: 210, maxOtmSteps: 20 } },
+      },
       sizing: {
         defaultRiskPct: 15,
         minRiskPct: 12,
@@ -42,6 +51,8 @@ export const ACCOUNTS: Record<AccountId, AccountSpec> = {
         maxCombinedPremiumPct: 50,
         maxLots: 1,
         maxOpenPerIndex: 1,
+        // One position at a time across NIFTY and SENSEX.
+        maxOpenTotal: 1,
         maxTradesPerDay: 3,
         useCurrentEquity: true,
       },

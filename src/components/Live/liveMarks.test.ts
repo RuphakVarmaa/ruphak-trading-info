@@ -3,7 +3,7 @@ import type { PositionView } from "@/engine/api-types";
 import { markLive, rawUnrealized, type LiveInputs } from "./liveMarks";
 
 const AT = Date.parse("2026-10-08T11:10:00+05:30");
-const live = (spot: number, vix: number | null = 14.3): LiveInputs => ({ spot, vix, asOf: "2026-10-08T11:10:00+05:30", atMs: AT });
+const live = (spot: number, vix: number | null = 14.3): LiveInputs => ({ index: "NIFTY", spot, vix, asOf: "2026-10-08T11:10:00+05:30", atMs: AT });
 
 /** A 22450 put bought at 146.55 (65 qty), marked by the engine at 143.00 with 27.89 of entry charges. */
 const put = (over: Partial<PositionView> = {}): PositionView =>
@@ -48,6 +48,11 @@ describe("markLive", () => {
     expect(once.ltpAsOf).toBe("2026-10-08T11:10:00+05:30");
     expect(twice.ltp).toBe(once.ltp);
     expect(twice.pnl).toBeCloseTo(once.pnl, 1);
+  });
+
+  it("leaves positions on another index on the engine's mark", () => {
+    const sensex = put({ index: "SENSEX", contract: { index: "SENSEX", expiry: "2026-10-15", strike: 82000, optionType: "PE", tradingSymbol: "SENSEX26O1582000PE", lotSize: 20 } as PositionView["contract"] });
+    expect(markLive(sensex, live(22440))).toBe(sensex);
   });
 
   it("leaves the position alone without a usable price", () => {

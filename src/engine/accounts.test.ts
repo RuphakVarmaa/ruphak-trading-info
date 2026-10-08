@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { accountConfig, accountStateKey, bookAccount, bookMode, parseAccountId, parseAccounts, unbookMode } from "./accounts";
-import { DEFAULT_CONFIG, makeConfig } from "./config";
+import { DEFAULT_CONFIG, makeConfig, maxOpenTotal, premiumBand } from "./config";
 
 describe("accountConfig", () => {
   it("returns the Worker config unchanged for main", () => {
@@ -9,11 +9,12 @@ describe("accountConfig", () => {
   });
 
   it("pins the ₹10k account's values even when the Worker config differs", () => {
-    const base = makeConfig({ indices: ["NIFTY", "SENSEX"], sizing: { maxOpenPerIndex: 2, maxTradesPerDay: 8 } });
+    const base = makeConfig({ indices: ["NIFTY"], sizing: { maxOpenPerIndex: 2, maxTradesPerDay: 8 } });
     const cfg = accountConfig(base, "small10k");
     expect(cfg.capitalRupees).toBe(10_000);
-    expect(cfg.indices).toEqual(["NIFTY"]);
+    expect(cfg.indices).toEqual(["NIFTY", "SENSEX"]);
     expect(cfg.sizing.maxOpenPerIndex).toBe(1);
+    expect(maxOpenTotal(cfg)).toBe(1);
     expect(cfg.sizing.maxTradesPerDay).toBe(3);
     expect(cfg.sizing.maxLots).toBe(1);
     expect(cfg.sizing.useCurrentEquity).toBe(true);
@@ -22,6 +23,25 @@ describe("accountConfig", () => {
     expect(cfg.exits.stopPct).toBe(-35);
     // Untouched groups keep the Worker config's values.
     expect(cfg.conviction).toEqual(base.conviction);
+  });
+
+  it("buys about the same rupees per lot on NIFTY and SENSEX", () => {
+    const cfg = accountConfig(DEFAULT_CONFIG, "small10k");
+    const nifty = premiumBand(cfg, "NIFTY");
+    const sensex = premiumBand(cfg, "SENSEX");
+    expect(nifty).toEqual({ minPremium: 40, maxPremium: 70, maxOtmSteps: 8 });
+    expect(sensex).toEqual({ minPremium: 130, maxPremium: 210, maxOtmSteps: 20 });
+    const lot = (b: { minPremium: number; maxPremium: number }, i: "NIFTY" | "SENSEX") => [b.minPremium * cfg.indexSpecs[i].lotSize, b.maxPremium * cfg.indexSpecs[i].lotSize];
+    expect(lot(sensex, "SENSEX")[0]).toBe(lot(nifty, "NIFTY")[0]);
+    expect(lot(sensex, "SENSEX")[1]).toBeLessThanOrEqual(lot(nifty, "NIFTY")[1]);
+    // Main has no per-index band: both indices use the shared one.
+    expect(premiumBand(DEFAULT_CONFIG, "SENSEX")).toEqual(premiumBand(DEFAULT_CONFIG, "NIFTY"));
+  });
+
+  it("caps open positions per index times indices unless a total is set", () => {
+    expect(maxOpenTotal(makeConfig({ indices: ["NIFTY", "SENSEX"], sizing: { maxOpenPerIndex: 2 } }))).toBe(4);
+    expect(maxOpenTotal(makeConfig({ indices: ["NIFTY", "SENSEX"], sizing: { maxOpenPerIndex: 2, maxOpenTotal: 2 } }))).toBe(2);
+    expect(() => makeConfig({ sizing: { maxOpenTotal: 0 } })).toThrow(/maxOpenTotal/);
   });
 
   it("keeps the new flags off by default", () => {
@@ -33,6 +53,7 @@ describe("accountConfig", () => {
   it("rejects a premium band that is empty or inverted", () => {
     expect(() => makeConfig({ selection: { minPremium: 80, maxPremium: 70 } })).toThrow(/selection.minPremium/);
     expect(() => makeConfig({ selection: { maxOtmSteps: 25 } })).toThrow(/maxOtmSteps/);
+    expect(() => makeConfig({ selection: { byIndex: { SENSEX: { minPremium: 200, maxPremium: 150 } } } })).toThrow(/selection.byIndex.SENSEX.minPremium/);
   });
 });
 
