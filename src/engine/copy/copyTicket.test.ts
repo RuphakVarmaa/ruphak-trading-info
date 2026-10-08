@@ -2,8 +2,11 @@ import { describe, expect, it } from "vitest";
 import { accountSpec } from "../accounts";
 import { computeCharges } from "../broker/charges";
 import { istAt } from "../clock";
+import { DEFAULT_CONFIG } from "../config";
 import { NEUTRAL_INDICATORS, NEUTRAL_OPENING_RANGE } from "../market/features";
-import type { IndicatorView, OptionContract, Position, TradePlan } from "../types";
+import { applyExitFills } from "../pipeline/execution";
+import { createReplayDeps } from "../testing/replayHarness";
+import type { Fill, IndicatorView, OptionContract, Position, TradePlan } from "../types";
 import { accountTag, copyEntryText, copyExitText, copyLink, copyTicketView, copyTrailText, expiryLabel, setupReasons } from "./copyTicket";
 
 const T = istAt("2026-10-09", "10:20");
@@ -196,6 +199,38 @@ describe("copy ticket", () => {
     expect(t.expiryLabel).toBe("Thu 15 Oct");
     expect(t.lots).toBe(1);
     expect(t.entry.costRupees).toBe(3_600);
+  });
+});
+
+describe("closed copy tickets", () => {
+  it("show the entry's quantity, lots, cost and risk (not entry plus exit)", async () => {
+    // Close the position the way the engine does, so the ticket sees the stored shape.
+    const deps = createReplayDeps({ cfg: DEFAULT_CONFIG, startMs: T, candles: {}, daily: {} });
+    const open = position();
+    await deps.repo.positions.save(open);
+    const exitAt = T + 42 * 60_000;
+    deps.clock.set(exitAt);
+    const fill: Fill = { id: "f-exit", orderId: "o-exit", t: exitAt, qty: 65, price: 40.5, charges: computeCharges("SELL", 40.5, 65, "NSE", "2026-10-09"), slippageTicks: 0 };
+    const closed = await applyExitFills(deps, open, [fill], "STOP");
+    expect(closed.status).toBe("CLOSED");
+    const before = copyTicketView({ position: open, plan: plan(), account: TEN_K, timeStopMinPnlPct: 10 });
+    const after = copyTicketView({ position: closed, plan: plan(), account: TEN_K, timeStopMinPnlPct: 10 });
+    expect(after.qty).toBe(65);
+    expect(after.lots).toBe(1);
+    expect(after.contract.lots).toBe(1);
+    expect(after.entry.costRupees).toBe(before.entry.costRupees);
+    expect(after.contract.premiumAtRisk).toBe(before.contract.premiumAtRisk);
+    expect(after.riskAtStop).toEqual(before.riskAtStop);
+    expect(after.steps[1]).toMatch(/^Buy 1 lot \(65 qty\)/);
+    expect(copyEntryText(after, null)).toContain("1 lot = 65 qty");
+    expect(after.exit?.pnl).toBeCloseTo((40.5 - 62.4) * 65 - 27.5 - fill.charges.total, 2);
+  });
+
+  it("count a partly sold open position by its entry quantity", () => {
+    const partly = copyTicketView({ position: position({ qty: 65, exitedQty: 65 }), plan: plan(), account: TEN_K, timeStopMinPnlPct: 10 });
+    // Two lots bought, one sold so far: still a two-lot entry.
+    expect(partly.qty).toBe(130);
+    expect(partly.lots).toBe(2);
   });
 });
 

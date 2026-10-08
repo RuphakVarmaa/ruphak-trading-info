@@ -95,10 +95,19 @@ const hm = (ms: number) => {
   return `${String(p.hour).padStart(2, "0")}:${String(p.minute).padStart(2, "0")}`;
 };
 
+/**
+ * Units bought at entry. An open position's qty is what is still held (exitedQty has been sold); a
+ * closed one keeps its full traded quantity in qty (applyExitFills), so adding exitedQty would count
+ * the exit as a second entry.
+ */
+export function entryQuantity(p: Pick<Position, "status" | "qty" | "exitedQty">): number {
+  return p.status === "CLOSED" ? Math.max(p.qty, p.exitedQty ?? 0) : p.qty + (p.exitedQty ?? 0);
+}
+
 export function copyTicketView(i: CopyTicketInput): CopyTicketView {
   const { position: p, plan, account } = i;
   const c = p.contract;
-  const entryQty = p.qty + (p.exitedQty ?? 0);
+  const entryQty = entryQuantity(p);
   const lots = c.lotSize > 0 ? Math.max(1, Math.round(entryQty / c.lotSize)) : 0;
   const indicators = plan?.indicators ?? i.fallbackIndicators ?? null;
   const spot = plan?.refSpot ?? indicators?.spot ?? 0;
