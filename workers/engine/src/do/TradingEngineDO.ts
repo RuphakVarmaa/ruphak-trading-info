@@ -10,6 +10,8 @@
  * plus RELAY_LIVE on the relay; otherwise every order is simulated by the PaperBroker.
  */
 import { DurableObject } from "cloudflare:workers";
+import { parseAccountId } from "../../../../src/engine/accounts";
+import type { TradingCalendar } from "../../../../src/engine/calendar/calendar";
 import { MINUTE_MS, istAt, istDate, istIso, systemClock } from "../../../../src/engine/clock";
 import { PaperBroker } from "../../../../src/engine/broker/paperBroker";
 import { computeCharges } from "../../../../src/engine/broker/charges";
@@ -26,6 +28,7 @@ import {
 } from "../../../../src/engine/broker/groww";
 import { computeFeatures } from "../../../../src/engine/market/features";
 import { YahooMarketDataSource } from "../../../../src/engine/market/yahooMarketData";
+import { runFollowerEntries } from "../../../../src/engine/pipeline/accountCycle";
 import { runEndOfDay } from "../../../../src/engine/pipeline/dayLifecycle";
 import { applyExitFills, persistResult } from "../../../../src/engine/pipeline/execution";
 import { recordSourceHealth } from "../../../../src/engine/pipeline/ingestCycle";
@@ -38,7 +41,7 @@ import { entryMode } from "../../../../src/engine/settings";
 import type { EngineMode, EnginePhase, EngineSettings, Fill, Heartbeat, IndexId, MarketFeatures, Order, Position, TradingMode } from "../../../../src/engine/types";
 import { makeRefId } from "../../../../src/engine/util/refId";
 import { CachedInstruments } from "../instruments";
-import { errorMessage, growwDataClient, makeRuntime, relayClient, type Runtime } from "../runtime";
+import { accountRuntime, enabledAccounts, errorMessage, growwDataClient, makeRuntime, relayClient, type AccountRuntime, type Runtime } from "../runtime";
 import { Alerts } from "../telegram";
 
 const LOOP_MS = 30_000;
@@ -76,6 +79,15 @@ export interface AdminResult {
   message: string;
 }
 
+/** A paper account that follows main's signals inside main's tick. */
+interface Follower extends AccountRuntime {
+  alerts: Alerts;
+  /** Consecutive failed steps (its own counter: it never degrades main). */
+  errors: number;
+}
+
+const FOLLOWER_ALERT_AFTER_ERRORS = 5;
+
 export class TradingEngineDO extends DurableObject<Env> {
   private readonly rt: Runtime;
   private readonly marketContext = new MarketContextStore();
@@ -92,6 +104,7 @@ export class TradingEngineDO extends DurableObject<Env> {
   private entryModeNow: BookMode = "PAPER";
   /** Set inside a tick when the next tick must follow immediately (kill switch engaged mid-tick). */
   private tickSoon = false;
+  private readonly followers: Follower[];
 
   constructor(ctx: DurableObjectState, env: Env) {
     super(ctx, env);
@@ -138,6 +151,13 @@ export class TradingEngineDO extends DurableObject<Env> {
       allowSynthetic: () => this.entryModeNow === "PAPER",
     });
     this.alerts = new Alerts(env, repo.state, logger);
+    this.followers = enabledAccounts(env)
+      .filter((id) => id !== "main")
+      .map((id) => {
+        const a = accountRuntime(this.rt, id);
+        // Its alert dedupe keys live under the account's prefix (the scoped repo's state).
+        return { ...a, alerts: new Alerts(env, a.repo.state, logger), errors: 0 };
+      });
     void ctx.blockConcurrencyWhile(async () => {
       this.hot = { ...INITIAL_HOT, ...((await ctx.storage.get<HotState>("hot")) ?? {}) };
     });
@@ -168,6 +188,63 @@ export class TradingEngineDO extends DurableObject<Env> {
       broker = new PaperBroker({ cfg, clock: systemClock, repo, quotes: optionQuotes, marketContext: (i) => this.marketContext.get(i), newId: randomId, mode: "PAPER" });
     }
     return { cfg, clock: systemClock, calendar, repo, broker, market: this.market, optionQuotes, instruments: this.instruments, logger, newId: randomId, mode, marketContext: this.marketContext };
+  }
+
+  /** Paper deps for a follower: its own config, book and broker; main's market data, quotes and calendar. */
+  private followerDeps(f: Follower, calendar: TradingCalendar = this.rt.calendar): EngineDeps {
+    const { logger } = this.rt;
+    const synthetic = new SyntheticOptionQuotes(calendar, f.cfg);
+    const optionQuotes: OptionQuoteSource = this.growwQuotes
+      ? new FallbackOptionQuotes(this.growwQuotes, synthetic, (err) => logger.warn("groww quote failed; synthetic quote used for paper", { error: errorMessage(err) }))
+      : synthetic;
+    const broker = new PaperBroker({ cfg: f.cfg, clock: systemClock, repo: f.repo, quotes: optionQuotes, marketContext: (i) => this.marketContext.get(i), newId: randomId, mode: "PAPER" });
+    return { cfg: f.cfg, clock: systemClock, calendar, repo: f.repo, broker, market: this.market, optionQuotes, instruments: this.instruments, logger, newId: randomId, mode: "PAPER", marketContext: this.marketContext };
+  }
+
+  private async followerOpen(f: Follower): Promise<number> {
+    const [p, o] = await Promise.all([f.repo.positions.open("PAPER"), f.repo.orders.open("PAPER")]);
+    return p.length + o.length;
+  }
+
+  /** Runs one follower step; failures are counted against the follower only. */
+  private async followerStep(f: Follower, what: string, fn: () => Promise<void>): Promise<void> {
+    try {
+      await fn();
+      f.errors = 0;
+    } catch (err) {
+      f.errors++;
+      this.rt.logger.error("follower step failed", { account: f.spec.id, what, error: errorMessage(err), consecutive: f.errors });
+      if (f.errors === FOLLOWER_ALERT_AFTER_ERRORS) {
+        await f.alerts.send(`⚠ ${f.spec.shortLabel}: ${FOLLOWER_ALERT_AFTER_ERRORS} failed steps in a row (${what}): ${errorMessage(err).slice(0, 200)}`, { key: "follower-errors", minIntervalMs: 30 * MINUTE_MS });
+      }
+    }
+  }
+
+  private async followerEntries(f: Follower, report: CycleReport, calendar: TradingCalendar, noEntries: string | null): Promise<void> {
+    await this.followerStep(f, "entries", async () => {
+      const r = await runFollowerEntries(this.followerDeps(f, calendar), report, { calendar, noEntries, decisionEveryMs: 5 * MINUTE_MS });
+      for (const e of r.entries) {
+        const d = r.decisions.find((x) => x.plan?.id === e.planId);
+        await f.alerts.send(
+          `📝 ${f.spec.shortLabel} ENTRY ${d?.plan?.contract.tradingSymbol ?? e.planId} x${d?.plan?.qty ?? "?"} @ ~₹${d?.plan?.limitPrice ?? d?.plan?.refPremium ?? "?"} (${e.status})`,
+        );
+      }
+      if (r.halted && !noEntries) await f.alerts.send(`⏸ ${f.spec.shortLabel} entries halted: ${r.halted}`, { key: `halt:${istDate(r.t)}:${r.halted.slice(0, 40)}`, minIntervalMs: 6 * 60 * MINUTE_MS });
+      if (r.errors.length) throw new Error(r.errors.join("; "));
+    });
+  }
+
+  private async followerPositions(f: Follower, report: CycleReport, calendar: TradingCalendar): Promise<void> {
+    if ((await this.followerOpen(f)) === 0) return;
+    await this.followerStep(f, "exits", async () => {
+      const pr = await runPositionCycle(this.followerDeps(f, calendar), { convictions: report.convictions });
+      for (const x of pr.exits) {
+        const pos = await f.repo.positions.get(x.positionId);
+        const pnl = pos && pos.status === "CLOSED" ? (pos.realized ?? 0) - pos.entryCharges - (pos.exitCharges ?? 0) : null;
+        await f.alerts.send(`📝 ${f.spec.shortLabel} EXIT ${pos?.contract.tradingSymbol ?? x.positionId} ${x.reason} (${x.status})${pnl !== null ? ` net ₹${pnl.toFixed(0)}` : ""}`);
+      }
+      for (const e of pr.errors) this.rt.logger.warn("follower position cycle error", { account: f.spec.id, error: e });
+    });
   }
 
   private async saveHot(): Promise<void> {
@@ -316,6 +393,10 @@ export class TradingEngineDO extends DurableObject<Env> {
     }
     if (report.halted) await this.alerts.send(`⏸ Entries halted: ${report.halted}`, { key: `halt:${istDate(now)}:${report.halted.slice(0, 40)}`, minIntervalMs: 6 * 60 * MINUTE_MS });
 
+    // Follower accounts act on the same signals; only main being degraded stops their entries
+    // (relay health is a LIVE concern and they are paper-only).
+    for (const f of this.followers) await this.followerEntries(f, report, cal, degraded ? "engine DEGRADED after repeated errors: exits only" : null);
+
     // Exits for every book with exposure (PAPER always; LIVE whenever it holds anything).
     let counts = await this.openCounts();
     const books = (): BookMode[] => {
@@ -324,12 +405,15 @@ export class TradingEngineDO extends DurableObject<Env> {
       if (counts.LIVE > 0 && this.liveAvailable) out.push("LIVE");
       return out;
     };
+    const followersOpen = async () => (await Promise.all(this.followers.map((f) => this.followerOpen(f)))).reduce((a, b) => a + b, 0);
     for (const book of books()) await this.positionCycle(book, report);
+    for (const f of this.followers) await this.followerPositions(f, report, cal);
     counts = await this.openCounts();
     for (const wait of EXIT_POLLS_MS) {
-      if (books().length === 0) break;
+      if (books().length === 0 && (await followersOpen()) === 0) break;
       await new Promise((r) => setTimeout(r, wait));
       for (const book of books()) await this.positionCycle(book, report);
+      for (const f of this.followers) await this.followerPositions(f, report, cal);
       counts = await this.openCounts();
     }
 
@@ -407,8 +491,7 @@ export class TradingEngineDO extends DurableObject<Env> {
   }
 
   /** Closes a position at its last mark without an exchange order (paper leftovers after the close). */
-  private async closeAtMark(book: BookMode, p: Position, reason: "SQUARE_OFF" | "RECONCILE", note: string): Promise<void> {
-    const deps = this.deps(book);
+  private async closeAtMark(deps: EngineDeps, p: Position, reason: "SQUARE_OFF" | "RECONCILE", note: string): Promise<void> {
     const now = Date.now();
     const price = p.markPremium > 0 ? p.markPremium : p.avgEntry;
     const order: Order = {
@@ -417,7 +500,7 @@ export class TradingEngineDO extends DurableObject<Env> {
       side: "SELL",
       qty: p.qty,
       type: "MARKET",
-      product: this.rt.cfg.broker.product,
+      product: deps.cfg.broker.product,
       reason,
       planId: p.planId,
       positionId: p.id,
@@ -427,7 +510,7 @@ export class TradingEngineDO extends DurableObject<Env> {
       avgFillPrice: price,
       createdMs: now,
       updatedMs: now,
-      mode: book,
+      mode: deps.mode,
       error: note,
     };
     const fill: Fill = {
@@ -518,7 +601,7 @@ export class TradingEngineDO extends DurableObject<Env> {
     for (const book of ["PAPER", "LIVE"] as BookMode[]) {
       const open = await repo.positions.open(book);
       for (const p of open) {
-        if (book === "PAPER") await this.closeAtMark(book, p, "SQUARE_OFF", "closed at the last mark after the session");
+        if (book === "PAPER") await this.closeAtMark(this.deps(book), p, "SQUARE_OFF", "closed at the last mark after the session");
         else {
           let atBroker = 0;
           try {
@@ -527,7 +610,7 @@ export class TradingEngineDO extends DurableObject<Env> {
             logger.warn("EOD broker positions unavailable", { error: errorMessage(err) });
             atBroker = p.qty;
           }
-          if (atBroker === 0) await this.closeAtMark("LIVE", p, "RECONCILE", "flat at the broker after the session (auto square-off?); verify the contract note");
+          if (atBroker === 0) await this.closeAtMark(this.deps("LIVE"), p, "RECONCILE", "flat at the broker after the session (auto square-off?); verify the contract note");
           await this.alerts.send(`⚠ LIVE position ${p.contract.tradingSymbol} was still open in the engine after the close (broker qty ${atBroker})`);
         }
       }
@@ -546,6 +629,24 @@ export class TradingEngineDO extends DurableObject<Env> {
       } catch (err) {
         lines.push(`${book}: end-of-day failed: ${errorMessage(err)}`);
         logger.error("end of day failed", { book, error: errorMessage(err) });
+      }
+    }
+    for (const f of this.followers) {
+      try {
+        const deps = this.followerDeps(f);
+        for (const p of await f.repo.positions.open("PAPER")) await this.closeAtMark(deps, p, "SQUARE_OFF", "closed at the last mark after the session");
+        // Main grades the shared signals and updates their performance; the follower only closes its day.
+        const eod = await runEndOfDay(deps, { grade: false, performance: false });
+        const l = await f.repo.ledger.get(eod.date, "PAPER");
+        const equity = l ? l.startEquity + l.realized + l.unrealized - l.charges : f.cfg.capitalRupees;
+        lines.push(
+          l
+            ? `${f.spec.shortLabel}: net ₹${(l.realized + l.unrealized - l.charges).toFixed(0)}, trades ${l.trades} (${l.wins}W/${l.losses}L), equity ₹${equity.toFixed(0)}`
+            : `${f.spec.shortLabel}: no trades, equity ₹${equity.toFixed(0)}`,
+        );
+      } catch (err) {
+        lines.push(`${f.spec.shortLabel}: end-of-day failed: ${errorMessage(err)}`);
+        logger.error("follower end of day failed", { account: f.spec.id, error: errorMessage(err) });
       }
     }
     await this.alerts.send(`📊 ${istDate(now)} summary\n${lines.join("\n")}`);
@@ -608,7 +709,34 @@ export class TradingEngineDO extends DurableObject<Env> {
     }
   }
 
-  async setKillSwitch(req: { engaged: boolean; squareOff: boolean; reason: string }, actor: string): Promise<AdminResult> {
+  /**
+   * Kill switch for main (default), one follower account, or "all". A follower's kill switch only
+   * stops that account; its position cycles treat it as a halt and exit at market.
+   */
+  async setKillSwitch(req: { engaged: boolean; squareOff: boolean; reason: string }, actor: string, account?: string): Promise<AdminResult> {
+    const target = account === "all" ? "all" : parseAccountId(account);
+    if (target === null) return { ok: false, message: `unknown account ${String(account).slice(0, 40)}` };
+    const followers = target === "all" ? this.followers : this.followers.filter((f) => f.spec.id === target);
+    if (target !== "all" && target !== "main" && followers.length === 0) return { ok: false, message: `account ${target} is not enabled` };
+    const messages: string[] = [];
+    for (const f of followers) {
+      await f.repo.settings.update(req.engaged ? { killSwitch: true, killReason: (req.reason || "manual").slice(0, 300) } : { killSwitch: false, killReason: null }, actor);
+      await f.repo.audit.append({ ts: Date.now(), actor, action: req.engaged ? "kill" : "kill_reset", detail: { reason: req.reason, squareOff: req.squareOff } });
+      await f.alerts.send(req.engaged ? `🛑 ${f.spec.shortLabel} KILL SWITCH by ${actor}: ${req.reason || "manual"}` : `✅ ${f.spec.shortLabel} kill switch reset by ${actor}`);
+      messages.push(`${f.spec.shortLabel} kill switch ${req.engaged ? "engaged" : "reset"}`);
+    }
+    if (target !== "all" && target !== "main") {
+      if (req.engaged && req.squareOff) {
+        if (this.ticking) await this.ticking;
+        await this.runTick();
+      }
+      return { ok: true, message: messages.join("; ") };
+    }
+    const res = await this.setMainKillSwitch(req, actor);
+    return { ok: res.ok, message: [res.message, ...messages].join("; ") };
+  }
+
+  private async setMainKillSwitch(req: { engaged: boolean; squareOff: boolean; reason: string }, actor: string): Promise<AdminResult> {
     const { repo } = this.rt;
     if (req.engaged) {
       await this.engageKill(req.reason || "manual", actor, req.squareOff);
@@ -651,6 +779,12 @@ export class TradingEngineDO extends DurableObject<Env> {
       ...[...paper, ...live].map((p) => `  ${p.mode} ${p.contract.tradingSymbol} x${p.qty} @ ${p.avgEntry.toFixed(2)} mark ${p.markPremium.toFixed(2)}`),
       `relay: ${relay ? relay.detail : "not configured"}`,
     ];
+    for (const f of this.followers) {
+      const [fs, open, l] = await Promise.all([f.repo.settings.get(), f.repo.positions.open("PAPER"), f.repo.ledger.get(istDate(now), "PAPER")]);
+      const net = l ? l.realized + l.unrealized - l.charges : 0;
+      lines.push(`${f.spec.shortLabel}: kill switch ${fs.killSwitch ? "ON" : "off"} · open ${open.length} · today net ₹${net.toFixed(0)}`);
+      for (const p of open) lines.push(`  ${f.spec.shortLabel} ${p.contract.tradingSymbol} x${p.qty} @ ${p.avgEntry.toFixed(2)} mark ${p.markPremium.toFixed(2)}`);
+    }
     return lines.join("\n");
   }
 }

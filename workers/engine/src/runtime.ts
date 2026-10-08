@@ -3,15 +3,18 @@
  * and factories for the Groww data client, relay client and LLM client.
  * Secrets are read from `env` only; nothing secret is ever logged or returned.
  */
+import { ACCOUNTS, accountConfig, parseAccounts, type AccountId, type AccountSpec } from "../../../src/engine/accounts";
+import type { AccountView } from "../../../src/engine/api-types";
 import { TradingCalendar, defaultCalendar } from "../../../src/engine/calendar/calendar";
 import { makeConfig, parseIndices, parseMaxOpenPerIndex, parseMaxTradesPerDay, type EngineConfig } from "../../../src/engine/config";
 import { AnthropicLlmClient } from "../../../src/engine/events/llm/anthropicClient";
 import { DEFAULT_WORKERS_AI_MODEL, WorkersAiLlmClient, type ResponseFormatMode } from "../../../src/engine/events/llm/workersAiClient";
-import type { LlmClient, Logger } from "../../../src/engine/ports";
+import type { LlmClient, Logger, Repository } from "../../../src/engine/ports";
+import { accountRepository } from "../../../src/engine/repo/accountRepo";
 import { GrowwDataClient, GrowwHttp, RelayClient, type GrowwTransport, type TokenSource } from "../../../src/engine/broker/groww";
 import { D1Repository } from "./db/d1Repository";
 
-export const ENGINE_VERSION = "2026.10.07";
+export const ENGINE_VERSION = "2026.10.08";
 
 export interface Runtime {
   env: Env;
@@ -95,6 +98,30 @@ export function makeRuntime(env: Env, scope = "engine"): Runtime {
     relayConfigured: Boolean(env.RELAY_URL && env.RELAY_HMAC_SECRET),
     version: ENGINE_VERSION,
   };
+}
+
+/** Paper accounts this Worker runs (Worker var ACCOUNTS); main is always first. */
+export function enabledAccounts(env: Env): AccountId[] {
+  return parseAccounts(env.ACCOUNTS);
+}
+
+export interface AccountRuntime {
+  spec: AccountSpec;
+  cfg: EngineConfig;
+  /** The engine repository scoped to this account (main gets it unchanged). */
+  repo: Repository;
+}
+
+export function accountRuntime(rt: Runtime, id: AccountId): AccountRuntime {
+  const cfg = accountConfig(rt.cfg, id);
+  return { spec: ACCOUNTS[id], cfg, repo: accountRepository(rt.repo, id, cfg, Date.now) };
+}
+
+export function accountViews(rt: Runtime, ids: AccountId[]): AccountView[] {
+  return ids.map((id) => {
+    const s = ACCOUNTS[id];
+    return { id, label: s.label, shortLabel: s.shortLabel, paperOnly: s.paperOnly, capitalRupees: accountConfig(rt.cfg, id).capitalRupees };
+  });
 }
 
 export function relayClient(env: Env): RelayClient | null {

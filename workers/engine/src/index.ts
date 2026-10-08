@@ -99,9 +99,9 @@ async function handleFetch(req: Request, env: Env): Promise<Response> {
     let reply: string;
     try {
       if (cmd.command === "status") reply = await engine(env).statusText();
-      else if (cmd.command === "kill") reply = (await engine(env).setKillSwitch({ engaged: true, squareOff: true, reason: cmd.args || "telegram /kill" }, "telegram")).message;
+      else if (cmd.command === "kill") reply = (await engine(env).setKillSwitch({ engaged: true, squareOff: true, reason: cmd.args || "telegram /kill" }, "telegram", "all")).message;
       else if (cmd.command === "disarm") reply = (await engine(env).setArmed(false, "telegram")).message;
-      else reply = "Commands: /status, /kill [reason] (exits everything), /disarm";
+      else reply = "Commands: /status, /kill [reason] (exits everything in every account), /disarm";
     } catch (err) {
       reply = `error: ${errorMessage(err)}`;
     }

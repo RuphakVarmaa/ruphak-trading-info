@@ -22,10 +22,11 @@ import type {
   SignalPerformanceRow,
   SignalView,
 } from "../../../src/engine/api-types";
+import { parseAccountId, type AccountId } from "../../../src/engine/accounts";
 import { ReadModel } from "../../../src/engine/api/readModel";
 import { timingSafeEqual } from "../../../src/engine/util/hash";
 import { getBacktest, startBacktest } from "./backtestRunner";
-import { makeRuntime } from "./runtime";
+import { accountRuntime, accountViews, enabledAccounts, makeRuntime } from "./runtime";
 
 /**
  * Admin failures cross Workers RPC as plain Errors, so the code travels as a message prefix
@@ -46,9 +47,29 @@ function cleanActor(actor: string): string {
 }
 
 export class EngineAdmin extends WorkerEntrypoint<Env> implements EngineApi {
-  private model(): ReadModel {
+  /** An enabled account id ("main" when omitted); anything else is a bad request. */
+  private account(raw: unknown): AccountId {
+    if (raw === undefined || raw === null || raw === "") return "main";
+    const id = parseAccountId(String(raw));
+    if (!id || !enabledAccounts(this.env).includes(id)) throw new AdminError("BAD_REQUEST", `unknown account '${String(raw).slice(0, 40)}'`);
+    return id;
+  }
+
+  private model(account?: unknown): ReadModel {
     const rt = makeRuntime(this.env, "admin");
-    return new ReadModel({ repo: rt.repo, cfg: rt.cfg, calendar: rt.calendar, now: Date.now(), liveTradingEnabled: rt.liveTradingEnabled, version: rt.version });
+    const id = this.account(account);
+    const a = accountRuntime(rt, id);
+    const views = accountViews(rt, enabledAccounts(this.env));
+    return new ReadModel({
+      repo: a.repo,
+      cfg: a.cfg,
+      calendar: rt.calendar,
+      now: Date.now(),
+      liveTradingEnabled: rt.liveTradingEnabled,
+      version: rt.version,
+      account: views.find((v) => v.id === id),
+      accounts: views,
+    });
   }
 
   private engine() {
@@ -61,14 +82,14 @@ export class EngineAdmin extends WorkerEntrypoint<Env> implements EngineApi {
     if (typeof token !== "string" || !timingSafeEqual(token, expected)) throw new AdminError("UNAUTHORIZED", "invalid admin token");
   }
 
-  getState(): Promise<EngineStateDTO> {
-    return this.model().getState();
+  getState(account?: string): Promise<EngineStateDTO> {
+    return this.model(account).getState();
   }
-  getSignals(): Promise<SignalView[]> {
-    return this.model().getSignals();
+  getSignals(account?: string): Promise<SignalView[]> {
+    return this.model(account).getSignals();
   }
-  getPositions(): Promise<PositionView[]> {
-    return this.model().getPositions();
+  getPositions(account?: string): Promise<PositionView[]> {
+    return this.model(account).getPositions();
   }
   getEvents(q: EventsQuery): Promise<EventClusterView[]> {
     return this.model().getEvents(q ?? {});
@@ -76,15 +97,15 @@ export class EngineAdmin extends WorkerEntrypoint<Env> implements EngineApi {
   getEventDetail(clusterId: string): Promise<EventClusterDetail | null> {
     return this.model().getEventDetail(String(clusterId));
   }
-  getOrders(date: string): Promise<{ orders: OrderView[]; fills: FillView[] }> {
+  getOrders(date: string, account?: string): Promise<{ orders: OrderView[]; fills: FillView[] }> {
     if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) throw new AdminError("BAD_REQUEST", "date must be YYYY-MM-DD");
-    return this.model().getOrders(date);
+    return this.model(account).getOrders(date);
   }
-  getPnl(days: number): Promise<PnlResponse> {
-    return this.model().getPnl(Number(days) || 30);
+  getPnl(days: number, account?: string): Promise<PnlResponse> {
+    return this.model(account).getPnl(Number(days) || 30);
   }
-  getPerformance(): Promise<SignalPerformanceRow[]> {
-    return this.model().getPerformance();
+  getPerformance(account?: string): Promise<SignalPerformanceRow[]> {
+    return this.model(account).getPerformance();
   }
   getScheduled(hours: number): Promise<ScheduledEventView[]> {
     return this.model().getScheduled(Number(hours) || 48);
@@ -109,14 +130,16 @@ export class EngineAdmin extends WorkerEntrypoint<Env> implements EngineApi {
     return this.getState();
   }
 
-  async setKillSwitch(token: string, req: KillSwitchRequest, actor: string): Promise<EngineStateDTO> {
+  async setKillSwitch(token: string, req: KillSwitchRequest, actor: string, account?: string): Promise<EngineStateDTO> {
     this.requireAdmin(token);
+    const target = account === "all" ? "all" : this.account(account);
     const res = await this.engine().setKillSwitch(
       { engaged: Boolean(req?.engaged), squareOff: Boolean(req?.squareOff), reason: String(req?.reason ?? "").slice(0, 300) },
       cleanActor(actor),
+      target,
     );
     if (!res.ok) throw new AdminError("CONFLICT", res.message);
-    return this.getState();
+    return this.getState(target === "all" ? undefined : target);
   }
 
   async setMode(token: string, mode: EngineMode, actor: string): Promise<EngineStateDTO> {

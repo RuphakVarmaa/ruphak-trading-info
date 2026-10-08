@@ -393,6 +393,11 @@ export interface BacktestParams {
   targetPct: number;
   /** When true, the event layer is disabled (no-events baseline). */
   noEvents: boolean;
+  /**
+   * Follower account to backtest (e.g. "small10k"): main replays alongside it, the stop and target
+   * apply to the follower, and the result is the follower's. Omitted means main.
+   */
+  account?: string;
 }
 
 export interface BacktestTrade {
@@ -463,23 +468,28 @@ export interface KillSwitchRequest {
   reason: string;
 }
 
+/**
+ * `account` (optional, last argument) selects a paper account other than main, e.g. "small10k";
+ * omitted means main. Events, scheduled events and backtests are not per account.
+ */
 export interface EngineApi {
-  getState(): Promise<EngineStateDTO>;
-  getSignals(): Promise<SignalView[]>;
-  getPositions(): Promise<PositionView[]>;
+  getState(account?: string): Promise<EngineStateDTO>;
+  getSignals(account?: string): Promise<SignalView[]>;
+  getPositions(account?: string): Promise<PositionView[]>;
   getEvents(q: EventsQuery): Promise<EventClusterView[]>;
   getEventDetail(clusterId: string): Promise<EventClusterDetail | null>;
   /** Orders and fills for an IST date YYYY-MM-DD. */
-  getOrders(date: string): Promise<{ orders: OrderView[]; fills: FillView[] }>;
-  getPnl(days: number): Promise<PnlResponse>;
-  getPerformance(): Promise<SignalPerformanceRow[]>;
+  getOrders(date: string, account?: string): Promise<{ orders: OrderView[]; fills: FillView[] }>;
+  getPnl(days: number, account?: string): Promise<PnlResponse>;
+  getPerformance(account?: string): Promise<SignalPerformanceRow[]>;
   getScheduled(hours: number): Promise<ScheduledEventView[]>;
   getBacktest(runId: string): Promise<BacktestResult | null>;
 
   /** Admin methods re-check the token inside the engine (defense in depth). */
   verifyAdmin(token: string): Promise<boolean>;
   setArmed(token: string, armed: boolean, actor: string): Promise<EngineStateDTO>;
-  setKillSwitch(token: string, req: KillSwitchRequest, actor: string): Promise<EngineStateDTO>;
+  /** `account`: main (default), a follower account id, or "all". */
+  setKillSwitch(token: string, req: KillSwitchRequest, actor: string, account?: string): Promise<EngineStateDTO>;
   setMode(token: string, mode: EngineMode, actor: string): Promise<EngineStateDTO>;
   startBacktest(token: string, params: BacktestParams, actor: string): Promise<{ runId: string; status: "RUNNING" | "DONE" }>;
 }
