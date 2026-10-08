@@ -7,7 +7,8 @@ import { SIGNAL_SOURCE_LABELS, contractLabel, type AccountView, type CopyTicketV
 import { computeCharges } from "../broker/charges";
 import { MINUTE_MS, istDate, istIso, istParts, weekdayOf } from "../clock";
 import { stopPrice, targetPrice, trailPrice } from "../strategy/exits";
-import type { IndicatorView, OrderReason, Position, Quote, Regime, SignalComponent, TradePlan } from "../types";
+import type { IndicatorView, Order, OrderReason, Position, Quote, Regime, SignalComponent, TradePlan } from "../types";
+import { roundToTick } from "../util/math";
 
 const MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
 const WEEKDAYS = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
@@ -44,6 +45,22 @@ export interface CopyTicketInput {
   timeStopMinPnlPct: number;
   /** Readings to show when the plan predates TradePlan.indicators (main's decision for the plan). */
   fallbackIndicators?: IndicatorView | null;
+  /** The entry order, for its limit price; without it the plan's limit is used (the order is sent with it). */
+  entryOrder?: Pick<Order, "type" | "limitPrice"> | null;
+}
+
+/**
+ * The too-late level as a whole index point, rounded toward the entry so a copier never enters past
+ * the engine's level: down for calls (skip above it), up for puts (skip below it), as /copy shows it.
+ */
+export function skipLevel(level: number, side: "BULL" | "BEAR"): number {
+  return side === "BULL" ? Math.floor(level + 1e-9) : Math.ceil(level - 1e-9);
+}
+
+/** The engine's entry limit: the order's, else the plan's; null for a market order or without either. */
+function entryLimit(order: CopyTicketInput["entryOrder"], plan: TradePlan | null): number | null {
+  const src = order ?? (plan ? { type: plan.entryType, limitPrice: plan.limitPrice } : null);
+  return src && src.type === "LIMIT" && typeof src.limitPrice === "number" && src.limitPrice > 0 ? round2(src.limitPrice) : null;
 }
 
 const round2 = (x: number) => Math.round(x * 100) / 100;
@@ -95,33 +112,49 @@ const hm = (ms: number) => {
   return `${String(p.hour).padStart(2, "0")}:${String(p.minute).padStart(2, "0")}`;
 };
 
+/**
+ * Units bought at entry. An open position's qty is what is still held (exitedQty has been sold); a
+ * closed one keeps its full traded quantity in qty (applyExitFills), so adding exitedQty would count
+ * the exit as a second entry.
+ */
+export function entryQuantity(p: Pick<Position, "status" | "qty" | "exitedQty">): number {
+  return p.status === "CLOSED" ? Math.max(p.qty, p.exitedQty ?? 0) : p.qty + (p.exitedQty ?? 0);
+}
+
 export function copyTicketView(i: CopyTicketInput): CopyTicketView {
   const { position: p, plan, account } = i;
   const c = p.contract;
-  const entryQty = p.qty + (p.exitedQty ?? 0);
+  const entryQty = entryQuantity(p);
   const lots = c.lotSize > 0 ? Math.max(1, Math.round(entryQty / c.lotSize)) : 0;
   const indicators = plan?.indicators ?? i.fallbackIndicators ?? null;
   const spot = plan?.refSpot ?? indicators?.spot ?? 0;
   const dir = p.side === "BULL" ? 1 : -1;
   const skipBeyondSpot = plan && plan.expectedMovePct > 0 && spot > 0 ? round2(spot * (1 + (dir * plan.expectedMovePct) / 200)) : null;
-  const stop = stopPrice(p);
-  const target = targetPrice(p);
-  const trailActivateAt = p.avgEntry * (1 + p.stops.trailActivatePct / 100);
+  // Levels on the contract's tick, at the first price where the engine's own check fires (it
+  // compares the bid, which moves in ticks, with the raw level): it sells at a bid at or below the
+  // stop or trail (round down) or at or above the target (round up), and the trail starts once the
+  // bid reaches its start (round up). The engine's exit logic itself is unchanged.
+  const tick = c.tickSize > 0 ? c.tickSize : 0.05;
+  const stop = roundToTick(stopPrice(p), tick, "down");
+  const target = roundToTick(targetPrice(p), tick, "up");
+  const trailActivateAt = roundToTick(p.avgEntry * (1 + p.stops.trailActivatePct / 100), tick, "up");
   const risk = (p.avgEntry - stop) * entryQty + p.entryCharges + computeCharges("SELL", stop, entryQty, c.exchange, istDate(p.entryMs)).total;
   const priceSource = quoteSourceOf(plan) === "groww" ? "broker" : "model";
   const open = p.status === "OPEN";
   const mark = p.markPremium > 0 ? p.markPremium : p.avgEntry;
-  const trail = open ? trailPrice(p) : null;
+  const rawTrail = open ? trailPrice(p) : null;
+  const trail = rawTrail === null ? null : roundToTick(rawTrail, tick, "down");
   const prevClose = indicators?.prevDayClose ?? 0;
   const searchText = `${c.index} ${c.strike} ${c.type}`;
   const label = expiryLabel(c.expiry);
   const fill = round2(p.avgEntry);
+  const limitPrice = entryLimit(i.entryOrder, plan);
 
   const steps = [
     `Search "${searchText}" in your broker app and pick the ${label} expiry.`,
-    `Buy ${lots} lot${lots === 1 ? "" : "s"} (${entryQty} qty) with a limit order near the ask. The engine's ${p.mode === "LIVE" ? "live" : "paper"} fill was ₹${fill.toFixed(2)}${priceSource === "model" ? ", a model price: the real one will differ" : ""}.`,
+    `Buy ${lots} lot${lots === 1 ? "" : "s"} (${entryQty} qty) with a limit order near the ask${limitPrice !== null ? ` (the engine's limit was ₹${limitPrice.toFixed(2)})` : ""}. The engine's ${p.mode === "LIVE" ? "live" : "paper"} fill was ₹${fill.toFixed(2)}${priceSource === "model" ? ", a model price: the real one will differ" : ""}.`,
     ...(skipBeyondSpot !== null
-      ? [`Skip it if ${c.index} is already ${dir > 0 ? "above" : "below"} ${Math.round(skipBeyondSpot).toLocaleString("en-IN")}: half of the expected move has happened.`]
+      ? [`Skip it if ${c.index} is already ${dir > 0 ? "above" : "below"} ${skipLevel(skipBeyondSpot, p.side).toLocaleString("en-IN")}: half of the expected move has happened.`]
       : []),
     `Set a stop-loss ${Math.abs(p.stops.stopPct)}% under your own fill (₹${round2(stop).toFixed(2)} for a ₹${fill.toFixed(2)} fill). The target is +${p.stops.targetPct}% (₹${round2(target).toFixed(2)}).`,
     `Sell when the engine sells, at the latest by ${hm(p.stops.squareOffMs)} IST. It also sells on its trailing stop, its time stop (${hm(p.stops.timeStopMs)}) and when the signals turn.`,
@@ -156,6 +189,7 @@ export function copyTicketView(i: CopyTicketInput): CopyTicketView {
     entry: {
       at: istIso(p.entryMs),
       premium: fill,
+      limitPrice,
       costRupees: round2(p.avgEntry * entryQty),
       charges: round2(p.entryCharges),
       priceSource,
@@ -280,9 +314,9 @@ export function copyEntryText(t: CopyTicketView, link: string | null): string {
   const lv = t.levels;
   const lines = [
     `🟢 COPY ${tag} · ${t.headline}`,
-    `${t.lots} lot = ${t.qty} qty · ${t.mode === "LIVE" ? "live" : "paper"} fill ${prem(t.entry.premium)}${t.entry.priceSource === "model" ? " (model price: check the real one)" : ""} · cost ${inr(t.entry.costRupees)}`,
+    `${t.lots} lot = ${t.qty} qty · ${t.entry.limitPrice !== null ? `limit ${prem(t.entry.limitPrice)} · ` : ""}${t.mode === "LIVE" ? "live" : "paper"} fill ${prem(t.entry.premium)}${t.entry.priceSource === "model" ? " (model price: check the real one)" : ""} · cost ${inr(t.entry.costRupees)}`,
   ];
-  if (t.entry.skipBeyondSpot !== null) lines.push(`Skip if ${t.index} is already ${t.side === "BULL" ? "above" : "below"} ${level(t.entry.skipBeyondSpot)} (it was ${level(t.entry.spot)})`);
+  if (t.entry.skipBeyondSpot !== null) lines.push(`Skip if ${t.index} is already ${t.side === "BULL" ? "above" : "below"} ${skipLevel(t.entry.skipBeyondSpot, t.side).toLocaleString("en-IN")} (it was ${level(t.entry.spot)})`);
   lines.push(`Stop ${pct(lv.stopPct, 0)} → ${prem(lv.stop)} · Target ${pct(lv.targetPct, 0)} → ${prem(lv.target)}`);
   lines.push(
     `Trail from ${pct(lv.trailActivatePct, 0)} (${prem(lv.trailActivateAt)}), gives back ${lv.trailGivebackPct}% of the gain · time stop ${hmIso(lv.timeStopAt)} unless ${pct(lv.timeStopMinPnlPct, 0)} · out by ${hmIso(lv.squareOffAt)}`,

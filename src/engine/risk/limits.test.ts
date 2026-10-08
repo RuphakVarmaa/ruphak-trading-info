@@ -48,3 +48,31 @@ describe("per-index open position gate", () => {
     expect(perIndex(2, 2).passed).toBe(false);
   });
 });
+
+describe("entry orders that have not filled yet", () => {
+  const cfg = makeConfig({ sizing: { maxOpenPerIndex: 1, maxTradesPerDay: 2 } });
+  const gates = (r: RiskState, index: "NIFTY" | "SENSEX" = "NIFTY", side: "BULL" | "BEAR" = "BEAR") => Object.fromEntries(riskGates(index, side, r, cfg).map((g) => [g.gate, g]));
+
+  it("hold a slot on their index, overall and in today's trades", () => {
+    const r = { ...state(0), pendingEntries: [{ index: "NIFTY" as const, side: "BEAR" as const }] };
+    const g = gates(r);
+    expect(g.per_index).toMatchObject({ passed: false, detail: "1 of 1" });
+    expect(g.max_positions).toMatchObject({ passed: true, detail: "1 of 2" });
+    expect(g.trades_today).toMatchObject({ passed: true, detail: "1 of 2" });
+    // With one position open as well, the overall limit and the day's entries are used up.
+    const both = gates({ ...state(1), pendingEntries: [{ index: "SENSEX", side: "BEAR" }] }, "SENSEX");
+    expect(both.per_index.passed).toBe(false);
+    expect(both.max_positions).toMatchObject({ passed: false, detail: "2 of 2" });
+    expect(both.trades_today).toMatchObject({ passed: false, detail: "2 of 2" });
+  });
+
+  it("count as a position the other way on the other index", () => {
+    const r = { ...state(0), pendingEntries: [{ index: "SENSEX" as const, side: "BULL" as const }] };
+    expect(gates(r, "NIFTY", "BEAR").no_opposite.passed).toBe(false);
+    expect(gates(r, "NIFTY", "BULL").no_opposite.passed).toBe(true);
+  });
+
+  it("change nothing when there are none", () => {
+    expect(riskGates("NIFTY", "BEAR", { ...state(1), pendingEntries: [] }, cfg)).toEqual(riskGates("NIFTY", "BEAR", state(1), cfg));
+  });
+});

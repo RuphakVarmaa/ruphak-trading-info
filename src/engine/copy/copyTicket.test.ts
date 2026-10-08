@@ -1,8 +1,13 @@
 import { describe, expect, it } from "vitest";
+import { accountSpec } from "../accounts";
 import { computeCharges } from "../broker/charges";
 import { istAt } from "../clock";
+import { DEFAULT_CONFIG } from "../config";
 import { NEUTRAL_INDICATORS, NEUTRAL_OPENING_RANGE } from "../market/features";
-import type { IndicatorView, OptionContract, Position, TradePlan } from "../types";
+import { applyExitFills } from "../pipeline/execution";
+import { evaluateExits, trailPrice } from "../strategy/exits";
+import { createReplayDeps } from "../testing/replayHarness";
+import type { Fill, IndicatorView, OptionContract, Position, Quote, TradePlan } from "../types";
 import { accountTag, copyEntryText, copyExitText, copyLink, copyTicketView, copyTrailText, expiryLabel, setupReasons } from "./copyTicket";
 
 const T = istAt("2026-10-09", "10:20");
@@ -129,12 +134,12 @@ describe("copy ticket", () => {
     expect(t.entry.premium).toBe(62.4);
     expect(t.entry.costRupees).toBeCloseTo(4_056, 2);
     expect(t.entry.priceSource).toBe("model");
-    expect(t.levels.stop).toBeCloseTo(40.56, 2);
-    expect(t.levels.target).toBeCloseTo(99.84, 2);
-    expect(t.levels.trailActivateAt).toBeCloseTo(81.12, 2);
+    expect(t.levels.stop).toBe(40.55);
+    expect(t.levels.target).toBe(99.85);
+    expect(t.levels.trailActivateAt).toBe(81.15);
     expect(t.levels.trail).toBeNull();
     expect(t.levels.timeStopAt).toBe("2026-10-09T11:50:00+05:30");
-    const expectedRisk = (62.4 - 40.56) * 65 + 27.5 + computeCharges("SELL", 40.56, 65, "NSE", "2026-10-09").total;
+    const expectedRisk = (62.4 - 40.55) * 65 + 27.5 + computeCharges("SELL", 40.55, 65, "NSE", "2026-10-09").total;
     expect(t.riskAtStop.rupees).toBe(Math.round(expectedRisk));
     expect(t.riskAtStop.pctOfCapital).toBeCloseTo((expectedRisk / 10_000) * 100, 1);
   });
@@ -198,6 +203,109 @@ describe("copy ticket", () => {
   });
 });
 
+describe("the too-late-to-copy level in the texts", () => {
+  it("rounds so a copier never enters past the engine's level (down for calls, up for puts)", () => {
+    // Call: half the 0.4% move from 25,050.5 is 25,100.60, so "above 25,100" (not 25,101).
+    const bull = copyTicketView({ position: position({ side: "BULL" }), plan: plan({ side: "BULL", refSpot: 25_050.5 }), account: TEN_K, timeStopMinPnlPct: 10 });
+    expect(bull.entry.skipBeyondSpot).toBeCloseTo(25_100.6, 2);
+    expect(copyEntryText(bull, null)).toContain("Skip if NIFTY is already above 25,100 (");
+    expect(bull.steps.join(" ")).toContain("already above 25,100:");
+    // Put: from 25,050.2 the level is 25,000.10, so "below 25,001" (not 25,000).
+    const bear = copyTicketView({ position: position(), plan: plan({ refSpot: 25_050.2 }), account: TEN_K, timeStopMinPnlPct: 10 });
+    expect(bear.entry.skipBeyondSpot).toBeCloseTo(25_000.1, 2);
+    expect(copyEntryText(bear, null)).toContain("Skip if NIFTY is already below 25,001 (");
+    expect(bear.steps.join(" ")).toContain("already below 25,001:");
+  });
+});
+
+describe("the engine's entry limit", () => {
+  const view = (over: Partial<Parameters<typeof copyTicketView>[0]>) => copyTicketView({ position: position(), plan: plan(), account: TEN_K, timeStopMinPnlPct: 10, ...over });
+
+  it("comes from the entry order, else from the plan; null for a market order", () => {
+    expect(view({}).entry.limitPrice).toBe(62.5);
+    expect(view({ entryOrder: { type: "LIMIT", limitPrice: 62.55 } }).entry.limitPrice).toBe(62.55);
+    expect(view({ entryOrder: { type: "MARKET" } }).entry.limitPrice).toBeNull();
+    expect(view({ plan: plan({ entryType: "MARKET", limitPrice: undefined }) }).entry.limitPrice).toBeNull();
+    expect(view({ plan: null }).entry.limitPrice).toBeNull();
+  });
+
+  it("is in the entry alert and the steps", () => {
+    const t = view({});
+    expect(copyEntryText(t, null).split("\n")[1]).toBe("1 lot = 65 qty · limit ₹62.50 · paper fill ₹62.40 (model price: check the real one) · cost ₹4,056");
+    expect(t.steps[1]).toContain("the engine's limit was ₹62.50");
+    expect(copyEntryText(view({ entryOrder: { type: "MARKET" } }), null)).not.toContain("limit ₹");
+  });
+});
+
+describe("copy ticket levels on the ₹0.05 tick", () => {
+  // Entry ₹62.40: the raw stop is ₹40.56, the target ₹99.84 and the trail start ₹81.12.
+  const t = copyTicketView({ position: position({ peakPremium: 90.05, markPremium: 88 }), plan: plan(), account: TEN_K, timeStopMinPnlPct: 10 });
+  const onTick = (x: number) => Math.abs(Math.round(x / 0.05) * 0.05 - x) < 1e-9;
+
+  it("puts every level on a tradable price", () => {
+    for (const x of [t.levels.stop, t.levels.target, t.levels.trailActivateAt, t.levels.trail!]) expect(onTick(x)).toBe(true);
+  });
+
+  it("uses the first tick at which the engine's own check fires", () => {
+    // The engine sells when the bid is at or below the stop or trail, and at or above the target;
+    // the trail starts once the bid has reached its start. Bids move in ticks.
+    expect(t.levels.stop).toBe(40.55);
+    expect(t.levels.target).toBe(99.85);
+    expect(t.levels.trailActivateAt).toBe(81.15);
+    // Trail: the peak ₹90.05 gives back half the gain to ₹76.225, so it sells at ₹76.20.
+    expect(t.levels.trail).toBe(76.2);
+    const p = position({ peakPremium: 90.05 });
+    const q = (bid: number): Quote => ({ symbol: contract.tradingSymbol, bid, ask: bid + 0.1, bidQty: 0, askQty: 0, ltp: bid, t: T, source: "synthetic" });
+    const ctx = { nowMs: T };
+    expect(evaluateExits(p, q(t.levels.stop), ctx, DEFAULT_CONFIG)?.reason).toBe("STOP");
+    expect(evaluateExits(p, q(t.levels.stop + 0.05), ctx, DEFAULT_CONFIG)?.reason).not.toBe("STOP");
+    expect(evaluateExits(p, q(t.levels.target), ctx, DEFAULT_CONFIG)?.reason).toBe("TARGET");
+    expect(evaluateExits(p, q(t.levels.target - 0.05), ctx, DEFAULT_CONFIG)?.reason).not.toBe("TARGET");
+    expect(evaluateExits(p, q(t.levels.trail!), ctx, DEFAULT_CONFIG)?.reason).toBe("TRAIL");
+    expect(evaluateExits(p, q(t.levels.trail! + 0.05), ctx, DEFAULT_CONFIG)).toBeNull();
+    const notYet = position({ peakPremium: t.levels.trailActivateAt - 0.05 });
+    expect(trailPrice(notYet)).toBeNull();
+    expect(trailPrice(position({ peakPremium: t.levels.trailActivateAt }))).not.toBeNull();
+  });
+
+  it("states the risk at the stop the engine would actually hit", () => {
+    expect(t.riskAtStop.rupees).toBe(Math.round((62.4 - 40.55) * 65 + 27.5 + computeCharges("SELL", 40.55, 65, "NSE", "2026-10-09").total));
+    expect(t.steps.find((s) => s.startsWith("Set a stop-loss"))).toContain("(₹40.55 for a ₹62.40 fill). The target is +60% (₹99.85).");
+  });
+});
+
+describe("closed copy tickets", () => {
+  it("show the entry's quantity, lots, cost and risk (not entry plus exit)", async () => {
+    // Close the position the way the engine does, so the ticket sees the stored shape.
+    const deps = createReplayDeps({ cfg: DEFAULT_CONFIG, startMs: T, candles: {}, daily: {} });
+    const open = position();
+    await deps.repo.positions.save(open);
+    const exitAt = T + 42 * 60_000;
+    deps.clock.set(exitAt);
+    const fill: Fill = { id: "f-exit", orderId: "o-exit", t: exitAt, qty: 65, price: 40.5, charges: computeCharges("SELL", 40.5, 65, "NSE", "2026-10-09"), slippageTicks: 0 };
+    const closed = await applyExitFills(deps, open, [fill], "STOP");
+    expect(closed.status).toBe("CLOSED");
+    const before = copyTicketView({ position: open, plan: plan(), account: TEN_K, timeStopMinPnlPct: 10 });
+    const after = copyTicketView({ position: closed, plan: plan(), account: TEN_K, timeStopMinPnlPct: 10 });
+    expect(after.qty).toBe(65);
+    expect(after.lots).toBe(1);
+    expect(after.contract.lots).toBe(1);
+    expect(after.entry.costRupees).toBe(before.entry.costRupees);
+    expect(after.contract.premiumAtRisk).toBe(before.contract.premiumAtRisk);
+    expect(after.riskAtStop).toEqual(before.riskAtStop);
+    expect(after.steps[1]).toMatch(/^Buy 1 lot \(65 qty\)/);
+    expect(copyEntryText(after, null)).toContain("1 lot = 65 qty");
+    expect(after.exit?.pnl).toBeCloseTo((40.5 - 62.4) * 65 - 27.5 - fill.charges.total, 2);
+  });
+
+  it("count a partly sold open position by its entry quantity", () => {
+    const partly = copyTicketView({ position: position({ qty: 65, exitedQty: 65 }), plan: plan(), account: TEN_K, timeStopMinPnlPct: 10 });
+    // Two lots bought, one sold so far: still a two-lot entry.
+    expect(partly.qty).toBe(130);
+    expect(partly.lots).toBe(2);
+  });
+});
+
 describe("copy alert texts", () => {
   const open = copyTicketView({ position: position(), plan: plan(), account: TEN_K, timeStopMinPnlPct: 10 });
   const link = copyLink("https://dash.example.dev/", open);
@@ -215,12 +323,23 @@ describe("copy alert texts", () => {
     expect(accountTag(MAIN)).toBe("Main ₹5L");
   });
 
+  it("prefixes the ₹5k account's alerts with ₹5k and links to its book", () => {
+    const spec = accountSpec("small5k");
+    const fiveK = { id: spec.id, label: spec.label, shortLabel: spec.shortLabel, paperOnly: spec.paperOnly, capitalRupees: 5_000 };
+    expect(accountTag(fiveK)).toBe("₹5k");
+    const t = copyTicketView({ position: position(), plan: plan(), account: fiveK, timeStopMinPnlPct: 10 });
+    const l = copyLink("https://dash.example.dev", t);
+    expect(l).toBe("https://dash.example.dev/copy?account=small5k&id=pos1");
+    expect(copyEntryText(t, l).split("\n")[0]).toBe("🟢 COPY ₹5k · BUY NIFTY 25000 PE (13 Oct)");
+    expect(copyEntryText(t, l)).toContain("% of ₹5k)");
+  });
+
   it("has everything needed to copy the entry", () => {
     const text = copyEntryText(open, link);
     expect(text.split("\n")[0]).toBe("🟢 COPY ₹10k · BUY NIFTY 25000 PE (13 Oct)");
-    expect(text).toContain("1 lot = 65 qty · paper fill ₹62.40 (model price: check the real one) · cost ₹4,056");
+    expect(text).toContain("1 lot = 65 qty · limit ₹62.50 · paper fill ₹62.40 (model price: check the real one) · cost ₹4,056");
     expect(text).toContain("Skip if NIFTY is already below 25,000 (it was 25,050)");
-    expect(text).toContain("Stop −35% → ₹40.56 · Target +60% → ₹99.84");
+    expect(text).toContain("Stop −35% → ₹40.55 · Target +60% → ₹99.85");
     expect(text).toContain("time stop 11:50 unless +10% · out by 15:05");
     expect(text).toContain("Why: bearish −0.52 (needs 0.45) on a range-bound day");
     expect(text).toContain("• Opening-range breakout, bearish");

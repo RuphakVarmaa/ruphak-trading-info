@@ -233,8 +233,12 @@ describe("read model for the ₹10k account", () => {
     await base.positions.save(position({ id: "m-yesterday", planId: "plan-m", entryMs: NOW - 86_400_000, status: "CLOSED", qty: 0, exitedQty: 65, exitMs: NOW - 86_000_000, avgExit: 90, exitReason: "STOP", realized: -650, exitCharges: 40 }));
     await small.positions.save(position({ id: "s-open", planId: "plan-s" }));
 
+    // The entry order's limit (here not the plan's) is what the ticket shows.
+    await base.orders.save({ ...order("e-open"), positionId: "m-open", planId: "plan-m", limitPrice: 100.15 });
     const mine = await main.getCopyTickets("2026-10-07");
     expect(mine.map((t) => [t.id, t.status])).toEqual([["m-open", "OPEN"], ["m-closed", "CLOSED"]]);
+    expect(mine[0].entry.limitPrice).toBe(100.15);
+    expect(mine[1].entry.limitPrice).toBeNull();
     expect(mine[0].account.id).toBe("main");
     expect(mine[0].setup?.conviction).toBe(-0.6);
     expect(mine[1].exit?.pnl).toBeCloseTo(1_950 - 28 - 40, 2);
@@ -277,5 +281,34 @@ describe("read model for the ₹10k account", () => {
     await small.settings.update({ killSwitch: true, killReason: "₹10k only" }, "test");
     expect((await tenK.getState()).heartbeat.phase).toBe("KILLED");
     expect((await main.getState()).killReason).toBe("main only");
+  });
+});
+
+describe("source health", () => {
+  it("reads every health key at once and keeps the freshest per source", async () => {
+    const repo = new InMemoryRepository(DEFAULT_CONFIG, NOW);
+    await repo.state.set("health:bing_rss", { ok: true, lastOkMs: NOW - 60_000, lastErrorMs: null });
+    await repo.state.set("health:publisher_rss", { ok: false, lastOkMs: NOW - 600_000, lastErrorMs: NOW, detail: "503" });
+    await repo.state.set("health:yahoo", { ok: true, lastOkMs: NOW, lastErrorMs: null });
+    let inFlight = 0;
+    let most = 0;
+    const get = repo.state.get.bind(repo.state);
+    const state = {
+      ...repo.state,
+      get: async <T,>(key: string) => {
+        inFlight++;
+        most = Math.max(most, inFlight);
+        await new Promise((r) => setTimeout(r, 1));
+        inFlight--;
+        return get<T>(key);
+      },
+    };
+    const model = new ReadModel({ repo: { ...repo, state } as unknown as InMemoryRepository, cfg: DEFAULT_CONFIG, calendar: defaultCalendar, now: NOW, liveTradingEnabled: false, version: "test" });
+    const h = await model.health();
+    // All 11 keys (7 sources) are requested together instead of one after another.
+    expect(most).toBe(11);
+    expect(h.rss).toEqual({ ok: true, lastOkAt: "2026-10-07T10:59:00+05:30" });
+    expect(h.yahoo).toEqual({ ok: true, lastOkAt: "2026-10-07T11:00:00+05:30" });
+    expect(h.gdelt).toBeUndefined();
   });
 });

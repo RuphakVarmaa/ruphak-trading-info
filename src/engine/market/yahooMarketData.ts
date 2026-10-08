@@ -6,7 +6,8 @@
  *   outside the session the incremental refresh stops once data fetched after the last close is in;
  * - cross-assets (US futures, crude, gold, DXY, USDINR, ^TNX, ^VIX, Nikkei, Hang Seng, Shanghai):
  *   5m range=5d at most every `crossTtlMs` (default 2 min), spliced the same way;
- * - daily range=6mo for every symbol once per IST day (or after `dailyTtlMs`).
+ * - daily range=6mo for every symbol once per IST day (or after `dailyTtlMs`); an Indian chart that
+ *   does not have the last completed session yet is fetched again every 5 minutes until it does.
  * At most 4 requests run at once. A failing symbol never fails the snapshot: its stale data is kept
  * and the error is logged. An optional LtpProvider (Groww) overrides the index spot.
  */
@@ -58,6 +59,8 @@ const INDIAN_KEEP_MS = 70 * DAY_MS;
 /** Yahoo publishes the last bars of a session within a few minutes of the 15:30 close. */
 const CLOSE_SETTLE_MS = 10 * MINUTE_MS;
 const CROSS_KEEP_MS = 10 * DAY_MS;
+/** Retry interval for an Indian daily chart that does not have the last completed session yet. */
+const DAILY_LAG_RETRY_MS = 5 * MINUTE_MS;
 
 export interface YahooMarketDataOptions {
   calendar: TradingCalendar;
@@ -155,6 +158,14 @@ export class YahooMarketDataSource implements MarketDataSource {
       if (arr && arr.length > 0) ltp[id] = arr[arr.length - 1].c;
     }
 
+    // When each latest price was traded: Yahoo's regularMarketTime for the newest bar's running close.
+    const asOfMs: Record<string, number> = {};
+    for (const [sym, arr] of Object.entries(candles)) {
+      const last = arr[arr.length - 1];
+      const mt = this.marketTimeMs.get(sym);
+      if (last && mt !== undefined && mt >= last.t) asOfMs[sym] = Math.min(mt, now);
+    }
+
     let freshest = -Infinity;
     if (this.ltp) {
       try {
@@ -163,6 +174,7 @@ export class YahooMarketDataSource implements MarketDataSource {
           const v = live[id];
           if (typeof v === "number" && Number.isFinite(v) && v > 0) {
             ltp[id] = v;
+            asOfMs[INDEX_SYMBOL[id]] = now;
             if (FRESHNESS_INDICES.includes(id)) freshest = now;
           }
         }
@@ -183,7 +195,7 @@ export class YahooMarketDataSource implements MarketDataSource {
     }
     const dataAgeSec = Number.isFinite(freshest) ? Math.max(0, (now - freshest) / 1000) : NO_DATA_AGE_SEC;
 
-    return { t, candles, daily, ltp, dataAgeSec };
+    return { t, candles, daily, ltp, dataAgeSec, asOfMs };
   }
 
   private async doRefresh(): Promise<void> {
@@ -230,13 +242,25 @@ export class YahooMarketDataSource implements MarketDataSource {
       tasks.push({ symbol: sym, interval: "5m", range: "5d", apply: (chart) => this.mergeIntraday(sym, chart, now - CROSS_KEEP_MS, now) });
     }
 
+    // The last completed NSE/BSE session: an Indian daily chart without it is still incomplete.
+    let prevSession: string | null = null;
+    try {
+      prevSession = this.calendar.prevTradingDay(today);
+    } catch {
+      // Outside the calendar's range: no completeness check.
+    }
     for (const sym of [...INDIAN_SYMBOLS, ...CROSS_ASSET_SYMBOLS]) {
       const last = this.lastDailyAttempt.get(sym);
       const loadedToday = this.dailyLoadDate.get(sym) === today;
       const expired = last === undefined || now - last >= this.dailyTtlMs;
       // Failed daily loads are retried at the intraday cadence, successful ones once per day.
       const retryDue = last === undefined || now - last >= this.intradayTtlMs;
-      if (loadedToday ? !expired : !retryDue) continue;
+      // Yahoo can publish a session's daily close hours late (a null close is dropped), so an Indian
+      // chart loaded before then is fetched again every few minutes until that session is in.
+      const lastBar = this.daily.get(sym)?.at(-1);
+      const lagging = INDIAN_SYMBOLS.includes(sym) && prevSession !== null && (!lastBar || istDate(lastBar.t) < prevSession);
+      const laggingRetryDue = lagging && (last === undefined || now - last >= DAILY_LAG_RETRY_MS);
+      if (loadedToday ? !expired && !laggingRetryDue : !retryDue) continue;
       this.lastDailyAttempt.set(sym, now);
       tasks.push({
         symbol: sym,

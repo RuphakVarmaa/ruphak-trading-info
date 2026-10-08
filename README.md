@@ -290,10 +290,11 @@ Adding SENSEX, at production limits (main: 2 open per index and 2 in total, 8 en
 |---|---|---|---|
 | Main (at the money) | 31 trades, −₹15,793 | 51 trades, −₹9,596 | 27 trades, −₹11,600 |
 | ₹10k (one cheaper lot) | 17 trades, −₹4,743 | 19 trades, −₹4,899 | 8 trades, −₹355 |
+| ₹5k (one lot, see below) | 4 trades, −₹2,820 | 5 trades, −₹1,968 | 2 trades, +₹827 |
 
 Main's total loses less with SENSEX only because SENSEX entries took slots from some losing NIFTY trades; SENSEX's own trades lost money. It adds trades, not edge.
 
-Reproduce with `npm run backtest -- --from 2026-07-23 --to 2026-10-08 --index NIFTY --no-events --account small10k` (`--index BOTH` adds SENSEX; add `--band 60-100` for NIFTY's band, `--stop`, `--target`, or `--walk-forward --train-days 28 --test-days 14`). In the dashboard, pick "₹10k" in the backtest form's Account field. Enable it on the engine with `ACCOUNTS="main,small10k"`, then use `/live?account=small10k`.
+Reproduce with `npm run backtest -- --from 2026-07-23 --to 2026-10-08 --index NIFTY --no-events --account small10k` (`--index BOTH` adds SENSEX; `--prod-limits` runs main at the production limits of the second table; add `--band 60-100` for NIFTY's band, `--stop`, `--target`, or `--walk-forward --train-days 28 --test-days 14`). In the dashboard, pick "₹10k" in the backtest form's Account field. Enable it on the engine with `ACCOUNTS` (production runs `main,small10k,small5k`), then use `/live?account=small10k`.
 
 **Paper to live go/no-go:**
 
@@ -303,9 +304,39 @@ Reproduce with `npm run backtest -- --from 2026-07-23 --to 2026-10-08 --index NI
 - The scorer evaluation passes.
 - **At least 6 weeks of forward paper trading** that agrees with the backtest.
 
+### The ₹5,000 account
+
+A third paper book, `small5k` (`src/engine/accounts.ts`), follows main's signals at the same moments, like the ₹10k account, with tighter limits.
+
+- **What it trades:** one lot of the NIFTY or SENSEX option nearest the money in its band: ₹40–60 for NIFTY's 65 units (at most ₹3,900 a lot), searched up to 12 strikes out, and ₹130–222 for SENSEX's 20, searched up to 20 strikes out. ₹222 is the highest premium at which one SENSEX lot plus Groww's round-trip charges stays within ₹4,500 (₹4,440 + ₹57); ₹130 buys the same ₹2,600 a lot as NIFTY's ₹40.
+- **Its own limits:**
+  - one lot and one position at a time across both indices, at most 2 entries a day;
+  - no new entries after a losing trade that day;
+  - daily loss cap ₹1,500 (30%), weekly 40%, and a check that refuses an entry whose stop-out plus charges would break the day's cap;
+  - risk 25% of equity per trade, never more than 30% (₹1,500); one lot may use up to 90% of equity, and free cash must cover the lot plus charges;
+  - stop −35%, target +60% (the ₹10k account's exits).
+- **Paper only, with its own kill switch.** Its book is stored as `PAPER@small5k`; its Telegram alerts are tagged "₹5k". `/live?account=small5k` and `/copy?account=small5k` show it.
+- **Its caps follow current equity.** The daily cap and the per-trade risk cap are 30% of the day's starting equity, never more than ₹1,500. The cheapest lot (₹2,600) loses ₹910 plus ₹53 of charges at its stop, so below about ₹3,200 of equity no entry fits and the account stops trading.
+- **The top of the SENSEX band rarely trades.** On a fresh day a −35% stop-out above about ₹206 a unit, plus charges, breaks ₹1,500, so the loss-room check refuses it; above ₹214 the per-trade cap makes the strike unaffordable and the search moves further out of the money.
+
+Backtest, 23 Jul – 8 Oct 2026 (54 sessions), no news, synthetic option prices, main at production limits:
+
+| Account | NIFTY + SENSEX | NIFTY only |
+|---|---|---|
+| Main (at the money, ₹5 lakh) | 51 trades, 33% hit, −₹9,596, PF 0.79, max drawdown ₹18,802 (3.7%) | 31 trades, 35% hit, −₹15,793, PF 0.53, max drawdown ₹18,121 (3.6%) |
+| ₹10k | 19 trades, 32% hit, −₹4,899, PF 0.43, max drawdown ₹5,010 (50%) | 17 trades, 29% hit, −₹4,743, PF 0.42, max drawdown ₹5,395 (51%) |
+| ₹5k | 5 trades, 20% hit, −₹1,968, PF 0.46, max drawdown ₹2,200 (42%) | 4 trades, 0% hit, −₹2,820, PF 0, max drawdown ₹2,820 (56%) |
+
+- **It loses.** −₹1,968 (39% of the account) with both indices and −₹2,820 (56%) on NIFTY alone. It takes main's signals, which have shown no edge.
+- **It stopped trading on 10 August.** The fifth trade was a stop-out (−₹1,489) that left ₹3,032; from then on no lot fitted the 30% caps, so the account sat out the last 41 sessions. Five trades are far too few to judge anything.
+- **No stable exit settings.** A walk-forward on its exits (28 days of training, 14 of testing, 4 folds, each fold starting from ₹5,000) lost out of sample in 3 of 4 folds: 16 trades, 19% hit rate, −₹3,442, profit factor 0.41. The chosen stop and target changed between folds (stop −30% or −40%, target 50% or 80%) on only 5–13 training trades, so the account keeps the ₹10k account's −35% / +60%.
+- Main's results are identical with and without the ₹10k and ₹5k accounts attached.
+
+Reproduce with `npm run backtest -- --from 2026-07-23 --to 2026-10-08 --index BOTH --no-events --prod-limits --account small5k` (`--index NIFTY` for NIFTY only). Yahoo's window moves every day; `--save-history file` on one run and `--history file` on the next replay the same bars.
+
 ## Copy trading by hand
 
-`/copy` on the dashboard (`/copy?account=small10k` for the ₹10k account) lays out each paper trade so it can be repeated by hand in a personal broker account:
+`/copy` on the dashboard (`/copy?account=small10k` for the ₹10k account, `/copy?account=small5k` for the ₹5k one) lays out each paper trade so it can be repeated by hand in a personal broker account:
 
 - **What to buy:** index, strike, CE or PE, expiry, lots and quantity, the text to search for, and the exchange symbol (copy buttons for both).
 - **Levels:** the engine's fill, stop, target, where the trailing stop starts (and its level once on), time stop and 15:05 square-off, and the rupees lost if the stop hits. A "your fill price" box recomputes the levels from your own price.
@@ -358,7 +389,7 @@ Engine Worker variables (`workers/engine/wrangler.jsonc`):
 | `INDICES` | `NIFTY,SENSEX` | Indices to trade, comma-separated (`NIFTY,SENSEX` trades both; they share the daily limits). Unset or invalid means both. |
 | `MAX_TRADES_PER_DAY` | `8` | Most entries per day across the indices (1 to 12). The stored daily order cap (`maxOrdersPerDay`, 2 orders per trade plus reserve) must be raised with it. The loss-streak halt and daily loss cap still apply. Unset or invalid means 4. |
 | `MAX_OPEN_PER_INDEX` | `2` | Most positions open at once on one index (1 to 3). They share the 4-entries-a-day and loss limits. Unset or invalid means 1. |
-| `ACCOUNTS` | `main,small10k` | Paper accounts to run, comma-separated; main is always on. `main,small10k` adds the ₹10,000 account above, which follows main's signals with its own pinned settings (the variables above do not apply to it). Telegram `/kill` stops every account. |
+| `ACCOUNTS` | `main,small10k,small5k` | Paper accounts to run, comma-separated; main is always on. `small10k` and `small5k` add the ₹10,000 and ₹5,000 accounts above, which follow main's signals with their own pinned settings (the variables above do not apply to them). Each has its own kill switch; Telegram `/kill` stops every account. |
 | `DASHBOARD_URL` | the dashboard's workers.dev URL | Base URL for the links to `/copy` in Telegram alerts; empty means no links. |
 
 Secrets: see `.dev.vars.example`. Every strategy parameter lives in `src/engine/config.ts`, and backtests and live trading read the same values.

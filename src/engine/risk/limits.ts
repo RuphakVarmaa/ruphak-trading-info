@@ -43,15 +43,18 @@ export function riskGates(index: IndexId, side: TradeSide, r: RiskState, cfg: En
     passed: cooled,
     detail: cooled ? "no recent stop-out" : `stopped out ${Math.round((r.nowMs - (lastStop ?? 0)) / MINUTE_MS)} min ago`,
   });
-  const openHere = r.openPositions.filter((p) => p.index === index).length;
+  // An entry order that has not filled yet may still fill: it holds a slot like an open position.
+  const pending = r.pendingEntries ?? [];
+  const openHere = r.openPositions.filter((p) => p.index === index).length + pending.filter((p) => p.index === index).length;
   out.push({ gate: "per_index", label: "Open positions on this index", passed: openHere < cfg.sizing.maxOpenPerIndex, detail: `${openHere} of ${cfg.sizing.maxOpenPerIndex}` });
+  const openAll = r.openPositions.length + pending.length;
   out.push({
     gate: "max_positions",
     label: "Open positions overall",
-    passed: r.openPositions.length < r.settings.maxOpenPositions,
-    detail: `${r.openPositions.length} of ${r.settings.maxOpenPositions}`,
+    passed: openAll < r.settings.maxOpenPositions,
+    detail: `${openAll} of ${r.settings.maxOpenPositions}`,
   });
-  const entries = r.entriesToday.NIFTY + r.entriesToday.SENSEX;
+  const entries = r.entriesToday.NIFTY + r.entriesToday.SENSEX + pending.length;
   out.push({ gate: "trades_today", label: "Trades today", passed: entries < cfg.sizing.maxTradesPerDay, detail: `${entries} of ${cfg.sizing.maxTradesPerDay}` });
   out.push({
     gate: "orders_today",
@@ -61,7 +64,7 @@ export function riskGates(index: IndexId, side: TradeSide, r: RiskState, cfg: En
     detail: `${r.ordersToday} of ${r.settings.maxOrdersPerDay}`,
   });
   // NIFTY and SENSEX move together: opposite positions just pay theta twice.
-  const opposite = r.openPositions.some((p) => p.index !== index && p.side !== side);
+  const opposite = [...r.openPositions, ...pending].some((p) => p.index !== index && p.side !== side);
   out.push({ gate: "no_opposite", label: "No opposite position on the other index", passed: !opposite, detail: opposite ? "other index is positioned the other way" : "ok" });
   return out;
 }

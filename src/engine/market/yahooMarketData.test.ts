@@ -282,3 +282,55 @@ describe("YahooMarketDataSource", () => {
     expect(yahoo.calls.length).toBe(32);
   });
 });
+
+describe("quote times (DF-5)", () => {
+  it("are the source's last trade time, or the fetch time of a broker LTP", async () => {
+    const t = istAt("2026-10-09", "10:00");
+    const bars: Candle[] = [{ t: istAt("2026-10-09", "09:50"), o: 1, h: 1, l: 1, c: 1, v: 0 }, { t: istAt("2026-10-09", "09:55"), o: 2, h: 2, l: 2, c: 2, v: 0 }];
+    const traded = istAt("2026-10-09", "09:57") + 30_000;
+    const yahoo = fakeYahoo({ override: (c) => (c.interval === "5m" && (c.symbol === "BZ=F" || c.symbol === "^BSESN") ? chartBody(c.symbol, bars, traded / 1000) : null) });
+    const c = clock(t);
+    const src = new YahooMarketDataSource({ calendar: cal, fetchImpl: yahoo.fetchImpl, now: c.now, ltp: async () => ({ NIFTY: 25_300 }) });
+    const snap = await src.snapshot(t);
+    expect(snap.asOfMs?.["BZ=F"]).toBe(traded);
+    expect(snap.asOfMs?.["^BSESN"]).toBe(traded);
+    // NIFTY's price is Groww's LTP fetched now.
+    expect(snap.asOfMs?.["^NSEI"]).toBe(t);
+  });
+});
+
+describe("a daily chart that lags the previous session", () => {
+  // At 00:30 IST on 9 Oct Yahoo's daily chart still had no close for 8 Oct (the bar is dropped).
+  const bar = (date: string, c: number): Candle => ({ t: istAt(date, "09:15"), o: c, h: c, l: c, c, v: 0 });
+  const upTo7 = [bar("2026-10-05", 24_800), bar("2026-10-06", 24_900), bar("2026-10-07", 25_000)];
+
+  function setup() {
+    let published = false;
+    const yahoo = fakeYahoo({ override: (c) => (c.interval === "1d" && c.symbol === "^NSEI" ? chartBody("^NSEI", published ? [...upTo7, bar("2026-10-08", 25_100)] : upTo7) : null) });
+    const c = clock(istAt("2026-10-09", "00:30"));
+    const src = new YahooMarketDataSource({ calendar: cal, fetchImpl: yahoo.fetchImpl, now: c.now });
+    const dailyCalls = () => yahoo.calls.filter((x) => x.symbol === "^NSEI" && x.interval === "1d").length;
+    const lastDaily = async () => (await src.snapshot(c.now())).daily["^NSEI"]?.at(-1)?.c;
+    return { c, dailyCalls, lastDaily, publish: () => (published = true) };
+  }
+
+  it("is fetched again every few minutes until the previous trading day's bar is in", async () => {
+    const s = setup();
+    expect(await s.lastDaily()).toBe(25_000);
+    expect(s.dailyCalls()).toBe(1);
+    s.c.advance(2 * 60_000);
+    await s.lastDaily();
+    expect(s.dailyCalls()).toBe(1);
+    s.c.advance(4 * 60_000);
+    expect(await s.lastDaily()).toBe(25_000);
+    expect(s.dailyCalls()).toBe(2);
+    s.publish();
+    s.c.advance(6 * 60_000);
+    expect(await s.lastDaily()).toBe(25_100);
+    expect(s.dailyCalls()).toBe(3);
+    // Complete now: back to once a day.
+    s.c.advance(6 * 60_000);
+    await s.lastDaily();
+    expect(s.dailyCalls()).toBe(3);
+  });
+});

@@ -122,6 +122,11 @@ export interface MarketSnapshot {
   ltp: Partial<Record<FeatureIndexId, number>>;
   /** Age in seconds of the freshest index observation at `t`. */
   dataAgeSec: number;
+  /**
+   * When each symbol's latest price was traded (epoch ms): Yahoo's regularMarketTime, or the fetch
+   * time of a broker LTP that replaced it. Absent in replays.
+   */
+  asOfMs?: Partial<Record<string, number>>;
 }
 
 // ---------------------------------------------------------------------------
@@ -768,6 +773,11 @@ export interface RiskState {
   lastStopOutMs: Partial<Record<IndexId, number>>;
   /** Free cash for new premium when sizing from current equity (small accounts). */
   cashRupees?: number;
+  /**
+   * Entry orders sent but not filled yet (a resting limit, a live order still at the exchange). Each
+   * may still fill, so it holds a position slot and counts as a trade today.
+   */
+  pendingEntries?: { index: IndexId; side: TradeSide }[];
 }
 
 export interface Heartbeat {
@@ -812,8 +822,9 @@ export interface QuoteRow {
   key: string;
   label: string;
   price: number;
-  change: number;
-  changePct: number;
+  /** Versus the previous close; null when that close is unknown (never an invented 0). */
+  change: number | null;
+  changePct: number | null;
   asOf: number;
 }
 

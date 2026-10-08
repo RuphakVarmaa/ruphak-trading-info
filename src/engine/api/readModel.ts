@@ -49,6 +49,7 @@ import {
   type IndexId,
   type IndicatorView,
   type OptionContract,
+  type Order,
   type PlanDecision,
   type Position,
   type ScoredEvent,
@@ -234,10 +235,11 @@ export class ReadModel {
 
   async health(): Promise<Partial<Record<SourceName, SourceHealthView>>> {
     const out: Partial<Record<SourceName, SourceHealthView>> = {};
-    for (const name of SOURCE_NAMES) {
+    // Every key at once (11 sequential D1 reads made /state take about 3 s); same choice as before.
+    const read = await Promise.all(SOURCE_NAMES.map((name) => Promise.all(HEALTH_KEYS[name].map((key) => this.ctx.repo.state.get<SourceHealth>(key)))));
+    for (const [i, name] of SOURCE_NAMES.entries()) {
       let best: SourceHealth | null = null;
-      for (const key of HEALTH_KEYS[name]) {
-        const h = await this.ctx.repo.state.get<SourceHealth>(key);
+      for (const h of read[i]) {
         if (h && (!best || (h.lastOkMs ?? 0) > (best.lastOkMs ?? 0))) best = h;
       }
       if (best) out[name] = { ok: best.ok, lastOkAt: best.lastOkMs ? istIso(best.lastOkMs) : null, ...(best.detail ? { detail: best.detail } : {}) };
@@ -493,6 +495,9 @@ export class ReadModel {
     const positions = new Map<string, Position>();
     for (const p of lists.flat()) if (p.entryMs >= from && p.entryMs <= to && !positions.has(p.id)) positions.set(p.id, p);
     const account = this.ctx.account ?? { id: "main", label: "Main account", shortLabel: "Main", paperOnly: false, capitalRupees: cfg.capitalRupees };
+    // Each position's entry order, for the limit price it was sent with.
+    const entryOrders = new Map<string, Order>();
+    for (const o of await repo.orders.between(from, to)) if (o.reason === "ENTRY" && o.positionId && !entryOrders.has(o.positionId)) entryOrders.set(o.positionId, o);
     const out: CopyTicketView[] = [];
     for (const p of positions.values()) {
       const plan = await repo.plans.get(p.planId);
@@ -502,7 +507,7 @@ export class ReadModel {
         const t = plan?.t ?? p.entryMs;
         fallbackIndicators = (await repo.decisions.between(t - MINUTE_MS, t + MINUTE_MS)).find((d) => d.plan?.id === p.planId)?.indicators ?? null;
       }
-      out.push(copyTicketView({ position: p, plan, account, timeStopMinPnlPct: cfg.exits.timeStopMinPnlPct, fallbackIndicators }));
+      out.push(copyTicketView({ position: p, plan, account, timeStopMinPnlPct: cfg.exits.timeStopMinPnlPct, fallbackIndicators, entryOrder: entryOrders.get(p.id) ?? null }));
     }
     return out.sort((a, b) => (a.status === b.status ? Date.parse(b.entry.at) - Date.parse(a.entry.at) : a.status === "OPEN" ? -1 : 1));
   }

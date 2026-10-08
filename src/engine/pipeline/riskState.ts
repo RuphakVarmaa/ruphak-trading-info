@@ -2,7 +2,20 @@
 import { istDate, istMidnight, istWeekStart } from "../clock";
 import type { EngineConfig } from "../config";
 import type { Repository } from "../ports";
-import type { DayLedger, EngineSettings, IndexId, RiskState, TradingMode } from "../types";
+import type { DayLedger, EngineSettings, IndexId, Order, RiskState, TradingMode } from "../types";
+import { TERMINAL_ORDER_STATUSES } from "../types";
+
+type PendingEntry = NonNullable<RiskState["pendingEntries"]>[number];
+
+/** The slot an unfilled entry order holds: its index and direction (calls are bullish). */
+export function pendingEntry(o: Pick<Order, "contract">): PendingEntry {
+  return { index: o.contract.index, side: o.contract.type === "CE" ? "BULL" : "BEAR" };
+}
+
+/** True when an entry order was accepted but has no fill yet, so it may still fill. */
+export function isPendingEntry(o: Pick<Order, "reason" | "status" | "filledQty">): boolean {
+  return o.reason === "ENTRY" && o.filledQty === 0 && !TERMINAL_ORDER_STATUSES.includes(o.status);
+}
 
 export function newLedger(date: string, mode: TradingMode, startEquity: number, nowMs: number): DayLedger {
   return {
@@ -53,6 +66,8 @@ export async function loadRiskState(repo: Repository, cfg: EngineConfig, setting
   for (const p of closedToday) {
     if (p.exitReason === "STOP" && p.exitMs !== undefined && (lastStopOutMs[p.index] ?? 0) < p.exitMs) lastStopOutMs[p.index] = p.exitMs;
   }
+  // Entries still working without a fill: a partly filled one already has its position.
+  const pendingEntries = (await repo.orders.open(mode)).filter(isPendingEntry).map(pendingEntry);
   const state: RiskState = {
     nowMs,
     settings,
@@ -63,6 +78,7 @@ export async function loadRiskState(repo: Repository, cfg: EngineConfig, setting
     ordersToday: orders.length,
     entriesToday,
     lastStopOutMs,
+    pendingEntries,
   };
   if (cfg.sizing.useCurrentEquity) {
     // Small accounts size from what they have: capital plus prior net P&L, and only the cash not

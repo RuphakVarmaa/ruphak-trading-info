@@ -27,7 +27,7 @@ import type {
 import { MARKET_SYMBOLS } from "../types";
 import { haltReason } from "../risk/limits";
 import { submitEntry } from "./execution";
-import { loadRiskState } from "./riskState";
+import { isPendingEntry, loadRiskState, pendingEntry } from "./riskState";
 
 export interface TradingCycleOptions {
   /** Disable the event layer (no-events baseline in backtests). */
@@ -67,6 +67,9 @@ const QUOTE_ROWS: { key: string; label: string; symbol: string }[] = [
   { key: "SPFUT", label: "S&P FUT", symbol: MARKET_SYMBOLS.ES },
 ];
 
+/** Ticker rows whose instrument trades one session per IST date (5-minute bars can stand in for a daily close). */
+const IST_SESSION_KEYS = new Set(["NIFTY", "SENSEX", "INDIAVIX", "BANKNIFTY"]);
+
 /** Price, change versus the previous daily close, and observation time for the dashboard ticker. */
 export function quoteRows(snap: MarketSnapshot): QuoteRow[] {
   const out: QuoteRow[] = [];
@@ -80,15 +83,30 @@ export function quoteRows(snap: MarketSnapshot): QuoteRow[] {
     // Previous close: the last daily bar from an IST date before the latest observation's date.
     const obsDate = istDate(last ? last.t : snap.t);
     let prev: number | undefined;
+    let prevDate = "";
     for (let i = daily.length - 1; i >= 0; i--) {
       if (istDate(daily[i].t) < obsDate) {
         prev = daily[i].c;
+        prevDate = istDate(daily[i].t);
         break;
       }
     }
-    const change = prev !== undefined ? price - prev : 0;
-    const asOf = last ? Math.min(snap.t, last.t + 5 * MINUTE_MS) : snap.t;
-    out.push({ key: r.key, label: r.label, price, change, changePct: prev ? (change / prev) * 100 : 0, asOf });
+    // Indian indices trade one session per IST date: when Yahoo's daily chart lags (it publishes a
+    // session's daily close late), the last 5-minute bar of the newer session is its close.
+    if (IST_SESSION_KEYS.has(r.key)) {
+      for (let i = intraday.length - 1; i >= 0; i--) {
+        const d = istDate(intraday[i].t);
+        if (d >= obsDate) continue;
+        if (d > prevDate) prev = intraday[i].c;
+        break;
+      }
+    }
+    // Unknown previous close: no change at all (null), never an invented 0.00%.
+    const change = prev !== undefined && prev > 0 ? price - prev : null;
+    // When the price was traded (the source's time); without one (replays), the bar's end.
+    const traded = snap.asOfMs?.[r.symbol];
+    const asOf = Math.min(snap.t, traded ?? (last ? last.t + 5 * MINUTE_MS : snap.t));
+    out.push({ key: r.key, label: r.label, price, change, changePct: change !== null && prev ? (change / prev) * 100 : null, asOf });
   }
   return out;
 }
@@ -142,7 +160,7 @@ export async function runTradingCycle(deps: EngineDeps, opts: TradingCycleOption
         if (position) {
           risk.openPositions.push(position);
           risk.entriesToday[index] += 1;
-        }
+        } else if (isPendingEntry(order)) (risk.pendingEntries ??= []).push(pendingEntry(order));
         logger.info("entry", { index, symbol: decision.plan.contract.tradingSymbol, qty: decision.plan.qty, status: order.status });
       }
     } catch (err) {

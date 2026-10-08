@@ -221,3 +221,34 @@ describe("backtest with the ₹10k account following main", () => {
     expect(small.notes.some((n) => n.includes("small10k"))).toBe(true);
   }, 60_000);
 });
+
+describe("backtest with the ₹5k account following main", () => {
+  it("leaves main's and the ₹10k account's results unchanged and books the ₹5k account from ₹5,000", async () => {
+    const input = { cfg: permissive, from: "2026-10-01", to: "2026-10-07", candles: fixtures.candles, daily: fixtures.daily, noEvents: true };
+    const params = { from: input.from, to: input.to, index: "BOTH" as const, thresholdDelta: 0, stopPct: 35, targetPct: 60, noEvents: true };
+    const tenK = followerConfigForParams(permissive, "small10k", params);
+    const fiveK = followerConfigForParams(permissive, "small5k", params);
+    expect(fiveK.capitalRupees).toBe(5_000);
+    expect(fiveK.exits).toMatchObject({ stopPct: -35, targetPct: 60 });
+    const one = await runBacktestAccounts({ ...input, followers: [{ account: "small10k", cfg: tenK }] });
+    const both = await runBacktestAccounts({ ...input, followers: [{ account: "small10k", cfg: tenK }, { account: "small5k", cfg: fiveK }] });
+    expect(both.main.trades.length).toBeGreaterThan(0);
+    expect(both.main.trades).toEqual(one.main.trades);
+    expect(both.main.ledgers).toEqual(one.main.ledgers);
+    expect(both.main.summary).toEqual(one.main.summary);
+    expect(both.followers.small10k!.trades).toEqual(one.followers.small10k!.trades);
+    const s = both.followers.small5k!;
+    expect(s.trades.length).toBeGreaterThan(0);
+    expect(s.ledgers[0].startEquity).toBe(5_000);
+    for (const t of s.trades) expect(t.qty).toBe(fiveK.indexSpecs[t.index].lotSize);
+    // One position at a time, at most 2 entries and 1 losing trade a day.
+    const sorted = [...s.trades].sort((a, b) => a.entryMs - b.entryMs);
+    for (let i = 1; i < sorted.length; i++) expect(sorted[i].entryMs).toBeGreaterThanOrEqual(sorted[i - 1].exitMs);
+    for (const l of s.ledgers) {
+      expect(l.trades).toBeLessThanOrEqual(2);
+      expect(l.losses).toBeLessThanOrEqual(1);
+    }
+    expect(s.summary.netPnl).toBeCloseTo(s.trades.reduce((sum, t) => sum + t.pnl, 0), 1);
+    expect(s.notes.some((n) => n.includes("small5k"))).toBe(true);
+  }, 120_000);
+});
