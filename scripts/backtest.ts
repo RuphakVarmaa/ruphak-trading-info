@@ -4,7 +4,10 @@
  *   npm run backtest -- --from 2026-08-10 --to 2026-10-07
  *   npm run backtest -- --from 2026-08-10 --to 2026-10-07 --placebo           # + no-events and shuffled-events baselines
  *   npm run backtest -- --from 2026-07-01 --to 2026-10-07 --walk-forward      # out-of-sample folds (slow)
+ *   npm run backtest -- --from 2026-07-23 --to 2026-10-08 --index NIFTY --no-events --account small10k   # + the ₹10k account
+ *   npm run backtest -- ... --account small10k --walk-forward --train-days 28 --test-days 14             # fit its exits out of sample
  *   options: --index NIFTY|SENSEX|BOTH  --events .cache/events/scored.json  --no-events
+ *            --account small10k (follower account; --stop/--target/--band 40-70 then apply to it)
  *            --threshold-delta 0.1  --stop 30  --target 50  --seed 7  --out reports/name.json
  *            --gain 1.2  --min-edge 0.10  --min-evi 0.35  --min-active 0.30  --kem 1.0   (strategy overrides)
  *
@@ -15,8 +18,9 @@
 import type { BacktestParams } from "../src/engine/api-types";
 import { loadYahooHistory, type MarketHistory } from "../src/engine/backtest/history";
 import { attribution } from "../src/engine/backtest/metrics";
-import { configForParams, runBacktest, type BacktestOutput } from "../src/engine/backtest/runBacktest";
-import { makeFolds, walkForward } from "../src/engine/backtest/walkForward";
+import { accountConfig, accountSpec, parseAccountId } from "../src/engine/accounts";
+import { configForParams, runBacktest, runBacktestAccounts, type BacktestOutput } from "../src/engine/backtest/runBacktest";
+import { followerExitGrid, makeFolds, walkForward, walkForwardFollower } from "../src/engine/backtest/walkForward";
 import { addDays, istDate } from "../src/engine/clock";
 import { DEFAULT_CONFIG, withOverrides } from "../src/engine/config";
 import type { Candle, ScoredEvent } from "../src/engine/types";
@@ -45,10 +49,23 @@ const opt = (name: string): number | undefined => {
   if (!Number.isFinite(v)) fail(`--${name} must be a number`);
   return v;
 };
-const cfg = withOverrides(configForParams(DEFAULT_CONFIG, params), {
+const account = parseAccountId(str(args, "account", "main")) ?? fail("--account must be main or small10k");
+const follows = account !== "main";
+// With a follower account, --stop/--target apply to the follower; main keeps its default exits.
+const mainParams = follows ? { ...params, stopPct: Math.abs(DEFAULT_CONFIG.exits.stopPct), targetPct: DEFAULT_CONFIG.exits.targetPct } : params;
+const cfg = withOverrides(configForParams(DEFAULT_CONFIG, mainParams), {
   conviction: { gain: opt("gain"), minActiveWeight: opt("min-active") },
   gates: { minEdgeRatio: opt("min-edge"), minExpectedVsImplied: opt("min-evi"), kEM: opt("kem") },
 });
+const band = str(args, "band", undefined);
+const bandMatch = band ? /^(\d+(?:\.\d+)?)-(\d+(?:\.\d+)?)$/.exec(band) : null;
+if (band && !bandMatch) fail("--band must look like 40-70");
+const followerCfg = follows
+  ? withOverrides(accountConfig(cfg, account), {
+      exits: { stopPct: args.stop !== undefined ? -Math.abs(num(args, "stop", 35)) : undefined, targetPct: args.target !== undefined ? num(args, "target", 60) : undefined },
+      selection: bandMatch ? { minPremium: Number(bandMatch[1]), maxPremium: Number(bandMatch[2]) } : {},
+    })
+  : null;
 
 /** The strategy settings a report was produced with. */
 function strategyOf(c: typeof cfg) {
@@ -122,6 +139,15 @@ async function main() {
     const folds = makeFolds(from, to, num(args, "train-days", 56), num(args, "test-days", 14));
     if (folds.length === 0) fail("Range too short for walk-forward folds (needs train + test days).");
     console.log(`Walk-forward over ${folds.length} fold(s); only out-of-sample results count.`);
+    if (followerCfg) {
+      console.log(`Fitting the ${accountSpec(account).label}'s exits (${followerExitGrid().length} combos); main's settings stay fixed.`);
+      const wf = await walkForwardFollower(base, cfg, account, followerCfg, folds, followerExitGrid(), (m) => console.log(m));
+      console.log(`\n=== Walk-forward out-of-sample: ${accountSpec(account).label} ===`);
+      console.log(table([["trades", "hit", "exp %", "net ₹", "PF", "Sharpe", "maxDD %"], [wf.oos.trades, wf.oos.hitRate, wf.oos.expectancyPct, wf.oos.netPnl, wf.oos.profitFactor, wf.oos.sharpe, wf.oos.maxDrawdownPct]]));
+      const path = writeJson(str(args, "out", `reports/walkforward-${account}-${from}-${to}.json`)!, { params, account, selection: followerCfg.selection, folds: wf.folds, oos: wf.oos });
+      console.log(`\nSaved ${path}`);
+      return;
+    }
     const wf = await walkForward(base, cfg, folds, undefined, (m) => console.log(m));
     console.log("\n=== Walk-forward out-of-sample ===");
     console.log(table([["trades", "hit", "exp %", "net ₹", "PF", "Sharpe", "maxDD %"], [wf.oos.trades, wf.oos.hitRate, wf.oos.expectancyPct, wf.oos.netPnl, wf.oos.profitFactor, wf.oos.sharpe, wf.oos.maxDrawdownPct]]));
@@ -131,15 +157,24 @@ async function main() {
   }
 
   const t0 = Date.now();
-  const main = await runBacktest({ ...base, cfg, from, to, noEvents: params.noEvents }, (day, p) => process.stdout.write(`\r${day} ${(p * 100).toFixed(0)}%   `));
+  const progress = (day: string, p: number) => process.stdout.write(`\r${day} ${(p * 100).toFixed(0)}%   `);
+  const runs = followerCfg
+    ? await runBacktestAccounts({ ...base, cfg, from, to, noEvents: params.noEvents, followers: [{ account, cfg: followerCfg }] }, progress)
+    : { main: await runBacktest({ ...base, cfg, from, to, noEvents: params.noEvents }, progress), followers: {} };
+  const main = runs.main;
   process.stdout.write("\n");
-  report("Strategy", main);
+  report(followerCfg ? "Main account" : "Strategy", main);
   const out: Record<string, unknown> = {
     params,
     config: strategyOf(cfg),
     history: history.source,
     strategy: { summary: main.summary, trades: main.trades, ledgers: main.ledgers, attribution: main.attribution, notes: main.notes },
   };
+  const follower = runs.followers[account as keyof typeof runs.followers];
+  if (followerCfg && follower) {
+    report(accountSpec(account).label, follower);
+    out.account = { id: account, config: strategyOf(followerCfg), selection: followerCfg.selection, summary: follower.summary, trades: follower.trades, ledgers: follower.ledgers, notes: follower.notes };
+  }
 
   if (args.placebo) {
     const seed = num(args, "seed", 7);

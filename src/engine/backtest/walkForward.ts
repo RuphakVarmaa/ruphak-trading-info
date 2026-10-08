@@ -3,11 +3,12 @@
  * roll forward, and report only out-of-sample results. Grids stay small (<= 50 combos) to limit
  * overfitting; placebo runs (no events, shuffled event times) give the baseline an edge must beat.
  */
+import type { AccountId } from "../accounts";
 import { addDays } from "../clock";
 import { withOverrides, type DeepPartial, type EngineConfig } from "../config";
 import type { DayLedger, TradeRecord } from "../types";
 import { summarize, type Summary } from "./metrics";
-import { runBacktest, type BacktestInput } from "./runBacktest";
+import { runBacktest, runBacktestAccounts, type BacktestInput } from "./runBacktest";
 
 export interface Fold {
   trainFrom: string;
@@ -95,4 +96,59 @@ export async function walkForward(
     onProgress?.(`fold ${fold.testFrom}..${fold.testTo}: ${chosen.name} -> OOS trades ${test.summary.trades}, net ₹${test.summary.netPnl}`);
   }
   return { folds: results, oos: summarize(oosTrades, oosLedgers, base.capitalRupees) };
+}
+
+/**
+ * Exit grid for a follower account (12 combos): stop x target x time-stop floor. Main's signals
+ * and settings stay fixed; only how the follower's single lot is exited is fitted.
+ */
+export function followerExitGrid(): GridPoint[] {
+  const out: GridPoint[] = [];
+  for (const stopPct of [-30, -40, -50]) {
+    for (const targetPct of [50, 80]) {
+      for (const timeStopMinPnlPct of [0, 10]) {
+        out.push({ name: `stop${stopPct} target${targetPct} timeFloor${timeStopMinPnlPct}`, overrides: { exits: { stopPct, targetPct, timeStopMinPnlPct } } });
+      }
+    }
+  }
+  return out;
+}
+
+/**
+ * Walk-forward for a follower account: main runs with `mainCfg` throughout; on each training window
+ * the follower's grid point with the best objective is chosen and then tested on the next window.
+ * Only the follower's out-of-sample results are reported.
+ */
+export async function walkForwardFollower(
+  input: Omit<BacktestInput, "from" | "to" | "cfg" | "followers">,
+  mainCfg: EngineConfig,
+  account: AccountId,
+  followerBase: EngineConfig,
+  folds: Fold[],
+  grid: GridPoint[] = followerExitGrid(),
+  onProgress?: (msg: string) => void,
+  minTrades = 5,
+): Promise<WalkForwardResult> {
+  const results: WalkForwardResult["folds"] = [];
+  const oosTrades: TradeRecord[] = [];
+  const oosLedgers: DayLedger[] = [];
+  const run = async (g: GridPoint, from: string, to: string) => {
+    const cfg = withOverrides(followerBase, g.overrides);
+    const out = await runBacktestAccounts({ ...input, cfg: mainCfg, from, to, followers: [{ account, cfg }] });
+    return out.followers[account]!;
+  };
+  for (const fold of folds) {
+    let best: { g: GridPoint; s: Summary; score: number } | null = null;
+    for (const g of grid) {
+      const out = await run(g, fold.trainFrom, fold.trainTo);
+      const score = objective(out.summary, minTrades);
+      if (!best || score > best.score) best = { g, s: out.summary, score };
+    }
+    const test = await run(best!.g, fold.testFrom, fold.testTo);
+    oosTrades.push(...test.trades);
+    oosLedgers.push(...test.ledgers);
+    results.push({ fold, chosen: best!.g.name, train: best!.s, test: test.summary });
+    onProgress?.(`fold ${fold.testFrom}..${fold.testTo}: ${best!.g.name} -> OOS trades ${test.summary.trades}, net ₹${test.summary.netPnl}`);
+  }
+  return { folds: results, oos: summarize(oosTrades, oosLedgers, followerBase.capitalRupees) };
 }

@@ -5,7 +5,7 @@ import { toNumeric } from "../events/taxonomy";
 import { loadMarketFixtures } from "../testing/fixtures";
 import type { DayLedger, ScoredEvent, TradeRecord } from "../types";
 import { attribution, equityPath, maxDrawdown, profitFactor, summarize } from "./metrics";
-import { BacktestRun, configForParams, runBacktest, seededRandom, shuffleEventTimes, toBacktestResult } from "./runBacktest";
+import { BacktestRun, configForParams, followerConfigForParams, runBacktest, runBacktestAccounts, seededRandom, shuffleEventTimes, toBacktestResult } from "./runBacktest";
 import { defaultGrid, makeFolds } from "./walkForward";
 
 const fixtures = loadMarketFixtures();
@@ -198,4 +198,23 @@ describe("metrics", () => {
     });
     expect(r).toMatchObject({ runId: "run1", status: "RUNNING", progress: 0.25, summary: null, trades: [], startedAt: "2026-10-07T18:00:00+05:30" });
   });
+});
+
+describe("backtest with the ₹10k account following main", () => {
+  it("leaves main's results unchanged and books the follower separately from ₹10,000", async () => {
+    const input = { cfg: permissive, from: "2026-10-05", to: "2026-10-07", candles: fixtures.candles, daily: fixtures.daily, noEvents: true };
+    const alone = await runBacktest(input);
+    const follower = followerConfigForParams(permissive, "small10k", { from: input.from, to: input.to, index: "NIFTY", thresholdDelta: 0, stopPct: 40, targetPct: 80, noEvents: true });
+    expect(follower.exits.stopPct).toBe(-40);
+    expect(follower.exits.targetPct).toBe(80);
+    expect(follower.capitalRupees).toBe(10_000);
+    const both = await runBacktestAccounts({ ...input, followers: [{ account: "small10k", cfg: follower }] });
+    expect(both.main.summary).toEqual(alone.summary);
+    const small = both.followers.small10k!;
+    expect(small.trades.length).toBeGreaterThan(0);
+    for (const t of small.trades) expect(t.qty).toBe(65);
+    expect(small.ledgers[0].startEquity).toBe(10_000);
+    expect(small.summary.netPnl).toBeCloseTo(small.trades.reduce((s, t) => s + t.pnl, 0), 1);
+    expect(small.notes.some((n) => n.includes("small10k"))).toBe(true);
+  }, 60_000);
 });

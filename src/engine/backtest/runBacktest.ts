@@ -6,13 +6,15 @@
  */
 import { SIGNAL_SOURCE_LABELS, type BacktestParams, type BacktestResult, type BacktestTrade } from "../api-types";
 import { TradingCalendar } from "../calendar/calendar";
+import { accountConfig, type AccountId } from "../accounts";
 import { MINUTE_MS, addDays, istAt, istDate, istIso } from "../clock";
-import { makeConfig, type EngineConfig } from "../config";
+import { makeConfig, withOverrides, type EngineConfig } from "../config";
 import { YAHOO_LAG_MS } from "../market/replayMarketData";
+import { runFollowerEntries } from "../pipeline/accountCycle";
 import { runEndOfDay } from "../pipeline/dayLifecycle";
 import { runPositionCycle } from "../pipeline/positionCycle";
 import { runTradingCycle } from "../pipeline/tradingCycle";
-import { createReplayDeps, type ReplayDeps } from "../testing/replayHarness";
+import { createFollowerDeps, createReplayDeps, type ReplayDeps } from "../testing/replayHarness";
 import { MARKET_SYMBOLS, REGIMES, type Candle, type DayLedger, type IndexId, type Regime, type ScoredEvent, type TradeRecord } from "../types";
 import { attribution, equityPath, summarize, type SourceStats, type Summary } from "./metrics";
 
@@ -36,6 +38,8 @@ export interface BacktestInput {
   /** Market data publication lag (default Yahoo's ~90 s). */
   lagMs?: number;
   calendar?: TradingCalendar;
+  /** Accounts that follow main's signals with their own config and book (e.g. the ₹10k account). */
+  followers?: { account: AccountId; cfg: EngineConfig }[];
 }
 
 export interface BacktestOutput {
@@ -86,6 +90,15 @@ export function configForParams(base: EngineConfig, p: BacktestParams): EngineCo
   });
 }
 
+/**
+ * Config for a follower account in a backtest: the account's config on top of `base`, with the
+ * run's stop and target applied to the follower (main keeps its own exits).
+ */
+export function followerConfigForParams(base: EngineConfig, account: AccountId, p: BacktestParams): EngineConfig {
+  const cfg = accountConfig(base, account);
+  return withOverrides(cfg, { exits: { stopPct: -Math.abs(p.stopPct || Math.abs(cfg.exits.stopPct)), targetPct: Math.abs(p.targetPct || cfg.exits.targetPct) } });
+}
+
 export class BacktestRun {
   readonly days: string[];
   readonly skippedDays: string[] = [];
@@ -96,6 +109,7 @@ export class BacktestRun {
   private readonly delayMs: number;
   private next = 0;
   private decisionCount = 0;
+  private readonly followerDeps = new Map<AccountId, ReplayDeps>();
 
   constructor(private readonly input: BacktestInput) {
     this.calendar = input.calendar ?? new TradingCalendar();
@@ -122,6 +136,7 @@ export class BacktestRun {
       calendar: this.calendar,
       lagMs: input.lagMs ?? YAHOO_LAG_MS,
     });
+    for (const f of input.followers ?? []) this.followerDeps.set(f.account, createFollowerDeps(this.deps, f.cfg, f.account));
   }
 
   get done(): boolean {
@@ -156,10 +171,13 @@ export class BacktestRun {
       const events = this.visible(t);
       const r = await runTradingCycle(deps, { events, noEvents: this.input.noEvents, decisionEveryMs: this.stepMs, snapshotEveryMs: 30 * MINUTE_MS });
       this.decisionCount += r.decisions.length;
+      for (const f of this.followerDeps.values()) await runFollowerEntries(f, r, { decisionEveryMs: this.stepMs });
       await runPositionCycle(deps, { convictions: r.convictions, events });
+      for (const f of this.followerDeps.values()) await runPositionCycle(f, { convictions: r.convictions, events });
     }
     deps.clock.set(istAt(day, "16:00"));
     await runEndOfDay(deps);
+    for (const f of this.followerDeps.values()) await runEndOfDay(f, { grade: false, performance: false });
     return day;
   }
 
@@ -171,18 +189,22 @@ export class BacktestRun {
     return this.result();
   }
 
-  async result(): Promise<BacktestOutput> {
-    const { deps, input } = this;
+  /** Result for main, or for a follower account when `account` is given. */
+  async result(account?: AccountId): Promise<BacktestOutput> {
+    const { input } = this;
+    const deps = account && account !== "main" ? this.followerDeps.get(account) : this.deps;
+    if (!deps) throw new Error(`no follower account ${account} in this backtest`);
     const fromMs = istAt(input.from, "00:00");
     const toMs = istAt(addDays(input.to, 1), "00:00");
     const trades = (await deps.repo.trades.between(fromMs, toMs, "BACKTEST")).sort((a, b) => a.entryMs - b.entryMs);
     const ledgers = (await deps.repo.ledger.range(input.from, input.to, "BACKTEST")).sort((a, b) => a.date.localeCompare(b.date));
-    const start = input.cfg.capitalRupees;
+    const start = deps.cfg.capitalRupees;
     const path = equityPath(ledgers, start);
     const notes: string[] = [
       "Option prices are synthetic (Black-Scholes on India VIX with a modelled spread); real-price share is 0 until Groww option candles are wired in.",
       `Decisions every ${Math.round(this.stepMs / MINUTE_MS)} min on closed 5-minute bars with a ${Math.round((input.lagMs ?? YAHOO_LAG_MS) / 1000)} s data lag; exits are checked at the same cadence.`,
     ];
+    if (deps !== this.deps) notes.push(`Account ${account}: follows main's signals with its own capital (₹${start.toLocaleString("en-IN")}), strike choice, sizing, loss caps and exits.`);
     if (input.noEvents) notes.push("No-events baseline: the event layer was disabled.");
     else if ((input.events ?? []).length === 0) notes.push("No scored events were supplied for this range, so the event layer contributed nothing.");
     else notes.push(`${this.events.length} scored events, each usable ${Math.round(this.delayMs / MINUTE_MS)} min after first seen.`);
@@ -206,6 +228,18 @@ export class BacktestRun {
 
 export function runBacktest(input: BacktestInput, onDay?: (day: string, progress: number) => void): Promise<BacktestOutput> {
   return new BacktestRun(input).runAll(onDay);
+}
+
+/** Runs main and its follower accounts together; returns main's result and each follower's. */
+export async function runBacktestAccounts(
+  input: BacktestInput,
+  onDay?: (day: string, progress: number) => void,
+): Promise<{ main: BacktestOutput; followers: Partial<Record<AccountId, BacktestOutput>> }> {
+  const run = new BacktestRun(input);
+  const main = await run.runAll(onDay);
+  const followers: Partial<Record<AccountId, BacktestOutput>> = {};
+  for (const f of input.followers ?? []) followers[f.account] = await run.result(f.account);
+  return { main, followers };
 }
 
 /** Converts a backtest output to the dashboard DTO. */
