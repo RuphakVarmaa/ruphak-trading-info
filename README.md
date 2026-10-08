@@ -250,6 +250,35 @@ What this says:
 
 Reproduce with `npm run backtest -- --from 2026-07-23 --to 2026-10-07 --no-events` (and `--walk-forward --train-days 28 --test-days 14`; the walk-forward grid is in `src/engine/backtest/walkForward.ts`).
 
+### The ₹10,000 account
+
+A second paper book, `small10k` (`src/engine/accounts.ts`), follows the main account's signals at the same moments.
+
+- **What it trades:** one lot (65) of the NIFTY option nearest the money whose premium is ₹40–70, so ₹2,600–4,550 a lot.
+- **Its own limits:**
+  - risk 15% of equity per trade, sized from current equity and free cash;
+  - one position at a time, 3 entries a day;
+  - stop −35%, target +60%;
+  - daily loss cap 25%, weekly loss cap 40%;
+  - a check that one more stop-out cannot break the daily cap.
+- **Paper only.** Its book sits in the same tables under the stored mode `PAPER@small10k`; it does not grade decisions or update signal performance (main does).
+- **Why single options, not spreads:** a NIFTY debit spread costs only about ₹3,000 of premium, but the sold leg carries about ₹30–34k of exposure margin. A real ₹10k account could not place one.
+
+Backtest, NIFTY only, no news, 23 Jul – 8 Oct 2026 (54 sessions), main at default settings:
+
+| Run | Trades | Hit rate | Net | Max drawdown |
+|---|---|---|---|---|
+| ₹40–70 band, stop −35% / target +60% | 18 | 33% | −₹4,620 | ₹5,272 (49%) |
+| ₹60–100 band, same exits | 6 | 17% | −₹2,501 | ₹3,318 (31%) |
+| ₹40–70 band, walk-forward on exits, out of sample only (4 folds) | 25 | 44% | +₹349 | 36% |
+| ₹60–100 band, walk-forward on exits, out of sample only | 13 | 15% | −₹2,934 | 58% |
+
+- **No edge.** The out-of-sample walk-forward for ₹40–70 lost in three of four folds (−₹865, −₹1,334, −₹1,393). The fourth fold (1–8 Oct, a strong down-trend week) made +₹3,941 and pulled the total to break-even.
+- **No stable exit settings.** The chosen stop and target changed in every fold (stop −30% to −50%, target 50% or 80%), so the account keeps −35% / +60%. The time-stop floor of 10% was chosen in every fold and is the default already.
+- **Small accounts swing hard.** One stop costs ₹1,000–1,600 (10–16% of the account); drawdowns of 35–50% happened inside two months.
+
+Reproduce with `npm run backtest -- --from 2026-07-23 --to 2026-10-08 --index NIFTY --no-events --account small10k` (add `--band 60-100`, `--stop`, `--target`, or `--walk-forward --train-days 28 --test-days 14`). In the dashboard, pick "₹10k" in the backtest form's Account field. Enable it on the engine with `ACCOUNTS="main,small10k"`, then use `/live?account=small10k`.
+
 **Paper to live go/no-go:**
 
 - Out-of-sample Sharpe ≥ 0.8 with at least 60 out-of-sample trades.
@@ -294,5 +323,6 @@ Engine Worker variables (`workers/engine/wrangler.jsonc`):
 | `INDICES` | `NIFTY` | Indices to trade, comma-separated (`NIFTY,SENSEX` trades both; they share the daily limits). Unset or invalid means both. |
 | `MAX_TRADES_PER_DAY` | `8` | Most entries per day across the indices (1 to 12). The stored daily order cap (`maxOrdersPerDay`, 2 orders per trade plus reserve) must be raised with it. The loss-streak halt and daily loss cap still apply. Unset or invalid means 4. |
 | `MAX_OPEN_PER_INDEX` | `2` | Most positions open at once on one index (1 to 3). They share the 4-entries-a-day and loss limits. Unset or invalid means 1. |
+| `ACCOUNTS` | `main` | Paper accounts to run, comma-separated; main is always on. `main,small10k` adds the ₹10,000 account above, which follows main's signals with its own pinned settings (the variables above do not apply to it). Telegram `/kill` stops every account. |
 
 Secrets: see `.dev.vars.example`. Every strategy parameter lives in `src/engine/config.ts`, and backtests and live trading read the same values.
