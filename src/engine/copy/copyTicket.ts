@@ -49,6 +49,14 @@ export interface CopyTicketInput {
   entryOrder?: Pick<Order, "type" | "limitPrice"> | null;
 }
 
+/**
+ * The too-late level as a whole index point, rounded toward the entry so a copier never enters past
+ * the engine's level: down for calls (skip above it), up for puts (skip below it), as /copy shows it.
+ */
+export function skipLevel(level: number, side: "BULL" | "BEAR"): number {
+  return side === "BULL" ? Math.floor(level + 1e-9) : Math.ceil(level - 1e-9);
+}
+
 /** The engine's entry limit: the order's, else the plan's; null for a market order or without either. */
 function entryLimit(order: CopyTicketInput["entryOrder"], plan: TradePlan | null): number | null {
   const src = order ?? (plan ? { type: plan.entryType, limitPrice: plan.limitPrice } : null);
@@ -146,7 +154,7 @@ export function copyTicketView(i: CopyTicketInput): CopyTicketView {
     `Search "${searchText}" in your broker app and pick the ${label} expiry.`,
     `Buy ${lots} lot${lots === 1 ? "" : "s"} (${entryQty} qty) with a limit order near the ask${limitPrice !== null ? ` (the engine's limit was ₹${limitPrice.toFixed(2)})` : ""}. The engine's ${p.mode === "LIVE" ? "live" : "paper"} fill was ₹${fill.toFixed(2)}${priceSource === "model" ? ", a model price: the real one will differ" : ""}.`,
     ...(skipBeyondSpot !== null
-      ? [`Skip it if ${c.index} is already ${dir > 0 ? "above" : "below"} ${Math.round(skipBeyondSpot).toLocaleString("en-IN")}: half of the expected move has happened.`]
+      ? [`Skip it if ${c.index} is already ${dir > 0 ? "above" : "below"} ${skipLevel(skipBeyondSpot, p.side).toLocaleString("en-IN")}: half of the expected move has happened.`]
       : []),
     `Set a stop-loss ${Math.abs(p.stops.stopPct)}% under your own fill (₹${round2(stop).toFixed(2)} for a ₹${fill.toFixed(2)} fill). The target is +${p.stops.targetPct}% (₹${round2(target).toFixed(2)}).`,
     `Sell when the engine sells, at the latest by ${hm(p.stops.squareOffMs)} IST. It also sells on its trailing stop, its time stop (${hm(p.stops.timeStopMs)}) and when the signals turn.`,
@@ -308,7 +316,7 @@ export function copyEntryText(t: CopyTicketView, link: string | null): string {
     `🟢 COPY ${tag} · ${t.headline}`,
     `${t.lots} lot = ${t.qty} qty · ${t.entry.limitPrice !== null ? `limit ${prem(t.entry.limitPrice)} · ` : ""}${t.mode === "LIVE" ? "live" : "paper"} fill ${prem(t.entry.premium)}${t.entry.priceSource === "model" ? " (model price: check the real one)" : ""} · cost ${inr(t.entry.costRupees)}`,
   ];
-  if (t.entry.skipBeyondSpot !== null) lines.push(`Skip if ${t.index} is already ${t.side === "BULL" ? "above" : "below"} ${level(t.entry.skipBeyondSpot)} (it was ${level(t.entry.spot)})`);
+  if (t.entry.skipBeyondSpot !== null) lines.push(`Skip if ${t.index} is already ${t.side === "BULL" ? "above" : "below"} ${skipLevel(t.entry.skipBeyondSpot, t.side).toLocaleString("en-IN")} (it was ${level(t.entry.spot)})`);
   lines.push(`Stop ${pct(lv.stopPct, 0)} → ${prem(lv.stop)} · Target ${pct(lv.targetPct, 0)} → ${prem(lv.target)}`);
   lines.push(
     `Trail from ${pct(lv.trailActivatePct, 0)} (${prem(lv.trailActivateAt)}), gives back ${lv.trailGivebackPct}% of the gain · time stop ${hmIso(lv.timeStopAt)} unless ${pct(lv.timeStopMinPnlPct, 0)} · out by ${hmIso(lv.squareOffAt)}`,

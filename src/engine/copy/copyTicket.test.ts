@@ -203,6 +203,21 @@ describe("copy ticket", () => {
   });
 });
 
+describe("the too-late-to-copy level in the texts", () => {
+  it("rounds so a copier never enters past the engine's level (down for calls, up for puts)", () => {
+    // Call: half the 0.4% move from 25,050.5 is 25,100.60, so "above 25,100" (not 25,101).
+    const bull = copyTicketView({ position: position({ side: "BULL" }), plan: plan({ side: "BULL", refSpot: 25_050.5 }), account: TEN_K, timeStopMinPnlPct: 10 });
+    expect(bull.entry.skipBeyondSpot).toBeCloseTo(25_100.6, 2);
+    expect(copyEntryText(bull, null)).toContain("Skip if NIFTY is already above 25,100 (");
+    expect(bull.steps.join(" ")).toContain("already above 25,100:");
+    // Put: from 25,050.2 the level is 25,000.10, so "below 25,001" (not 25,000).
+    const bear = copyTicketView({ position: position(), plan: plan({ refSpot: 25_050.2 }), account: TEN_K, timeStopMinPnlPct: 10 });
+    expect(bear.entry.skipBeyondSpot).toBeCloseTo(25_000.1, 2);
+    expect(copyEntryText(bear, null)).toContain("Skip if NIFTY is already below 25,001 (");
+    expect(bear.steps.join(" ")).toContain("already below 25,001:");
+  });
+});
+
 describe("the engine's entry limit", () => {
   const view = (over: Partial<Parameters<typeof copyTicketView>[0]>) => copyTicketView({ position: position(), plan: plan(), account: TEN_K, timeStopMinPnlPct: 10, ...over });
 
