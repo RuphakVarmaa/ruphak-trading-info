@@ -1,7 +1,7 @@
 import type { Metadata } from "next";
 import LiveBook from "@/components/Live/LiveBook";
+import LiveHeader from "@/components/Live/LiveHeader";
 import { C } from "@/components/shared/colors";
-import SiteHeader from "@/components/shared/SiteHeader";
 import { CLAUDE_THEME } from "@/components/shared/theme";
 import { EngineProvider } from "@/hooks/useEngineState";
 import { getEngineModeQuick, getInitialEngineSnapshot } from "@/lib/engine/snapshot";
@@ -17,8 +17,8 @@ export default async function LivePage() {
   const [initial, mode] = await Promise.all([getInitialEngineSnapshot(), getEngineModeQuick()]);
   return (
     <div style={{ ...CLAUDE_THEME, minHeight: "100vh", display: "flex", flexDirection: "column", background: C.bg, color: C.text, fontFamily: "var(--font-inter), 'Inter', sans-serif" }}>
-      <SiteHeader active="live" mode={initial?.state?.mode ?? mode} />
       <EngineProvider initial={initial}>
+        <LiveHeader serverMode={initial?.state?.mode ?? mode} />
         <LiveBook />
       </EngineProvider>
     </div>
