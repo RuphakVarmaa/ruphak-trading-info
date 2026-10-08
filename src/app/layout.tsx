@@ -1,25 +1,26 @@
 import type { Metadata } from "next";
-import { Inter, Playfair_Display } from "next/font/google";
+import { Inter, Source_Serif_4 } from "next/font/google";
 import "./globals.css";
 
+// Variable fonts: every weight in one file each.
 const inter = Inter({
   subsets: ["latin"],
-  weight: ["300", "400", "500", "600", "700", "800", "900"],
   variable: "--font-inter",
   display: "swap",
 });
 
-const playfair = Playfair_Display({
+// Headings: a quiet book serif with optical sizes, so large titles stay crisp.
+const serif = Source_Serif_4({
   subsets: ["latin"],
-  weight: ["400", "500", "600", "700"],
-  variable: "--font-playfair",
+  axes: ["opsz"],
+  variable: "--font-serif",
   display: "swap",
 });
 
 export const metadata: Metadata = {
-  title: "Ruphak Trading Info — Event-Driven India Index Desk",
+  title: "Ruphak Trading Info — India Index Desk",
   description:
-    "Global events scored into NIFTY and SENSEX conviction, ATM weekly option plans with every gate explained, and a paper-trading blotter, alongside geopolitical metals intelligence. Paper simulation, not investment advice. Maintained by Ruphak.",
+    "NIFTY and SENSEX weekly options traded on paper from the news and market signals, with every check explained, alongside metals and macro news. Paper simulation, not investment advice. Maintained by Ruphak.",
 };
 
 export default function RootLayout({
@@ -28,7 +29,7 @@ export default function RootLayout({
   children: React.ReactNode;
 }>) {
   return (
-    <html lang="en" className={`${inter.variable} ${playfair.variable}`}>
+    <html lang="en" className={`${inter.variable} ${serif.variable}`}>
       <body>{children}</body>
     </html>
   );

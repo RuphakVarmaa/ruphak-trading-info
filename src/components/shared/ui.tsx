@@ -1,17 +1,17 @@
 "use client";
 
-/** Small inline-styled primitives matching the terminal look (no icon libraries). */
+/** Small inline-styled primitives for the light dashboard theme (no icon libraries). */
 import { useEffect, useId, useRef, useState, type ButtonHTMLAttributes, type CSSProperties, type ReactNode, type Ref } from "react";
 import { alpha, C } from "./colors";
+import { SERIF } from "./theme";
 
-export const mono: CSSProperties = { fontFamily: "monospace", fontVariantNumeric: "tabular-nums" };
+export const mono: CSSProperties = { fontFamily: "var(--font-num)", fontVariantNumeric: "tabular-nums" };
 
+/** A small sentence-case label above a value or a group. */
 export const microLabel: CSSProperties = {
-  fontSize: 9,
+  fontSize: 12,
   color: C.muted2,
-  textTransform: "uppercase",
-  letterSpacing: "0.08em",
-  fontWeight: 700,
+  fontWeight: 600,
 };
 
 export function Pill({
@@ -34,17 +34,17 @@ export function Pill({
         display: "inline-flex",
         alignItems: "center",
         gap: 4,
-        padding: "2px 7px",
-        borderRadius: 3,
-        fontSize: 9,
-        fontWeight: 800,
-        letterSpacing: "0.06em",
+        padding: "2px 8px",
+        borderRadius: 999,
+        fontSize: 10,
+        fontWeight: 700,
+        letterSpacing: "0.04em",
         textTransform: "uppercase",
-        lineHeight: 1.4,
+        lineHeight: 1.5,
         whiteSpace: "nowrap",
-        color: solid ? (color === C.gold ? "#000" : "#fff") : color,
-        background: solid ? color : alpha(color, 0.12),
-        border: `1px solid ${solid ? color : alpha(color, 0.45)}`,
+        color: solid ? "#fff" : color,
+        background: solid ? color : alpha(color, 0.1),
+        border: `1px solid ${solid ? color : alpha(color, 0.32)}`,
         ...style,
       }}
     >
@@ -71,36 +71,116 @@ export function Dot({ color, size = 6, pulse = false, title }: { color: string; 
   );
 }
 
-export function Panel({ children, style }: { children: ReactNode; style?: CSSProperties }) {
-  return <div style={{ background: C.panel, border: `1px solid ${C.border}`, borderRadius: 10, overflow: "hidden", ...style }}>{children}</div>;
+export function Panel({ children, style, id }: { children: ReactNode; style?: CSSProperties; id?: string }) {
+  return (
+    <div id={id} style={{ background: C.panel, border: `1px solid ${C.border}`, borderRadius: 14, overflow: "hidden", boxShadow: "var(--shadow-card)", ...style }}>
+      {children}
+    </div>
+  );
+}
+
+/** The page title block: an optional eyebrow, a large serif heading, a lead paragraph and actions. */
+export function PageHeader({ eyebrow, title, sub, right, children }: { eyebrow?: ReactNode; title: ReactNode; sub?: ReactNode; right?: ReactNode; children?: ReactNode }) {
+  return (
+    <header style={{ display: "grid", gap: 18, minWidth: 0 }}>
+      <div style={{ display: "flex", flexWrap: "wrap", alignItems: "flex-end", justifyContent: "space-between", gap: 16 }}>
+        <div style={{ minWidth: 0, maxWidth: 820 }}>
+          {eyebrow != null && <div style={{ fontSize: 13, fontWeight: 600, color: C.gold, marginBottom: 10 }}>{eyebrow}</div>}
+          <h1 style={{ margin: 0, fontFamily: SERIF, fontSize: "clamp(32px, 4.4vw, 46px)", fontWeight: 500, lineHeight: 1.08, letterSpacing: "-0.02em", color: C.textStrong }}>{title}</h1>
+          {sub != null && <p style={{ margin: "12px 0 0", fontSize: 16, lineHeight: 1.6, color: C.muted }}>{sub}</p>}
+        </div>
+        {right != null && <div style={{ display: "flex", flexWrap: "wrap", alignItems: "center", gap: 8 }}>{right}</div>}
+      </div>
+      {children}
+    </header>
+  );
+}
+
+/** A page section: a serif heading, an optional note, optional actions on the right, and content. */
+export function Section({ id, title, sub, right, children }: { id?: string; title: ReactNode; sub?: ReactNode; right?: ReactNode; children: ReactNode }) {
+  return (
+    <section id={id} style={{ scrollMarginTop: 84, minWidth: 0 }}>
+      <div style={{ display: "flex", alignItems: "flex-end", justifyContent: "space-between", gap: "8px 16px", flexWrap: "wrap", marginBottom: 16 }}>
+        <div style={{ minWidth: 0, maxWidth: 780 }}>
+          <h2 style={{ margin: 0, fontFamily: SERIF, fontSize: "clamp(23px, 2.5vw, 29px)", fontWeight: 500, lineHeight: 1.2, letterSpacing: "-0.012em", color: C.textStrong }}>{title}</h2>
+          {sub != null && <p style={{ margin: "6px 0 0", fontSize: 14, color: C.muted, lineHeight: 1.55 }}>{sub}</p>}
+        </div>
+        {right}
+      </div>
+      {children}
+    </section>
+  );
+}
+
+/** A small set of mutually exclusive options shown as one pill row. */
+export function Segmented<T extends string>({
+  value,
+  options,
+  onChange,
+  label,
+  size = "md",
+}: {
+  value: T;
+  options: readonly { value: T; label: ReactNode; title?: string }[];
+  onChange: (value: T) => void;
+  label: string;
+  size?: "sm" | "md";
+}) {
+  return (
+    <div role="radiogroup" aria-label={label} style={{ display: "inline-flex", flexWrap: "wrap", gap: 2, padding: 3, background: C.panelDeep, border: `1px solid ${C.border}`, borderRadius: 11 }}>
+      {options.map((o) => {
+        const on = o.value === value;
+        return (
+          <button
+            key={o.value}
+            type="button"
+            role="radio"
+            aria-checked={on}
+            title={o.title}
+            onClick={() => onChange(o.value)}
+            style={{
+              border: "none",
+              borderRadius: 8,
+              padding: size === "sm" ? "5px 11px" : "7px 14px",
+              fontSize: size === "sm" ? 12 : 13,
+              fontWeight: on ? 600 : 500,
+              cursor: "pointer",
+              background: on ? C.panel : "transparent",
+              color: on ? C.textStrong : C.muted,
+              boxShadow: on ? "0 1px 2px rgba(20,20,19,0.12)" : "none",
+              whiteSpace: "nowrap",
+            }}
+          >
+            {o.label}
+          </button>
+        );
+      })}
+    </div>
+  );
 }
 
 export function PanelHeader({ icon, title, right, live }: { icon?: ReactNode; title: ReactNode; right?: ReactNode; live?: boolean }) {
   return (
     <div
       style={{
-        minHeight: 40,
+        minHeight: 52,
         borderBottom: `1px solid ${C.border}`,
-        padding: "6px 14px",
+        padding: "12px 18px",
         display: "flex",
         flexWrap: "wrap",
         alignItems: "center",
-        gap: "4px 8px",
-        fontSize: 11,
-        letterSpacing: "0.08em",
-        fontWeight: 700,
-        textTransform: "uppercase",
+        gap: "6px 10px",
         flexShrink: 0,
       }}
     >
-      {icon != null && <span style={{ color: C.gold }}>{icon}</span>}
-      <span style={{ whiteSpace: "nowrap" }}>{title}</span>
+      {icon != null && <span style={{ color: C.gold, fontSize: 15 }}>{icon}</span>}
+      <span style={{ whiteSpace: "nowrap", fontSize: 15.5, fontWeight: 600, color: C.textStrong, letterSpacing: "-0.005em" }}>{title}</span>
       {live && (
-        <span style={{ color: C.green, fontSize: 10, display: "flex", alignItems: "center", gap: 4 }}>
-          <Dot color={C.green} pulse /> LIVE
+        <span style={{ color: C.green, fontSize: 12, fontWeight: 600, display: "flex", alignItems: "center", gap: 5 }}>
+          <Dot color={C.green} pulse /> Live
         </span>
       )}
-      {right != null && <div style={{ marginLeft: "auto", display: "flex", alignItems: "center", gap: 8, fontWeight: 600 }}>{right}</div>}
+      {right != null && <div style={{ marginLeft: "auto", display: "flex", alignItems: "center", gap: 8, fontSize: 12.5, color: C.muted2 }}>{right}</div>}
     </div>
   );
 }
@@ -109,17 +189,22 @@ export function SectionHeader({ label, title, sub, right }: { label: string; tit
   return (
     <div style={{ display: "flex", alignItems: "flex-end", justifyContent: "space-between", gap: 16, flexWrap: "wrap", marginBottom: 20 }}>
       <div style={{ minWidth: 0 }}>
-        <div style={{ marginBottom: 6 }}>
-          <span style={{ fontSize: 10, color: C.gold, fontWeight: 700, letterSpacing: "0.08em", textTransform: "uppercase" }}>{label}</span>
+        <div style={{ marginBottom: 8 }}>
+          <span style={{ fontSize: 13, color: C.gold, fontWeight: 600 }}>{label}</span>
         </div>
-        <h3 style={{ margin: "0 0 6px", fontSize: 26, fontWeight: 400, color: C.textStrong, fontFamily: "var(--font-playfair), 'Playfair Display', Georgia, serif" }}>
+        <h2 style={{ margin: "0 0 6px", fontSize: "clamp(23px, 2.5vw, 29px)", fontWeight: 500, color: C.textStrong, fontFamily: SERIF, letterSpacing: "-0.012em", lineHeight: 1.2 }}>
           {title}
-        </h3>
-        {sub != null && <p style={{ margin: 0, fontSize: 13, color: C.muted2 }}>{sub}</p>}
+        </h2>
+        {sub != null && <p style={{ margin: 0, fontSize: 14, color: C.muted, lineHeight: 1.55 }}>{sub}</p>}
       </div>
       {right}
     </div>
   );
+}
+
+/** "GEOPOLITICS" -> "Geopolitics"; labels that are not all capitals are kept as they are. */
+export function prettyEnum(s: string): string {
+  return /^[A-Z0-9 _&/-]+$/.test(s) ? (s.charAt(0) + s.slice(1).toLowerCase()).replace(/_/g, " ") : s;
 }
 
 export function TabBar<T extends string>({
@@ -142,8 +227,8 @@ export function TabBar<T extends string>({
       style={{
         display: "flex",
         flexWrap: "wrap",
-        gap: 2,
-        padding: "6px 8px",
+        gap: 4,
+        padding: "10px 14px",
         borderBottom: `1px solid ${C.border}`,
         flexShrink: 0,
       }}
@@ -159,20 +244,19 @@ export function TabBar<T extends string>({
             aria-selected={selected}
             onClick={() => onChange(tab)}
             style={{
-              background: selected ? "#2a2a2a" : "transparent",
-              color: selected ? "#fff" : "#777",
+              background: selected ? C.panelDeep : "transparent",
+              color: selected ? C.textStrong : C.muted,
               border: "none",
-              padding: "5px 8px",
-              borderRadius: 4,
+              padding: "6px 12px",
+              borderRadius: 999,
               cursor: "pointer",
-              fontSize: 10,
-              fontWeight: 700,
-              letterSpacing: "0.04em",
-              transition: "all 0.15s",
+              fontSize: 13,
+              fontWeight: selected ? 600 : 500,
+              transition: "background 0.15s, color 0.15s",
             }}
           >
-            {tab}
-            {count != null && count > 0 && <span style={{ color: selected ? C.gold : C.muted3, marginLeft: 4 }}>{count}</span>}
+            {prettyEnum(tab)}
+            {count != null && count > 0 && <span style={{ color: selected ? C.gold : C.muted3, marginLeft: 6, fontSize: 12, fontWeight: 600 }}>{count}</span>}
           </button>
         );
       })}
@@ -200,20 +284,23 @@ export function StatTile({
       title={title}
       style={{
         background: C.panel,
-        border: `1px solid ${hero ? alpha(C.gold, 0.35) : C.border}`,
-        borderRadius: 8,
-        padding: hero ? "16px 18px" : 16,
+        border: `1px solid ${hero ? alpha(C.gold, 0.4) : C.border}`,
+        borderRadius: 14,
+        padding: hero ? "18px 20px" : "16px 18px",
         minWidth: 0,
+        boxShadow: "var(--shadow-card)",
       }}
     >
-      <div style={{ fontSize: 9, color: C.muted2, textTransform: "uppercase", letterSpacing: "0.06em", marginBottom: 6, fontWeight: 700 }}>{label}</div>
+      <div style={{ fontSize: 12.5, color: C.muted, marginBottom: 8, fontWeight: 500 }}>{label}</div>
       <div
         className="tnum"
         style={{
-          fontSize: hero ? 26 : 20,
-          fontWeight: 700,
+          fontSize: hero ? 30 : 23,
+          fontWeight: 600,
           color,
-          fontFamily: "monospace",
+          fontFamily: "var(--font-num)",
+          letterSpacing: "-0.02em",
+          lineHeight: 1.15,
           whiteSpace: "nowrap",
           overflow: "hidden",
           textOverflow: "ellipsis",
@@ -221,7 +308,7 @@ export function StatTile({
       >
         {value}
       </div>
-      {sub != null && <div style={{ fontSize: 10, color: C.muted2, marginTop: 4 }}>{sub}</div>}
+      {sub != null && <div style={{ fontSize: 12, color: C.muted2, marginTop: 6, lineHeight: 1.45 }}>{sub}</div>}
     </div>
   );
 }
@@ -229,9 +316,9 @@ export function StatTile({
 type BtnVariant = "gold" | "outline" | "danger" | "dangerSolid" | "ghost";
 
 const BTN_STYLES: Record<BtnVariant, CSSProperties> = {
-  gold: { background: C.gold, color: "#000", border: `1px solid ${C.gold}` },
-  outline: { background: "transparent", color: C.textSoft, border: "1px solid #3a3a3a" },
-  danger: { background: alpha(C.red, 0.12), color: "#ff6b5e", border: `1px solid ${alpha(C.red, 0.55)}` },
+  gold: { background: C.gold, color: "#fff", border: `1px solid ${C.gold}` },
+  outline: { background: C.panel, color: C.textStrong, border: `1px solid ${C.borderStrong}` },
+  danger: { background: alpha(C.red, 0.08), color: C.red, border: `1px solid ${alpha(C.red, 0.45)}` },
   dangerSolid: { background: C.red, color: "#fff", border: `1px solid ${C.red}` },
   ghost: { background: "transparent", color: C.muted, border: "1px solid transparent" },
 };
@@ -251,11 +338,10 @@ export function Btn({
       {...rest}
       style={{
         ...BTN_STYLES[variant],
-        padding: size === "md" ? "8px 18px" : "5px 10px",
-        borderRadius: size === "md" ? 6 : 4,
-        fontSize: size === "md" ? 12 : 10,
-        fontWeight: 700,
-        letterSpacing: "0.05em",
+        padding: size === "md" ? "10px 18px" : "6px 12px",
+        borderRadius: size === "md" ? 10 : 8,
+        fontSize: size === "md" ? 14 : 12.5,
+        fontWeight: 600,
         cursor: rest.disabled ? "not-allowed" : "pointer",
         opacity: rest.disabled ? 0.45 : 1,
         whiteSpace: "nowrap",
@@ -278,7 +364,7 @@ export function Skeleton({ width = "100%", height = 12, style }: { width?: numbe
       style={{
         width,
         height,
-        borderRadius: 3,
+        borderRadius: 6,
         background: C.borderSoft,
         animation: "skeleton-pulse 1.4s ease-in-out infinite",
         ...style,
@@ -288,18 +374,17 @@ export function Skeleton({ width = "100%", height = 12, style }: { width?: numbe
 }
 
 export function EmptyState({ children, style }: { children: ReactNode; style?: CSSProperties }) {
-  return <div style={{ textAlign: "center", color: C.muted3, fontSize: 12, padding: "28px 12px", ...style }}>{children}</div>;
+  return <div style={{ textAlign: "center", color: C.muted2, fontSize: 13.5, padding: "32px 16px", lineHeight: 1.55, ...style }}>{children}</div>;
 }
 
 export const inputStyle: CSSProperties = {
-  colorScheme: "dark",
   width: "100%",
-  background: "#1a1a1a",
-  border: "1px solid #333",
-  borderRadius: 4,
+  background: C.panel,
+  border: `1px solid ${C.borderStrong}`,
+  borderRadius: 10,
   color: C.textStrong,
-  padding: "8px",
-  fontSize: 12,
+  padding: "10px 12px",
+  fontSize: 14,
   boxSizing: "border-box",
 };
 
@@ -358,14 +443,14 @@ export function ConfirmDialog({
         background: C.panel,
         color: C.text,
         border: `1px solid ${tone === "danger" ? alpha(C.red, 0.6) : C.borderStrong}`,
-        borderRadius: 10,
+        borderRadius: 16,
         padding: 0,
         // Tailwind's preflight zeroes margins; modal dialogs need margin:auto to centre.
         margin: "auto",
         width: "min(460px, calc(100vw - 32px))",
         maxHeight: "calc(100vh - 32px)",
         overflowY: "auto",
-        boxShadow: "0 12px 60px rgba(0,0,0,0.7)",
+        boxShadow: "var(--shadow-pop)",
       }}
     >
       <form
@@ -378,25 +463,24 @@ export function ConfirmDialog({
         <div
           id={titleId}
           style={{
-            padding: "14px 18px",
+            padding: "16px 20px",
             borderBottom: `1px solid ${C.border}`,
-            fontSize: 12,
-            fontWeight: 800,
-            letterSpacing: "0.08em",
-            textTransform: "uppercase",
-            color: tone === "danger" ? C.red : C.gold,
+            fontSize: 20,
+            fontWeight: 500,
+            fontFamily: SERIF,
+            color: tone === "danger" ? C.red : C.textStrong,
           }}
         >
           {tone === "danger" ? "⚠ " : ""}
           {title}
         </div>
-        <div style={{ padding: "16px 18px", fontSize: 12, lineHeight: 1.6, color: C.textSoft, display: "flex", flexDirection: "column", gap: 12 }}>
+        <div style={{ padding: "16px 20px", fontSize: 13.5, lineHeight: 1.6, color: C.textSoft, display: "flex", flexDirection: "column", gap: 12 }}>
           {children}
           {extra}
           {requireText != null && (
             <div>
               <label htmlFor={inputId} style={{ ...microLabel, display: "block", marginBottom: 6, color: C.muted }}>
-                Type <span style={{ color: C.red, fontFamily: "monospace" }}>{requireText}</span> to confirm
+                Type <span style={{ color: C.red, fontFamily: "var(--font-num)" }}>{requireText}</span> to confirm
               </label>
               <input
                 id={inputId}
@@ -404,7 +488,7 @@ export function ConfirmDialog({
                 spellCheck={false}
                 value={typed}
                 onChange={(e) => setTyped(e.target.value)}
-                style={{ ...inputStyle, fontFamily: "monospace", letterSpacing: "0.1em" }}
+                style={{ ...inputStyle, fontFamily: "var(--font-num)", letterSpacing: "0.1em" }}
               />
             </div>
           )}
@@ -414,7 +498,7 @@ export function ConfirmDialog({
             </div>
           )}
         </div>
-        <div style={{ padding: "12px 18px", borderTop: `1px solid ${C.border}`, display: "flex", justifyContent: "flex-end", gap: 10 }}>
+        <div style={{ padding: "14px 20px", borderTop: `1px solid ${C.border}`, display: "flex", justifyContent: "flex-end", gap: 10 }}>
           <Btn variant="outline" size="md" onClick={onCancel} disabled={busy}>
             Cancel
           </Btn>
@@ -431,10 +515,10 @@ export function ConfirmDialog({
 // Tables (same look as the stack tracker table)
 // ---------------------------------------------------------------------------
 
-export const tableWrap: CSSProperties = { border: `1px solid ${C.border}`, borderRadius: 8, overflowX: "auto", background: C.panel };
-export const tableStyle: CSSProperties = { width: "100%", borderCollapse: "collapse", fontSize: 11 };
-export const theadRow: CSSProperties = { background: C.thead, color: C.muted, textTransform: "uppercase", fontSize: 9, letterSpacing: "0.06em" };
-export const th: CSSProperties = { padding: "10px 12px", textAlign: "left", fontWeight: 700, whiteSpace: "nowrap" };
+export const tableWrap: CSSProperties = { border: `1px solid ${C.border}`, borderRadius: 14, overflowX: "auto", background: C.panel, boxShadow: "var(--shadow-card)" };
+export const tableStyle: CSSProperties = { width: "100%", borderCollapse: "collapse", fontSize: 13 };
+export const theadRow: CSSProperties = { background: C.panelAlt, color: C.muted, fontSize: 12 };
+export const th: CSSProperties = { padding: "11px 16px", textAlign: "left", fontWeight: 600, whiteSpace: "nowrap" };
 export const thNum: CSSProperties = { ...th, textAlign: "right" };
-export const td: CSSProperties = { padding: "8px 12px", borderTop: `1px solid ${C.borderSoft}`, color: C.textSoft, whiteSpace: "nowrap" };
-export const tdNum: CSSProperties = { ...td, textAlign: "right", fontFamily: "monospace", fontVariantNumeric: "tabular-nums", color: C.textStrong };
+export const td: CSSProperties = { padding: "11px 16px", borderTop: `1px solid ${C.borderSoft}`, color: C.textSoft, whiteSpace: "nowrap" };
+export const tdNum: CSSProperties = { ...td, textAlign: "right", fontFamily: "var(--font-num)", fontVariantNumeric: "tabular-nums", color: C.textStrong };

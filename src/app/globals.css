@@ -1,18 +1,49 @@
 @import "tailwindcss";
 
 :root {
-  --background: #0a0a0a;
-  --foreground: #ededed;
-  --brand-gold: #ffb300;
-  --brand-gold-muted: rgba(255, 179, 0, 0.2);
-  --panel-bg: #111111;
-  --panel-border: #222222;
-  --panel-header-bg: #151515;
-  --status-critical: #f44336;
-  --status-warning: #ffb300;
-  --status-info: #2196f3;
-  --status-success: #4caf50;
-  --map-bg: #0d0d0d;
+  /* One light theme for every page: the C colour tokens (components/shared/colors.ts) read these. */
+  color-scheme: light;
+  --c-bg: #faf9f5;
+  --c-panel: #ffffff;
+  --c-panelAlt: #f5f4ee;
+  --c-panelDeep: #f0eee6;
+  --c-border: #e5e2d8;
+  --c-borderStrong: #d6d2c4;
+  --c-borderSoft: #ece9df;
+  --c-thead: #f3f1ea;
+  --c-navActive: #efede4;
+  --c-track: #e6e3d8;
+  --c-gold: #c96442;
+  --c-green: #2f7d4f;
+  --c-red: #c2412d;
+  --c-orange: #b5650d;
+  --c-blue: #2f6db5;
+  --c-purple: #7a5bc7;
+  --c-text: #141413;
+  --c-textStrong: #141413;
+  --c-textSoft: #3d3d3a;
+  --c-textDim: #4b4a46;
+  --c-muted: #5f5e58;
+  --c-muted2: #6f6e68;
+  --c-muted3: #8a8981;
+  --viz-1: #2a78d6;
+  --viz-2: #eb6834;
+  --viz-3: #1baf7a;
+  --viz-neutral: #8a8981;
+  --viz-free: #e6e3d8;
+  --shadow-card: 0 1px 2px rgba(20, 20, 19, 0.04), 0 1px 1px rgba(20, 20, 19, 0.02);
+  --shadow-pop: 0 12px 40px rgba(20, 20, 19, 0.16);
+
+  --background: var(--c-bg);
+  --foreground: var(--c-text);
+  --panel-bg: var(--c-panel);
+  --panel-border: var(--c-border);
+  --map-bg: #e9ecef;
+
+  /* Type: a sans for text and figures (tabular digits keep columns aligned), a serif for headings. */
+  --font-sans: var(--font-inter), "Inter", ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+  --font-num: var(--font-sans);
+  --font-display: var(--font-serif), "Source Serif 4", ui-serif, Georgia, Cambria, "Times New Roman", serif;
 }
 
 * {
@@ -22,10 +53,44 @@
 body {
   color: var(--foreground);
   background: var(--background);
-  font-family: var(--font-inter), 'Inter', Arial, Helvetica, sans-serif;
+  font-family: var(--font-sans);
+  line-height: 1.5;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  text-rendering: optimizeLegibility;
   margin: 0;
   padding: 0;
   overflow-x: hidden;
+}
+
+::selection {
+  background: rgba(201, 100, 66, 0.2);
+}
+
+:focus-visible {
+  outline: 2px solid var(--c-gold);
+  outline-offset: 2px;
+  border-radius: 6px;
+}
+
+a {
+  text-underline-offset: 3px;
+}
+
+/* Hover states the inline styles can't express. */
+.nav-tab:hover {
+  color: var(--c-textStrong) !important;
+  background: var(--c-panelDeep) !important;
+}
+.lift {
+  transition: box-shadow 0.15s ease, border-color 0.15s ease;
+}
+.lift:hover {
+  box-shadow: 0 4px 16px rgba(20, 20, 19, 0.08);
+  border-color: var(--c-borderStrong) !important;
+}
+.link-quiet:hover {
+  text-decoration: underline;
 }
 
 ::-webkit-scrollbar {
@@ -39,7 +104,7 @@ body {
   border-radius: 4px;
 }
 ::-webkit-scrollbar-thumb:hover {
-  background: #333;
+  background: var(--c-borderStrong);
 }
 
 .leaflet-container {
@@ -60,23 +125,23 @@ body {
 }
 
 .leaflet-control-zoom a:hover {
-  background-color: #222 !important;
+  background-color: var(--c-panelAlt) !important;
 }
 
 .leaflet-popup-content-wrapper {
-  background: #111 !important;
-  border: 1px solid #333 !important;
+  background: var(--c-panel) !important;
+  border: 1px solid var(--c-border) !important;
   border-radius: 8px !important;
-  box-shadow: 0 4px 20px rgba(0,0,0,0.5) !important;
+  box-shadow: var(--shadow-pop) !important;
 }
 
 .leaflet-popup-tip {
-  background: #111 !important;
+  background: var(--c-panel) !important;
 }
 
 .leaflet-popup-content {
   margin: 0 !important;
-  color: #ddd !important;
+  color: var(--c-textSoft) !important;
 }
 
 @keyframes pulse-ring {
@@ -96,7 +161,12 @@ body {
    narrow screens (they need !important to override inline sizes).
    --------------------------------------------------------------------------- */
 
-.tnum {
+/* Tabular digits for figures only: Inter's tabular set also widens hyphens and colons, which
+   looks spaced out in prose. Figures are tagged with .tnum, sit in tables, or use the figures font. */
+.tnum,
+td,
+th,
+[style*="--font-num"] {
   font-variant-numeric: tabular-nums;
 }
 
@@ -115,7 +185,7 @@ body {
 }
 
 dialog::backdrop {
-  background: rgba(0, 0, 0, 0.72);
+  background: rgba(20, 20, 19, 0.35);
   backdrop-filter: blur(2px);
 }
 
@@ -123,48 +193,57 @@ dialog::backdrop {
   .live-pulse { animation: none; }
 }
 
-@media (max-width: 1100px) {
-  .desk-core {
-    flex-direction: column;
-    height: auto !important;
+/* Desk: a wide main column beside a narrow one, stacked on narrow screens. */
+.desk-split {
+  display: grid;
+  grid-template-columns: minmax(0, 1.7fr) minmax(0, 1fr);
+  gap: 24px;
+  align-items: start;
+}
+
+@media (max-width: 1000px) {
+  .desk-split {
+    grid-template-columns: minmax(0, 1fr);
   }
-  .desk-core > :first-child {
-    border-right: none !important;
-    border-bottom: 1px solid #222;
+}
+
+/* Site header: brand, page tabs and status in one row; on phones the tabs move to a second,
+   sideways-scrolling row. It stays in view on wide screens only (on phones it is two rows tall). */
+.site-header-inner {
+  max-width: 1240px;
+  margin: 0 auto;
+  padding: 10px 16px;
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px 22px;
+}
+.site-nav {
+  display: flex;
+  gap: 2px;
+  overflow-x: auto;
+  scrollbar-width: none;
+  min-width: 0;
+}
+.site-nav::-webkit-scrollbar {
+  display: none;
+}
+@media (max-width: 900px) {
+  .site-nav {
+    order: 3;
+    flex-basis: 100%;
+    margin: 0 -4px;
   }
-  .desk-feed {
-    width: 100% !important;
-    height: 560px;
-  }
-  .blotter-grid {
-    grid-template-columns: minmax(0, 1fr) !important;
+}
+@media (min-width: 900px) {
+  .site-header {
+    position: sticky;
+    top: 0;
+    z-index: 40;
   }
 }
 
 @media (max-width: 900px) {
-  .signal-grid {
-    grid-template-columns: minmax(0, 1fr) !important;
-    grid-template-rows: auto !important;
-  }
-  .signal-grid > * + * {
-    border-left: none !important;
-    border-top: 1px solid #222;
-  }
-  .controls-bar {
-    gap: 10px !important;
-  }
-  .controls-bar > span[aria-hidden="true"] {
-    display: none;
-  }
-  .ticker-row {
-    flex-wrap: wrap;
-    gap: 8px 14px !important;
-  }
-  .ticker-row > :last-child {
-    margin-left: 0 !important;
-    flex-wrap: wrap;
-    gap: 6px 14px !important;
-  }
   .legacy-core {
     flex-direction: column;
     height: auto !important;
@@ -173,7 +252,7 @@ dialog::backdrop {
     height: auto !important;
     flex: none !important;
     border-right: none !important;
-    border-bottom: 1px solid #222;
+    border-bottom: 1px solid var(--c-border);
   }
   /* the map itself gets a fixed height; the chokepoint panel below it grows */
   .legacy-core > :first-child > :first-child {
@@ -201,5 +280,48 @@ dialog::backdrop {
   .legacy-core + div > :first-child {
     flex-wrap: wrap;
     row-gap: 2px;
+  }
+}
+
+/* Backtest: settings beside the results on wide screens, stacked on narrow ones. */
+.bt-grid {
+  display: grid;
+  grid-template-columns: 340px minmax(0, 1fr);
+  gap: 24px;
+  align-items: start;
+}
+@media (min-width: 1001px) {
+  .bt-settings {
+    position: sticky;
+    top: 84px;
+  }
+}
+@media (max-width: 1000px) {
+  .bt-grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
+details > summary {
+  list-style: none;
+}
+details > summary::-webkit-details-marker {
+  display: none;
+}
+details > summary::before {
+  content: "▸";
+  display: inline-block;
+  width: 1em;
+  color: var(--c-muted3);
+  transition: transform 0.15s;
+}
+details[open] > summary::before {
+  transform: rotate(90deg);
+}
+
+/* Secondary links that phones can do without (the header must fit one row there). */
+@media (max-width: 520px) {
+  .hide-sm {
+    display: none !important;
   }
 }

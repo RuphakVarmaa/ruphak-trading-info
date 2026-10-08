@@ -1,62 +1,61 @@
 "use client";
 
-import type { ReactNode } from "react";
+import Link from "next/link";
 import { useEngineState } from "@/hooks/useEngineState";
 import { C } from "@/components/shared/colors";
-import { ModeBadge } from "@/components/shared/SiteHeader";
-import { Panel, SectionHeader, Skeleton } from "@/components/shared/ui";
+import { Panel, Section, Skeleton } from "@/components/shared/ui";
 import ChargesSummary from "./ChargesSummary";
 import EquityCurve from "./EquityCurve";
-import PnlTiles from "./PnlTiles";
 import { OrdersTable, PositionsTable, SignalPerformanceTable } from "./Tables";
 
-function Block({ title, sub, children }: { title: string; sub?: ReactNode; children: ReactNode }) {
-  return (
-    <div style={{ marginTop: 24 }}>
-      <div style={{ display: "flex", alignItems: "baseline", gap: 10, marginBottom: 8, flexWrap: "wrap" }}>
-        <span style={{ fontSize: 11, fontWeight: 700, letterSpacing: "0.08em", textTransform: "uppercase", color: C.text }}>{title}</span>
-        {sub != null && <span style={{ fontSize: 10, color: C.muted3 }}>{sub}</span>}
-      </div>
-      {children}
-    </div>
-  );
-}
+const linkStyle = { fontSize: 12, fontWeight: 600, color: C.blue, textDecoration: "none" } as const;
 
+/** Open positions, today's orders, the equity curve with charges, and per-signal performance. */
 export default function TradeBlotter() {
-  const { pnl, positions, orders, performance, state } = useEngineState();
-  const mode = state?.mode ?? null;
+  const { pnl, positions, orders, performance } = useEngineState();
   return (
-    <section id="blotter" style={{ padding: "24px 30px 30px", background: C.bg, borderTop: `1px solid ${C.borderSoft}` }}>
-      <div style={{ maxWidth: 1400, margin: "0 auto" }}>
-        <SectionHeader
-          label="Trade blotter"
-          title="The book: positions, orders and P&L"
-          sub="Every order is simulated against live quotes with Groww's charge schedule until LIVE is armed. Each row carries its mode."
-          right={mode ? <ModeBadge mode={mode} /> : undefined}
-        />
-        <PnlTiles pnl={pnl} />
-        <div className="blotter-grid" style={{ display: "grid", gridTemplateColumns: "minmax(0, 1.75fr) minmax(0, 1fr)", gap: 16, marginTop: 16 }}>
+    <>
+      <Section
+        id="book"
+        title="Positions and orders"
+        sub="Every order is simulated against live quotes with Groww's charges until LIVE is armed; each row shows its mode."
+        right={
+          <span style={{ display: "inline-flex", gap: 14 }}>
+            <Link href="/live" style={linkStyle}>
+              Live P&amp;L →
+            </Link>
+            <Link href="/copy" style={linkStyle}>
+              Copy trades →
+            </Link>
+          </span>
+        }
+      >
+        <div style={{ display: "grid", gap: 16 }}>
+          <div style={{ minWidth: 0 }}>
+            <div style={{ fontSize: 12, fontWeight: 700, color: C.textSoft, margin: "0 0 8px" }}>Open positions</div>
+            <PositionsTable positions={positions} />
+          </div>
+          <div style={{ minWidth: 0 }}>
+            <div style={{ fontSize: 12, fontWeight: 700, color: C.textSoft, margin: "0 0 8px" }}>Orders today</div>
+            <OrdersTable data={orders} />
+          </div>
+        </div>
+      </Section>
+
+      <Section id="history" title="Equity and charges" sub="The paper account's equity over the last sessions, and what charges have cost.">
+        <div className="desk-split">
           <Panel style={{ padding: 16 }}>
-            {pnl ? (
-              <EquityCurve points={pnl.equityCurve} baseline={pnl.startingEquity} label={`Equity curve · ${pnl.history.length} sessions`} />
-            ) : (
-              <Skeleton height={250} />
-            )}
+            {pnl ? <EquityCurve points={pnl.equityCurve} baseline={pnl.startingEquity} label={`Equity · ${pnl.history.length} sessions`} /> : <Skeleton height={250} />}
           </Panel>
           <Panel style={{ padding: 16 }}>
             <ChargesSummary pnl={pnl} />
           </Panel>
         </div>
-        <Block title="Open positions" sub="marked at bid · stops, trail and 15:05 IST square-off managed by the engine">
-          <PositionsTable positions={positions} />
-        </Block>
-        <Block title="Orders today" sub="IST · newest first">
-          <OrdersTable data={orders} />
-        </Block>
-        <Block title="Signal performance" sub="rolling 30-trade window per source · decayed sources switch off automatically">
-          <SignalPerformanceTable rows={performance} />
-        </Block>
-      </div>
-    </section>
+      </Section>
+
+      <Section id="performance" title="Signal performance" sub="Each signal's record over its last 30 trades; a signal that keeps losing is switched off automatically.">
+        <SignalPerformanceTable rows={performance} />
+      </Section>
+    </>
   );
 }

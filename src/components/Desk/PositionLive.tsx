@@ -12,7 +12,7 @@ function Countdowns({ p }: { p: PositionView }) {
   const ts = Date.parse(p.timeStopAt);
   const ltpAge = now != null && p.ltpAsOf ? fmtAge(Math.max(0, now - Date.parse(p.ltpAsOf))) : null;
   return (
-    <div className="tnum" style={{ display: "flex", flexWrap: "wrap", gap: "4px 14px", fontSize: 9, color: C.muted, fontFamily: "monospace" }}>
+    <div className="tnum" style={{ display: "flex", flexWrap: "wrap", gap: "4px 14px", fontSize: 9, color: C.muted, fontFamily: "var(--font-num)" }}>
       <span title="Hard intraday square-off">
         ⏱ square-off {fmtIstHm(sq)} IST ·{" "}
         <span style={{ color: now != null && sq - now < 15 * 60_000 ? C.orange : C.textSoft }}>
@@ -44,22 +44,22 @@ export default function PositionLive({ p }: { p: PositionView }) {
       <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
         <Pill color={C.green}>● open</Pill>
         <Pill color={modeColor(p.mode === "LIVE" ? "LIVE" : "PAPER")}>{p.mode}</Pill>
-        <span style={{ fontSize: 10, color: C.textSoft, fontFamily: "monospace" }}>{p.contract.label}</span>
+        <span style={{ fontSize: 10, color: C.textSoft, fontFamily: "var(--font-num)" }}>{p.contract.label}</span>
         <span style={{ marginLeft: "auto", fontSize: 9, color: C.muted3 }}>opened {fmtIstHm(p.openedAt)} IST</span>
       </div>
       <div style={{ display: "flex", alignItems: "baseline", gap: 10, marginTop: 8, flexWrap: "wrap" }}>
-        <span className="tnum" style={{ fontSize: 22, fontWeight: 700, fontFamily: "monospace", color }}>
+        <span className="tnum" style={{ fontSize: 22, fontWeight: 700, fontFamily: "var(--font-num)", color }}>
           {fmtInr(p.pnl, { sign: true })}
         </span>
-        <span className="tnum" style={{ fontSize: 12, fontFamily: "monospace", color }}>
+        <span className="tnum" style={{ fontSize: 12, fontFamily: "var(--font-num)", color }}>
           {p.pnl > 0 ? "▲" : p.pnl < 0 ? "▼" : "▬"} {fmtPct(p.pnlPct, 1)}
         </span>
-        <span className="tnum" style={{ marginLeft: "auto", fontSize: 10, color: C.muted, fontFamily: "monospace" }}>
+        <span className="tnum" style={{ marginLeft: "auto", fontSize: 10, color: C.muted, fontFamily: "var(--font-num)" }}>
           LTP <span style={{ color: C.textStrong }}>{p.ltp != null ? fmtNum(p.ltp) : "—"}</span> · {p.qty} @ {fmtNum(p.avgPrice)}
         </span>
       </div>
 
-      <div style={{ position: "relative", height: 14, marginTop: 10, fontSize: 8, fontFamily: "monospace", color: C.muted }}>
+      <div style={{ position: "relative", height: 14, marginTop: 10, fontSize: 8, fontFamily: "var(--font-num)", color: C.muted }}>
         {/* When the two ticks are close, anchor ENTRY to the left of its tick and TRAIL to the right of its tick. */}
         <span
           style={{
@@ -123,7 +123,7 @@ export default function PositionLive({ p }: { p: PositionView }) {
           }}
         />
       </div>
-      <div style={{ display: "flex", justifyContent: "space-between", fontSize: 8, fontFamily: "monospace", marginTop: 3, marginBottom: 8 }}>
+      <div style={{ display: "flex", justifyContent: "space-between", fontSize: 8, fontFamily: "var(--font-num)", marginTop: 3, marginBottom: 8 }}>
         <span style={{ color: C.red }}>✗ STOP {fmtNum(lo)}</span>
         <span style={{ color: C.green }}>TARGET {fmtNum(hi)} ✓</span>
       </div>

@@ -17,10 +17,10 @@ const linkButton = {
   border: "none",
   padding: 0,
   color: C.gold,
-  fontSize: 10,
+  fontSize: 11,
   cursor: "pointer",
   fontWeight: 700,
-  letterSpacing: "0.04em",
+  letterSpacing: "0.02em",
 } as const;
 
 export function ConvictionGauge({
@@ -41,7 +41,7 @@ export function ConvictionGauge({
     <div>
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", gap: 8 }}>
         <span style={microLabel}>Conviction</span>
-        <span className="tnum" style={{ fontSize: 22, fontWeight: 700, fontFamily: "monospace", color: stanceColor(stance) === C.muted ? C.textDim : color }}>
+        <span className="tnum" style={{ fontSize: 24, fontWeight: 700, fontFamily: "var(--font-num)", color: stanceColor(stance) === C.muted ? C.textDim : color }}>
           {fmtSigned(conviction)}
         </span>
       </div>
@@ -54,7 +54,7 @@ export function ConvictionGauge({
         aria-valuetext={`${fmtSigned(conviction)}; entry threshold ±${t.toFixed(2)}; ${passes ? "clears" : "below"} threshold`}
         style={{ position: "relative", height: 24, marginTop: 4 }}
       >
-        <div style={{ position: "absolute", left: 0, right: 0, top: 8, height: 8, background: "#1a1a1a", borderRadius: 4 }} />
+        <div style={{ position: "absolute", left: 0, right: 0, top: 8, height: 8, background: C.track, borderRadius: 4 }} />
         <div
           title={`No-trade band ±${t.toFixed(2)}`}
           style={{
@@ -63,7 +63,7 @@ export function ConvictionGauge({
             width: `${t * 100}%`,
             top: 8,
             height: 8,
-            background: "repeating-linear-gradient(45deg, #262626 0 3px, #1a1a1a 3px 6px)",
+            background: `repeating-linear-gradient(45deg, ${C.borderStrong} 0 3px, ${C.track} 3px 6px)`,
           }}
         />
         <div
@@ -77,9 +77,9 @@ export function ConvictionGauge({
             opacity: passes ? 1 : 0.55,
           }}
         />
-        <div style={{ position: "absolute", left: "50%", top: 3, width: 1, height: 18, background: "#555" }} />
+        <div style={{ position: "absolute", left: "50%", top: 3, width: 1, height: 18, background: C.muted3 }} />
         {[-t, t].map((v) => (
-          <div key={v} style={{ position: "absolute", left: pos(v), top: 2, width: 2, height: 20, marginLeft: -1, background: "#8a8a8a" }} />
+          <div key={v} style={{ position: "absolute", left: pos(v), top: 2, width: 2, height: 20, marginLeft: -1, background: C.muted }} />
         ))}
         <div
           style={{
@@ -89,20 +89,20 @@ export function ConvictionGauge({
             width: 4,
             height: 22,
             marginLeft: -2,
-            background: "#fff",
+            background: C.textStrong,
             borderRadius: 1,
-            boxShadow: "0 0 0 2px #111",
+            boxShadow: `0 0 0 2px ${C.panel}`,
           }}
         />
       </div>
-      <div style={{ position: "relative", height: 12, fontSize: 8, color: C.muted3, fontFamily: "monospace" }}>
+      <div style={{ position: "relative", height: 13, fontSize: 9, color: C.muted3, fontFamily: "var(--font-num)" }}>
         <span style={{ position: "absolute", left: 0 }}>−1 ▼</span>
         <span style={{ position: "absolute", left: pos(-t), transform: "translateX(-50%)" }}>−{t.toFixed(2)}</span>
         <span style={{ position: "absolute", left: "50%", transform: "translateX(-50%)" }}>0</span>
         <span style={{ position: "absolute", left: pos(t), transform: "translateX(-50%)" }}>+{t.toFixed(2)}</span>
         <span style={{ position: "absolute", right: 0 }}>▲ +1</span>
       </div>
-      <div style={{ marginTop: 4, fontSize: 10, color: passes ? C.textSoft : C.muted }}>
+      <div style={{ marginTop: 6, fontSize: 12, color: passes ? C.textSoft : C.muted }}>
         {passes ? (
           <>
             <span style={{ color: C.green }}>✓</span> clears the ±{t.toFixed(2)} entry threshold
@@ -119,18 +119,18 @@ export function ConvictionGauge({
 
 export function ContractBlock({ signal }: { signal: SignalView }) {
   const c = signal.contract;
-  const box = { border: `1px solid ${C.borderStrong}`, borderRadius: 6, padding: "9px 11px", background: C.panelAlt } as const;
+  const box = { border: `1px solid ${C.border}`, borderRadius: 10, padding: "11px 13px", background: C.panelAlt } as const;
   if (!c) {
     return (
       <div style={{ ...box, display: "flex", gap: 8, alignItems: "baseline" }}>
         <span style={{ ...microLabel, color: C.muted, whiteSpace: "nowrap" }}>– No trade plan</span>
-        <span style={{ fontSize: 10, color: C.muted }}>{signal.noPlanReason ?? "Nothing to do this tick."}</span>
+        <span style={{ fontSize: 12, color: C.muted }}>{signal.noPlanReason ?? "Nothing to do this tick."}</span>
       </div>
     );
   }
   if (signal.position && signal.position.contract.tradingSymbol === c.tradingSymbol) {
     return (
-      <div className="tnum" style={{ ...box, padding: "7px 11px", fontSize: 10, color: C.muted, fontFamily: "monospace", display: "flex", flexWrap: "wrap", gap: "2px 10px" }}>
+      <div className="tnum" style={{ ...box, padding: "7px 11px", fontSize: 10, color: C.muted, fontFamily: "var(--font-num)", display: "flex", flexWrap: "wrap", gap: "2px 10px" }}>
         <span style={{ ...microLabel, fontFamily: "inherit" }}>Plan</span>
         <span>
           entry {c.premium != null ? fmtInr(c.premium, { decimals: 2 }) : "—"} · at risk {c.premiumAtRisk != null ? fmtInr(c.premiumAtRisk) : "—"}
@@ -151,27 +151,27 @@ export function ContractBlock({ signal }: { signal: SignalView }) {
   return (
     <div style={box}>
       <div style={{ display: "flex", justifyContent: "space-between", gap: 8, marginBottom: 4 }}>
-        <span style={microLabel}>Suggested contract</span>
+        <span style={microLabel}>Trade plan</span>
         {signal.edgeRatio != null && (
           <span
             title="Theta-gate edge ratio: (delta × expected move − theta − costs) / premium"
-            style={{ fontSize: 9, fontFamily: "monospace", color: signal.edgeRatio >= signal.minEdgeRatio ? C.green : C.orange }}
+            style={{ fontSize: 9, fontFamily: "var(--font-num)", color: signal.edgeRatio >= signal.minEdgeRatio ? C.green : C.orange }}
           >
             EDGE {signal.edgeRatio.toFixed(2)} {signal.edgeRatio >= signal.minEdgeRatio ? "✓" : "✗"}
           </span>
         )}
       </div>
-      <div style={{ fontSize: 13, fontWeight: 700, color: C.textStrong, fontFamily: "monospace", letterSpacing: "0.02em" }}>{c.label}</div>
-      <div className="tnum" style={{ fontSize: 10, color: C.muted, fontFamily: "monospace", marginTop: 2 }}>
+      <div style={{ fontSize: 15, fontWeight: 700, color: C.textStrong, fontFamily: "var(--font-num)", letterSpacing: "0.01em" }}>{c.label}</div>
+      <div className="tnum" style={{ fontSize: 11, color: C.muted, fontFamily: "var(--font-num)", marginTop: 3 }}>
         lot {c.lotSize} × {c.lots} · premium {c.premium != null ? fmtInr(c.premium, { decimals: 2 }) : "—"} · at risk{" "}
         {c.premiumAtRisk != null ? fmtInr(c.premiumAtRisk) : "—"}
       </div>
       {signal.expectedMovePct != null && signal.impliedMovePct != null && (
-        <div style={{ fontSize: 9, color: C.muted3, marginTop: 3 }}>
+        <div style={{ fontSize: 11, color: C.muted2, marginTop: 4 }}>
           expected move {signal.expectedMovePct.toFixed(2)}% vs implied {signal.impliedMovePct.toFixed(2)}% · {c.tradingSymbol}
         </div>
       )}
-      {signal.noPlanReason && <div style={{ fontSize: 10, color: C.orange, marginTop: 4 }}>– {signal.noPlanReason}</div>}
+      {signal.noPlanReason && <div style={{ fontSize: 12, color: C.orange, marginTop: 6 }}>– {signal.noPlanReason}</div>}
     </div>
   );
 }
@@ -187,8 +187,8 @@ export function GateList({ gates, allPassed }: { gates: GateResult[]; allPassed:
   return (
     <div>
       <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 6 }}>
-        <span style={microLabel}>Gates</span>
-        <span className="tnum" style={{ fontSize: 9, fontFamily: "monospace", color: C.muted }}>
+        <span style={microLabel}>Checks before a trade</span>
+        <span className="tnum" style={{ fontSize: 11, fontFamily: "var(--font-num)", color: C.muted }}>
           {passed}/{applicable.length} passed
         </span>
         {allPassed ? <Pill color={C.green}>✓ all clear</Pill> : <Pill color={C.red}>✗ blocked</Pill>}
@@ -199,10 +199,10 @@ export function GateList({ gates, allPassed }: { gates: GateResult[]; allPassed:
       {open ? (
         <div style={{ display: "flex", flexDirection: "column", gap: 3 }}>
           {gates.map((g) => (
-            <div key={g.gate} style={{ display: "grid", gridTemplateColumns: "14px 110px 1fr", gap: 6, fontSize: 10, alignItems: "baseline" }}>
+            <div key={g.gate} style={{ display: "grid", gridTemplateColumns: "14px minmax(110px, 0.9fr) minmax(0, 1.1fr)", gap: 8, fontSize: 12, alignItems: "baseline" }}>
               <span style={{ color: gateColor(g), fontWeight: 800 }}>{gateGlyph(g)}</span>
               <span style={{ color: C.textSoft }}>{g.label}</span>
-              <span style={{ color: C.muted, fontFamily: "monospace", fontSize: 9 }}>{g.detail || "—"}</span>
+              <span style={{ color: C.muted, fontFamily: "var(--font-num)", fontSize: 11, overflowWrap: "anywhere" }}>{g.detail || "—"}</span>
             </div>
           ))}
         </div>
@@ -214,10 +214,11 @@ export function GateList({ gates, allPassed }: { gates: GateResult[]; allPassed:
                 key={g.gate}
                 title={`${g.label}: ${g.passed === null ? "not applicable" : g.passed ? "passed" : "failed"}${g.detail ? ` · ${g.detail}` : ""}`}
                 style={{
-                  fontSize: 9,
-                  padding: "2px 6px",
-                  borderRadius: 3,
-                  border: `1px solid ${g.passed === false ? alpha(C.red, 0.5) : "#2a2a2a"}`,
+                  fontSize: 11,
+                  padding: "3px 8px",
+                  borderRadius: 12,
+                  border: `1px solid ${g.passed === false ? alpha(C.red, 0.5) : C.border}`,
+                  background: g.passed === false ? alpha(C.red, 0.06) : C.panel,
                   color: g.passed === null ? C.muted3 : C.textDim,
                   whiteSpace: "nowrap",
                 }}
@@ -227,8 +228,8 @@ export function GateList({ gates, allPassed }: { gates: GateResult[]; allPassed:
             ))}
           </div>
           {failed.map((g) => (
-            <div key={g.gate} style={{ marginTop: 5, fontSize: 10, color: C.textSoft }}>
-              <span style={{ color: C.red, fontWeight: 800 }}>✗</span> {g.label}: <span style={{ color: C.muted, fontFamily: "monospace" }}>{g.detail}</span>
+            <div key={g.gate} style={{ marginTop: 6, fontSize: 12, color: C.textSoft, lineHeight: 1.45 }}>
+              <span style={{ color: C.red, fontWeight: 800 }}>✗</span> {g.label}: <span style={{ color: C.muted, fontFamily: "var(--font-num)" }}>{g.detail}</span>
             </div>
           ))}
         </>
@@ -252,7 +253,7 @@ const SOURCE_SHORT: Record<SignalSource, string> = {
 export function ComponentBars({ components }: { components: SignalComponentView[] }) {
   return (
     <div>
-      <div style={{ ...microLabel, marginBottom: 6 }}>Signal components</div>
+      <div style={{ ...microLabel, marginBottom: 8 }}>What each signal says</div>
       <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
         {components.map((c) => {
           const modifier = c.source === "VOL_REGIME";
@@ -264,21 +265,21 @@ export function ComponentBars({ components }: { components: SignalComponentView[
               title={`${SIGNAL_SOURCE_LABELS[c.source]}: ${silent ? "no view (left out of the conviction)" : `${fmtSigned(c.value)} × weight ${c.weight.toFixed(2)}`}${c.enabled ? "" : " (disabled)"}${c.notes ? ` · ${c.notes}` : ""}`}
               style={{
                 display: "grid",
-                gridTemplateColumns: "74px 1fr 40px 46px",
+                gridTemplateColumns: "84px minmax(0, 1fr) 44px 48px",
                 gap: 8,
                 alignItems: "center",
-                fontSize: 9,
+                fontSize: 11,
                 opacity: c.enabled && !silent ? 1 : 0.5,
               }}
             >
               <span style={{ color: C.textDim, letterSpacing: "0.04em", whiteSpace: "nowrap" }}>{SOURCE_SHORT[c.source]}</span>
               {modifier || silent ? (
-                <span style={{ color: C.muted3, fontSize: 9, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                <span style={{ color: C.muted3, fontSize: 11, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
                   {modifier ? `modifier · ${c.notes ?? "threshold/size only"}` : `no view · ${c.notes ?? "abstains"}`}
                 </span>
               ) : (
-                <div style={{ position: "relative", height: 6, background: "#1a1a1a", borderRadius: 3 }}>
-                  <div style={{ position: "absolute", left: "50%", top: -2, width: 1, height: 10, background: "#444" }} />
+                <div style={{ position: "relative", height: 6, background: C.track, borderRadius: 3 }}>
+                  <div style={{ position: "absolute", left: "50%", top: -2, width: 1, height: 10, background: C.muted3 }} />
                   <div
                     style={{
                       position: "absolute",
@@ -292,10 +293,10 @@ export function ComponentBars({ components }: { components: SignalComponentView[
                   />
                 </div>
               )}
-              <span className="tnum" style={{ fontFamily: "monospace", textAlign: "right", color: modifier ? C.muted3 : color === C.muted3 ? C.muted : color }}>
+              <span className="tnum" style={{ fontFamily: "var(--font-num)", textAlign: "right", color: modifier ? C.muted3 : color === C.muted3 ? C.muted : color }}>
                 {modifier || silent ? "—" : fmtSigned(c.value)}
               </span>
-              <span className="tnum" style={{ fontFamily: "monospace", textAlign: "right", color: C.muted3 }}>
+              <span className="tnum" style={{ fontFamily: "var(--font-num)", textAlign: "right", color: C.muted3 }}>
                 {c.enabled ? `w ${c.weight.toFixed(2)}` : "OFF"}
               </span>
             </div>
@@ -310,9 +311,9 @@ const arrow = (d: number) => (d > 0 ? "▲" : d < 0 ? "▼" : "•");
 
 function Reading({ label, value, color, title }: { label: string; value: string; color?: string; title?: string }) {
   return (
-    <div title={title} style={{ display: "flex", justifyContent: "space-between", gap: 6, fontSize: 9, minWidth: 0 }}>
+    <div title={title} style={{ display: "flex", justifyContent: "space-between", gap: 8, fontSize: 11, minWidth: 0, padding: "4px 0", borderBottom: `1px dashed ${C.borderSoft}` }}>
       <span style={{ color: C.muted3, letterSpacing: "0.04em", whiteSpace: "nowrap" }}>{label}</span>
-      <span className="tnum" style={{ fontFamily: "monospace", color: color ?? C.textDim, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
+      <span className="tnum" style={{ fontFamily: "var(--font-num)", color: color ?? C.textDim, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
         {value}
       </span>
     </div>
@@ -332,8 +333,8 @@ export function IndicatorBlock({ ind }: { ind: IndicatorView | null }) {
   const trendDir = Math.sign(ind.ema9 - ind.ema21);
   return (
     <div>
-      <div style={{ ...microLabel, marginBottom: 6 }}>Indicators (5-min)</div>
-      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", columnGap: 12, rowGap: 3 }}>
+      <div style={{ ...microLabel, marginBottom: 6 }}>Indicators (5-minute bars)</div>
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(180px, 1fr))", columnGap: 18, rowGap: 0 }}>
         <Reading label="VWAP" value={`${ind.vwapZ >= 0 ? "+" : ""}${ind.vwapZ.toFixed(2)}σ`} color={dirColor(ind.vwapZ)} title={`VWAP ${ind.vwap.toFixed(1)}; spot ${ind.vwapDistPct.toFixed(2)}% away`} />
         <Reading label="RSI 14" value={ind.rsi14.toFixed(0)} color={rsiColor} />
         <Reading label="ADX 14" value={`${ind.adx14.toFixed(0)} · +${ind.plusDi14.toFixed(0)}/−${ind.minusDi14.toFixed(0)}`} color={ind.adx14 >= 25 ? C.gold : C.textDim} title="ADX with +DI / −DI" />
@@ -353,9 +354,9 @@ export function ContributorList({ contributors }: { contributors: EventContribut
   const top = [...contributors].sort((a, b) => Math.abs(b.weight) - Math.abs(a.weight)).slice(0, 3);
   return (
     <div>
-      <div style={{ ...microLabel, marginBottom: 6 }}>Top event drivers</div>
+      <div style={{ ...microLabel, marginBottom: 8 }}>News driving it</div>
       {top.length === 0 ? (
-        <div style={{ fontSize: 10, color: C.muted3 }}>No active event pressure.</div>
+        <div style={{ fontSize: 12, color: C.muted3 }}>No active event pressure.</div>
       ) : (
         <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
           {top.map((c) => (
@@ -364,14 +365,14 @@ export function ContributorList({ contributors }: { contributors: EventContribut
                 <span
                   className="tnum"
                   title="Share of this index's event pressure"
-                  style={{ fontSize: 10, fontFamily: "monospace", color: dirColor(c.weight), fontWeight: 700, whiteSpace: "nowrap" }}
+                  style={{ fontSize: 11, fontFamily: "var(--font-num)", color: dirColor(c.weight), fontWeight: 700, whiteSpace: "nowrap" }}
                 >
                   {c.weight > 0 ? "▲" : c.weight < 0 ? "▼" : "▬"}
                   {Math.round(Math.abs(c.weight) * 100)}%
                 </span>
                 <Link
                   href={`/events/${encodeURIComponent(c.clusterId)}`}
-                  style={{ color: C.textSoft, fontSize: 11, textDecoration: "none", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", minWidth: 0 }}
+                  style={{ color: C.textSoft, fontSize: 12, textDecoration: "none", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", minWidth: 0 }}
                   title={c.title}
                 >
                   {c.title}
@@ -379,7 +380,7 @@ export function ContributorList({ contributors }: { contributors: EventContribut
               </div>
               <div style={{ display: "flex", gap: 6, alignItems: "center", marginTop: 3, flexWrap: "wrap" }}>
                 <ImpactChip impact={c} />
-                <span style={{ fontSize: 9, color: C.muted3 }}>
+                <span style={{ fontSize: 11, color: C.muted3 }}>
                   {enumLabel(c.taxonomy)} · {fmtDuration(c.ageMin * 60_000)} ago
                 </span>
                 {c.pricedIn && <Pill color={C.muted}>priced in</Pill>}
@@ -397,13 +398,13 @@ export function Rationale({ text }: { text: string }) {
   const long = text.length > 170;
   return (
     <div>
-      <div style={{ ...microLabel, marginBottom: 4 }}>Why</div>
+      <div style={{ ...microLabel, marginBottom: 6 }}>In plain words</div>
       <p
         style={{
           margin: 0,
-          fontSize: 11,
-          lineHeight: 1.55,
-          color: C.textDim,
+          fontSize: 13,
+          lineHeight: 1.6,
+          color: C.textSoft,
           display: "-webkit-box",
           WebkitBoxOrient: "vertical",
           WebkitLineClamp: open || !long ? "unset" : 3,

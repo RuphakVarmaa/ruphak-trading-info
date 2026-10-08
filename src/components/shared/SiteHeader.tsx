@@ -4,8 +4,9 @@ import Link from "next/link";
 import type { ReactNode } from "react";
 import type { EngineMode } from "@/engine/api-types";
 import { alpha, C } from "./colors";
+import { SERIF } from "./theme";
 
-/** PAPER (blue outline) or LIVE (solid red, pulsing). The word always carries the meaning. */
+/** Paper (blue) or Live (solid red, pulsing). The word always carries the meaning. */
 export function ModeBadge({ mode, title }: { mode: EngineMode; title?: string }) {
   const live = mode === "LIVE";
   return (
@@ -15,118 +16,129 @@ export function ModeBadge({ mode, title }: { mode: EngineMode; title?: string })
       style={{
         display: "inline-flex",
         alignItems: "center",
-        gap: 5,
-        padding: "3px 9px",
-        borderRadius: 4,
-        fontSize: 10,
-        fontWeight: 800,
-        letterSpacing: "0.1em",
-        fontFamily: "monospace",
+        gap: 6,
+        padding: "4px 11px",
+        borderRadius: 999,
+        fontSize: 12,
+        fontWeight: 600,
         color: live ? "#fff" : C.blue,
-        background: live ? C.red : alpha(C.blue, 0.12),
-        border: `1px solid ${live ? C.red : alpha(C.blue, 0.6)}`,
+        background: live ? C.red : alpha(C.blue, 0.08),
+        border: `1px solid ${live ? C.red : alpha(C.blue, 0.3)}`,
         whiteSpace: "nowrap",
       }}
     >
-      <span aria-hidden>{live ? "●" : "◌"}</span>
-      {live ? "LIVE" : "PAPER"}
+      <span aria-hidden style={{ width: 7, height: 7, borderRadius: "50%", background: live ? "#fff" : C.blue }} />
+      {live ? "Live" : "Paper"}
     </span>
   );
 }
 
-function NavLink({ href, label, active }: { href: string; label: string; active: boolean }) {
-  return (
-    <Link
-      href={href}
-      aria-current={active ? "page" : undefined}
-      style={{
-        fontSize: 10,
-        fontWeight: 700,
-        letterSpacing: "0.1em",
-        color: active ? C.textStrong : C.muted,
-        textDecoration: "none",
-        padding: "6px 10px",
-        borderRadius: 4,
-        background: active ? C.navActive : "transparent",
-        borderBottom: `2px solid ${active ? C.gold : "transparent"}`,
-      }}
-    >
-      {label}
-    </Link>
-  );
-}
+type Page = "desk" | "live" | "copy" | "backtest";
+
+const NAV: { href: string; label: string; page: Page }[] = [
+  { href: "/", label: "Desk", page: "desk" },
+  { href: "/live", label: "Live P&L", page: "live" },
+  { href: "/copy", label: "Copy trade", page: "copy" },
+  { href: "/backtest", label: "Backtest", page: "backtest" },
+];
 
 export default function SiteHeader({
   active,
   mode,
   extra,
 }: {
-  active: "desk" | "live" | "copy" | "backtest" | null;
+  active: Page | null;
   mode?: EngineMode | null;
-  /** Page-specific status text shown before the mode badge (e.g. metals price source). */
+  /** Page-specific status shown before the mode badge. */
   extra?: ReactNode;
 }) {
   return (
     <header
+      className="site-header"
       style={{
-        minHeight: 56,
-        borderBottom: `1px solid ${C.borderSoft}`,
-        background: C.panelAlt,
-        display: "flex",
-        alignItems: "center",
-        justifyContent: "space-between",
-        flexWrap: "wrap",
-        gap: "8px 16px",
-        padding: "8px 24px",
+        borderBottom: `1px solid ${C.border}`,
+        background: "rgba(250, 249, 245, 0.88)",
+        backdropFilter: "saturate(1.4) blur(10px)",
+        WebkitBackdropFilter: "saturate(1.4) blur(10px)",
         flexShrink: 0,
       }}
     >
-      <div style={{ display: "flex", alignItems: "center", gap: 20, flexWrap: "wrap" }}>
-        <Link href="/" style={{ display: "flex", alignItems: "center", gap: 12, textDecoration: "none", color: "inherit" }}>
-          <div style={{ display: "flex", gap: 3 }} aria-hidden>
-            <div style={{ width: 4, height: 24, background: C.gold, borderRadius: 2 }} />
-            <div style={{ width: 4, height: 24, background: C.gold, borderRadius: 2, opacity: 0.5 }} />
-            <div style={{ width: 4, height: 24, background: C.gold, borderRadius: 2 }} />
-          </div>
-          <div>
-            <h1 style={{ margin: 0, fontSize: 17, fontWeight: 800, letterSpacing: "0.03em", lineHeight: 1.1 }}>
-              <span style={{ color: C.textStrong }}>RUPHAK</span> <span style={{ color: C.gold }}>TRADING INFO</span>
-            </h1>
-            <p style={{ margin: 0, fontSize: 8, color: C.muted3, textTransform: "uppercase", letterSpacing: "0.15em" }}>
-              India Index Desk · Geopolitical Intelligence
-            </p>
-          </div>
+      <div className="site-header-inner">
+        <Link href="/" style={{ display: "flex", alignItems: "center", gap: 10, textDecoration: "none", color: "inherit", minWidth: 0 }}>
+          <span
+            aria-hidden
+            style={{
+              width: 32,
+              height: 32,
+              borderRadius: 9,
+              background: C.gold,
+              color: "#fff",
+              display: "inline-flex",
+              alignItems: "center",
+              justifyContent: "center",
+              fontFamily: SERIF,
+              fontSize: 19,
+              fontWeight: 600,
+              flexShrink: 0,
+            }}
+          >
+            R
+          </span>
+          <span style={{ fontFamily: SERIF, fontSize: 20, fontWeight: 500, letterSpacing: "-0.01em", color: C.textStrong, whiteSpace: "nowrap" }}>
+            Ruphak <span style={{ color: C.muted }}>Trading Info</span>
+          </span>
         </Link>
-        <nav aria-label="Primary" style={{ display: "flex", flexWrap: "wrap", gap: 4 }}>
-          <NavLink href="/" label="DESK" active={active === "desk"} />
-          <NavLink href="/live" label="LIVE P&L" active={active === "live"} />
-          <NavLink href="/copy" label="COPY TRADE" active={active === "copy"} />
-          <NavLink href="/backtest" label="BACKTEST" active={active === "backtest"} />
+
+        <nav aria-label="Primary" className="site-nav">
+          {NAV.map((n) => {
+            const on = active === n.page;
+            return (
+              <Link
+                key={n.href}
+                href={n.href}
+                aria-current={on ? "page" : undefined}
+                className={on ? undefined : "nav-tab"}
+                style={{
+                  fontSize: 14,
+                  fontWeight: on ? 600 : 500,
+                  color: on ? C.textStrong : C.muted,
+                  textDecoration: "none",
+                  padding: "7px 14px",
+                  borderRadius: 10,
+                  background: on ? C.panelDeep : "transparent",
+                  whiteSpace: "nowrap",
+                  transition: "background 0.15s, color 0.15s",
+                }}
+              >
+                {n.label}
+              </Link>
+            );
+          })}
         </nav>
-      </div>
-      <div style={{ display: "flex", alignItems: "center", gap: 14, flexWrap: "wrap" }}>
-        {extra}
-        {mode && <ModeBadge mode={mode} />}
-        <a
-          href="https://www.ruphak.me"
-          target="_blank"
-          rel="noopener noreferrer"
-          style={{
-            background: C.gold,
-            color: "#000",
-            border: "none",
-            padding: "8px 20px",
-            borderRadius: 6,
-            fontSize: 12,
-            fontWeight: 700,
-            cursor: "pointer",
-            letterSpacing: "0.03em",
-            textDecoration: "none",
-            whiteSpace: "nowrap",
-          }}
-        >
-          Visit ruphak.me →
-        </a>
+
+        <div style={{ display: "flex", alignItems: "center", gap: 10, marginLeft: "auto" }}>
+          {extra}
+          {mode && <ModeBadge mode={mode} />}
+          <a
+            href="https://www.ruphak.me"
+            target="_blank"
+            rel="noopener noreferrer"
+            className="lift hide-sm"
+            style={{
+              background: C.panel,
+              color: C.textStrong,
+              border: `1px solid ${C.borderStrong}`,
+              padding: "6px 13px",
+              borderRadius: 10,
+              fontSize: 13,
+              fontWeight: 600,
+              textDecoration: "none",
+              whiteSpace: "nowrap",
+            }}
+          >
+            ruphak.me ↗
+          </a>
+        </div>
       </div>
     </header>
   );

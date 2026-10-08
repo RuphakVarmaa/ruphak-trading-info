@@ -1,129 +1,93 @@
 'use client';
 
-import type { ChokepointStatus } from '@/utils/api';
-import { useUtcTime } from '@/components/shared/UtcClock';
+import { CHOKEPOINT_WINDOW_HOURS, type ChokepointNews, type NewsLevel } from '@/utils/api';
+import { timeAgo } from '@/components/shared/format';
+import { useClientNow } from '@/hooks/useEngineState';
+import { alpha, C } from '@/components/shared/colors';
 
-function getStatusColor(status: ChokepointStatus['status']): string {
-  if (status === 'CRITICAL') return '#f44336';
-  if (status === 'ELEVATED') return '#ff9800';
-  return '#4caf50';
-}
-
-function getStatusBg(status: ChokepointStatus['status']): string {
-  if (status === 'CRITICAL') return 'rgba(244,67,54,0.12)';
-  if (status === 'ELEVATED') return 'rgba(255,152,0,0.10)';
-  return 'transparent';
-}
+const LEVEL: Record<NewsLevel, { color: string; word: string }> = {
+  heavy: { color: C.red, word: 'Heavy coverage' },
+  in_news: { color: C.orange, word: 'In the news' },
+  quiet: { color: C.green, word: 'Quiet' },
+};
 
 interface ChokepointMonitorProps {
-  chokepoints: ChokepointStatus[];
-  selectedChokepoint: string | null;
-  onSelect: (name: string) => void;
+  chokepoints: ChokepointNews[];
+  selected: string;
+  onSelect: (id: string) => void;
+  /** False until the headlines and the browser clock are in: counts would read zero. */
+  ready: boolean;
 }
 
-export default function ChokepointMonitor({
-  chokepoints,
-  selectedChokepoint,
-  onSelect,
-}: ChokepointMonitorProps) {
-  const selected = chokepoints.find((c) => c.name === selectedChokepoint) || chokepoints[0];
-  const utcTime = useUtcTime();
+/** Shipping chokepoints by how often they are in the headlines: a news-flow gauge, not vessel tracking. */
+export default function ChokepointMonitor({ chokepoints, selected, onSelect, ready }: ChokepointMonitorProps) {
+  const now = useClientNow();
+  const current = chokepoints.find((c) => c.spec.id === selected) ?? chokepoints[0];
 
   return (
-    <div style={{ height: '100%', display: 'flex', flexDirection: 'column', background: '#0d0d0d', padding: '10px 14px' }}>
-      {/* Header */}
-      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 8 }}>
-        <div style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 11, fontWeight: 700, letterSpacing: '0.08em', textTransform: 'uppercase' }}>
-          <span style={{ color: '#ffb300' }}>🚢</span>
-          MARITIME CHOKEPOINT MONITOR
-          <span style={{ display: 'flex', alignItems: 'center', gap: 5, fontSize: 9, color: '#4caf50' }}>
-            <span style={{ width: 5, height: 5, borderRadius: '50%', background: '#4caf50', display: 'inline-block' }} />
-            LIVE AIS
-          </span>
-        </div>
-        <span style={{ fontSize: 9, color: '#555', fontFamily: 'monospace' }}>
-          {utcTime} UTC
-        </span>
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 10, background: C.panelAlt, padding: '14px 18px' }}>
+      <div style={{ display: 'flex', alignItems: 'baseline', justifyContent: 'space-between', gap: 8, flexWrap: 'wrap' }}>
+        <span style={{ fontSize: 15, fontWeight: 600, color: C.textStrong }}>Shipping chokepoints</span>
+        <span style={{ fontSize: 12, color: C.muted2 }}>headlines naming each one, last {CHOKEPOINT_WINDOW_HOURS} h · not vessel tracking</span>
       </div>
 
-      {/* Chokepoint Tabs */}
-      <div style={{ display: 'flex', gap: 4, marginBottom: 8, flexWrap: 'wrap' }}>
-        {chokepoints.map((cp) => (
-          <button
-            key={cp.name}
-            onClick={() => onSelect(cp.name)}
-            style={{
-              padding: '4px 10px',
-              borderRadius: 4,
-              border: `1px solid ${selectedChokepoint === cp.name ? getStatusColor(cp.status) + '60' : '#333'}`,
-              background: selectedChokepoint === cp.name ? getStatusBg(cp.status) : 'transparent',
-              color: selectedChokepoint === cp.name ? getStatusColor(cp.status) : '#666',
-              fontSize: 9,
-              fontWeight: 700,
-              letterSpacing: '0.05em',
-              textTransform: 'uppercase',
-              cursor: 'pointer',
-              display: 'flex',
-              alignItems: 'center',
-              gap: 5,
-              transition: 'all 0.15s',
-              fontFamily: 'monospace',
-            }}
-          >
-            <span
+      <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+        {chokepoints.map((cp) => {
+          const on = current?.spec.id === cp.spec.id;
+          const color = ready ? LEVEL[cp.level].color : C.muted3;
+          return (
+            <button
+              key={cp.spec.id}
+              type="button"
+              aria-pressed={on}
+              onClick={() => onSelect(cp.spec.id)}
+              title={ready ? `${LEVEL[cp.level].word}: ${cp.count} headline${cp.count === 1 ? '' : 's'}` : undefined}
               style={{
-                width: 6,
-                height: 6,
-                borderRadius: '50%',
-                background: getStatusColor(cp.status),
-                display: 'inline-block',
-              }}
-            />
-            {cp.name}
-          </button>
-        ))}
-      </div>
-
-      {/* Selected Detail */}
-      {selected && (
-        <div style={{ display: 'flex', alignItems: 'center', gap: 20, fontSize: 10, color: '#888' }}>
-          <div>
-            <span style={{ color: '#eee', fontWeight: 600 }}>{selected.details}</span>
-          </div>
-          {selected.oilTransit && (
-            <>
-              <div>
-                <span style={{ color: '#555' }}>OIL TRANSIT: </span>
-                <span style={{ color: '#ccc', fontFamily: 'monospace' }}>{selected.oilTransit}</span>
-              </div>
-              <div>
-                <span style={{ color: '#555' }}>GLOBAL SHARE: </span>
-                <span style={{ color: '#ccc', fontFamily: 'monospace' }}>{selected.globalShare}</span>
-              </div>
-            </>
-          )}
-          <div style={{ marginLeft: 'auto' }}>
-            <span
-              style={{
-                padding: '3px 10px',
-                borderRadius: 3,
-                background: getStatusBg(selected.status),
-                color: getStatusColor(selected.status),
-                fontWeight: 700,
-                fontSize: 9,
-                letterSpacing: '0.04em',
-                border: `1px solid ${getStatusColor(selected.status)}40`,
+                padding: '5px 11px',
+                borderRadius: 999,
+                border: `1px solid ${on ? alpha(color, 0.55) : C.border}`,
+                background: on ? alpha(color, 0.1) : C.panel,
+                color: on ? C.textStrong : C.textSoft,
+                fontSize: 12.5,
+                fontWeight: on ? 600 : 500,
+                cursor: 'pointer',
+                display: 'flex',
+                alignItems: 'center',
+                gap: 6,
               }}
             >
-              ⚠ {selected.status}
-            </span>
+              <span aria-hidden style={{ width: 7, height: 7, borderRadius: '50%', background: color, display: 'inline-block' }} />
+              {cp.spec.name.replace(/^Strait of /, '').replace(/ and Bab el-Mandeb$/, '')}
+              {ready && cp.count > 0 && (
+                <span className="tnum" style={{ color: C.muted2, fontWeight: 600 }}>
+                  {cp.count}
+                </span>
+              )}
+            </button>
+          );
+        })}
+      </div>
+
+      {current && (
+        <div style={{ display: 'grid', gap: 4, fontSize: 13, color: C.muted, lineHeight: 1.5 }}>
+          <div style={{ display: 'flex', flexWrap: 'wrap', alignItems: 'baseline', gap: '4px 10px' }}>
+            <span style={{ color: C.textStrong, fontWeight: 600 }}>{current.spec.name}</span>
+            {ready && (
+              <span style={{ color: LEVEL[current.level].color, fontWeight: 600 }}>
+                {LEVEL[current.level].word} · {current.count} headline{current.count === 1 ? '' : 's'}
+              </span>
+            )}
           </div>
-          <div>
-            <span style={{ color: '#555' }}>Risk Score: </span>
-            <span style={{ color: selected.riskScore > 70 ? '#f44336' : selected.riskScore > 40 ? '#ff9800' : '#4caf50', fontWeight: 700, fontFamily: 'monospace' }}>
-              {selected.riskScore}/100
-            </span>
-          </div>
+          {current.spec.fact && <span>{current.spec.fact}</span>}
+          {ready && current.latest && (
+            <a href={current.latest.url} target="_blank" rel="noopener noreferrer" className="link-quiet" style={{ color: C.textSoft, textDecoration: 'none' }}>
+              Latest: {current.latest.title}{' '}
+              <span style={{ color: C.muted3 }}>
+                · {current.latest.source}
+                {now != null ? ` · ${timeAgo(current.latest.publishedAt, now)}` : ''} ↗
+              </span>
+            </a>
+          )}
         </div>
       )}
     </div>

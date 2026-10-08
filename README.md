@@ -2,7 +2,11 @@
 
 Ruphak Trading Info reads global and Indian news, turns each story into a structured, time-decaying view on **NIFTY 50** and **SENSEX**, combines it with market signals, and generates **BUY CE / BUY PE** trades on weekly index options. It paper-trades by default. Live orders go through Groww, only after several explicit switches are turned on.
 
-The original metals and geopolitics terminal is still on the page, below the new India Index Desk.
+Below the desk, a metals and macro section shows live data only:
+
+- **Prices:** front-month COMEX and NYMEX futures (gold, silver, platinum, copper, WTI and Brent) from Yahoo Finance through `/api/prices`, refreshed every minute, with a one-month sparkline. If Yahoo does not answer, the page says so instead of showing old numbers.
+- **Headlines:** Bing News RSS searches on metals, oil and shipping through `/api/metals/headlines`, refreshed every 5 minutes and placed on the map.
+- **Shipping chokepoints:** how many of those headlines name each chokepoint in the last 72 hours. This is a news-flow gauge, not vessel tracking.
 
 > **Read this first.** This is a research and trading tool, not investment advice. The authors are not SEBI-registered advisers. Buying options can lose the entire premium, and most intraday option buyers lose money after costs. Nothing here has a proven edge yet. Run it in paper mode, measure it, and decide for yourself. Live trading is off unless you deliberately enable it, and every live order is your responsibility.
 

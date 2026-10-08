@@ -4,7 +4,7 @@ import type { IndexId, SignalView } from "@/engine/api-types";
 import { useEngineState, useNow } from "@/hooks/useEngineState";
 import { C, regimeColor, regimeGlyph, stanceColor, stanceGlyph, dirColor, dirGlyph } from "@/components/shared/colors";
 import { enumLabel, fmtAge, fmtNum, fmtPct } from "@/components/shared/format";
-import { PanelHeader, Pill, Skeleton } from "@/components/shared/ui";
+import { Panel, Pill, Skeleton } from "@/components/shared/ui";
 import PositionLive from "./PositionLive";
 import { ComponentBars, ContractBlock, ContributorList, ConvictionGauge, GateList, IndicatorBlock, Rationale } from "./SignalParts";
 
@@ -15,16 +15,27 @@ function Updated({ at }: { at: string }) {
   return <span className="tnum">{now == null ? "—" : `${fmtAge(Math.max(0, now - Date.parse(at)))} ago`}</span>;
 }
 
+const Divider = () => <div aria-hidden style={{ height: 1, background: C.borderSoft, margin: "2px 0" }} />;
+
+function CardShell({ children, label }: { children: React.ReactNode; label: string }) {
+  return (
+    <Panel style={{ padding: 18, display: "flex", flexDirection: "column", gap: 16, minWidth: 0 }}>
+      <section aria-label={label} style={{ display: "contents" }}>
+        {children}
+      </section>
+    </Panel>
+  );
+}
+
 function CardSkeleton({ index }: { index: IndexId }) {
   return (
-    <div style={{ padding: "14px 16px", display: "flex", flexDirection: "column", gap: 14 }}>
-      <div style={{ fontSize: 13, fontWeight: 800, color: C.textSoft }}>{INDEX_LABEL[index]}</div>
+    <CardShell label={`${INDEX_LABEL[index]} signal`}>
+      <div style={{ fontSize: 18, fontWeight: 800, color: C.textStrong }}>{INDEX_LABEL[index]}</div>
       <Skeleton height={22} width="60%" />
-      <Skeleton height={36} />
+      <Skeleton height={40} />
       <Skeleton height={64} />
-      <Skeleton height={48} />
       <Skeleton height={90} />
-    </div>
+    </CardShell>
   );
 }
 
@@ -38,12 +49,10 @@ function NoSignal({ index }: { index: IndexId }) {
       ? "The engine evaluates every 30 seconds; the first decision appears after its next tick."
       : `Market ${phase === "HOLIDAY" ? "holiday" : "closed"}. The engine evaluates every 30 seconds from ${nextOpen ? new Date(nextOpen).toLocaleString("en-IN", { timeZone: "Asia/Kolkata", weekday: "short", hour: "2-digit", minute: "2-digit" }) : "the next open"} IST.`;
   return (
-    <div style={{ padding: "14px 16px", display: "flex", flexDirection: "column", gap: 10 }}>
-      <div style={{ fontSize: 13, fontWeight: 800, color: C.textSoft }}>{INDEX_LABEL[index]}</div>
-      <div style={{ fontSize: 11, color: C.muted3, lineHeight: 1.6 }}>
-        – No signal yet. {when}
-      </div>
-    </div>
+    <CardShell label={`${INDEX_LABEL[index]} signal`}>
+      <div style={{ fontSize: 18, fontWeight: 800, color: C.textStrong }}>{INDEX_LABEL[index]}</div>
+      <div style={{ fontSize: 13, color: C.muted, lineHeight: 1.6 }}>No signal yet. {when}</div>
+    </CardShell>
   );
 }
 
@@ -53,36 +62,33 @@ function SignalCard({ index, signal, loaded }: { index: IndexId; signal: SignalV
   const quote = state?.quotes.find((q) => q.key === index);
   const sColor = stanceColor(signal.stance);
   return (
-    <section
-      aria-label={`${INDEX_LABEL[index]} signal`}
-      style={{ padding: "14px 16px", display: "flex", flexDirection: "column", gap: 14, overflowY: "auto", minHeight: 0 }}
-    >
-      <div style={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between", gap: 10 }}>
+    <CardShell label={`${INDEX_LABEL[index]} signal`}>
+      <div style={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between", gap: 12 }}>
         <div style={{ minWidth: 0 }}>
-          <div style={{ display: "flex", alignItems: "baseline", gap: 8, flexWrap: "wrap" }}>
-            <span style={{ fontSize: 14, fontWeight: 800, color: C.textStrong, letterSpacing: "0.04em" }}>{INDEX_LABEL[index]}</span>
+          <div style={{ display: "flex", alignItems: "baseline", gap: 10, flexWrap: "wrap" }}>
+            <span style={{ fontSize: 18, fontWeight: 800, color: C.textStrong, letterSpacing: "0.01em" }}>{INDEX_LABEL[index]}</span>
             {signal.spot != null && (
-              <span className="tnum" style={{ fontSize: 13, fontFamily: "monospace", color: C.textSoft }}>
+              <span className="tnum" style={{ fontSize: 17, fontFamily: "var(--font-num)", color: C.textStrong }}>
                 {fmtNum(signal.spot)}
               </span>
             )}
             {quote && (
-              <span className="tnum" style={{ fontSize: 10, fontFamily: "monospace", color: dirColor(quote.change) }}>
+              <span className="tnum" style={{ fontSize: 12, fontFamily: "var(--font-num)", fontWeight: 700, color: dirColor(quote.change) }}>
                 {dirGlyph(quote.change)}
                 {fmtPct(Math.abs(quote.changePct), 2, false)}
               </span>
             )}
           </div>
-          <div style={{ display: "flex", alignItems: "center", gap: 6, marginTop: 5, flexWrap: "wrap" }}>
+          <div style={{ display: "flex", alignItems: "center", gap: 8, marginTop: 6, flexWrap: "wrap" }}>
             <Pill color={regimeColor(signal.regime)} title="Rule-based market regime">
               {regimeGlyph(signal.regime)} {enumLabel(signal.regime)}
             </Pill>
-            <span style={{ fontSize: 9, color: C.muted3 }}>
-              threshold ±{signal.entryThreshold.toFixed(2)} · updated <Updated at={signal.computedAt} />
+            <span style={{ fontSize: 11, color: C.muted2 }}>
+              trades at ±{signal.entryThreshold.toFixed(2)} · updated <Updated at={signal.computedAt} />
             </span>
           </div>
         </div>
-        <Pill color={sColor} solid={signal.stance !== "NEUTRAL"} style={{ fontSize: 11, padding: "4px 10px" }}>
+        <Pill color={sColor} solid={signal.stance !== "NEUTRAL"} style={{ fontSize: 11, padding: "5px 11px" }}>
           {stanceGlyph(signal.stance)} {signal.stance}
         </Pill>
       </div>
@@ -90,30 +96,27 @@ function SignalCard({ index, signal, loaded }: { index: IndexId; signal: SignalV
       <ConvictionGauge index={index} conviction={signal.conviction} threshold={signal.entryThreshold} stance={signal.stance} />
       {signal.position && <PositionLive p={signal.position} />}
       <ContractBlock signal={signal} />
+      <Divider />
       <GateList gates={signal.gates} allPassed={signal.allGatesPassed} />
-      <ContributorList contributors={signal.contributors} />
+      <Divider />
       <ComponentBars components={signal.components} />
+      <ContributorList contributors={signal.contributors} />
+      <Divider />
       <IndicatorBlock ind={signal.indicators} />
       <Rationale text={signal.rationale} />
-    </section>
+    </CardShell>
   );
 }
 
+/** One card per traded index: conviction, the trade plan, the checks, the signals and the indicators behind them. */
 export default function SignalConsole() {
   const { signals } = useEngineState();
+  const indices: IndexId[] = ["NIFTY", "SENSEX"];
   return (
-    <div style={{ display: "flex", flexDirection: "column", height: "100%", background: C.panel, minHeight: 0 }}>
-      <PanelHeader icon="◎" title="Signal console" right={<span style={{ fontSize: 9, color: C.muted3, letterSpacing: "0.04em" }}>ATM weekly options · long only</span>} />
-      <div
-        className="signal-grid"
-        style={{ flex: 1, minHeight: 0, display: "grid", gridTemplateColumns: "minmax(0, 1fr) minmax(0, 1fr)", gridTemplateRows: "minmax(0, 1fr)" }}
-      >
-        {(["NIFTY", "SENSEX"] as IndexId[]).map((index, i) => (
-          <div key={index} style={{ minHeight: 0, display: "flex", flexDirection: "column", borderLeft: i > 0 ? `1px solid ${C.border}` : undefined }}>
-            <SignalCard index={index} signal={signals?.find((s) => s.index === index) ?? null} loaded={Array.isArray(signals)} />
-          </div>
-        ))}
-      </div>
+    <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(min(100%, 380px), 1fr))", gap: 16, alignItems: "start" }}>
+      {indices.map((index) => (
+        <SignalCard key={index} index={index} signal={signals?.find((s) => s.index === index) ?? null} loaded={Array.isArray(signals)} />
+      ))}
     </div>
   );
 }

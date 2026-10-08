@@ -6,8 +6,8 @@ import { alpha, C, pnlColor } from "@/components/shared/colors";
 import { fmtInr, fmtIstHm, fmtNum, fmtPct } from "@/components/shared/format";
 import { Pill } from "@/components/shared/ui";
 
-const label: CSSProperties = { fontSize: 9, color: C.muted2, textTransform: "uppercase", letterSpacing: "0.06em", fontWeight: 700 };
-const mono: CSSProperties = { fontFamily: "monospace", fontVariantNumeric: "tabular-nums" };
+const label: CSSProperties = { fontSize: 12, color: C.muted, fontWeight: 500 };
+const mono: CSSProperties = { fontFamily: "var(--font-num)", fontVariantNumeric: "tabular-nums" };
 const prem = (x: number) => `₹${x.toFixed(2)}`;
 
 const REGIME_TEXT: Record<string, string> = { TREND_UP: "trending up", TREND_DOWN: "trending down", RANGE: "range-bound", HIGH_VOL: "high volatility", EVENT: "news-driven" };
@@ -102,9 +102,9 @@ function YourFill({ t }: { t: CopyTicketView }) {
   const trailAt = fill * (1 + lv.trailActivatePct / 100);
   const mark = t.live?.mark ?? null;
   return (
-    <div style={{ background: C.panelAlt, border: `1px solid ${C.border}`, borderRadius: 8, padding: 12 }}>
+    <div style={{ background: C.panelAlt, border: `1px solid ${C.border}`, borderRadius: 12, padding: "12px 14px" }}>
       <div style={{ display: "flex", flexWrap: "wrap", alignItems: "center", gap: 10 }}>
-        <label htmlFor={`fill-${t.id}`} style={{ ...label, fontSize: 10 }}>
+        <label htmlFor={`fill-${t.id}`} style={{ ...label, fontSize: 13, fontWeight: 600, color: C.textSoft }}>
           Your fill price
         </label>
         <input

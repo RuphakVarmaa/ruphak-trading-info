@@ -25,10 +25,10 @@ export default function ChargesSummary({ pnl }: { pnl: PnlResponse | null }) {
   return (
     <div>
       <div style={{ display: "flex", alignItems: "baseline", gap: 8, marginBottom: 10 }}>
-        <span style={{ fontSize: 11, fontWeight: 700, letterSpacing: "0.08em", textTransform: "uppercase" }}>Charges</span>
-        <span style={{ fontSize: 9, color: C.muted3 }}>last {pnl.history.length} sessions + today</span>
+        <span style={{ fontSize: 15.5, fontWeight: 600, color: C.textStrong }}>Charges</span>
+        <span style={{ fontSize: 12.5, color: C.muted2 }}>last {pnl.history.length} sessions + today</span>
       </div>
-      <div className="tnum" style={{ fontSize: 22, fontWeight: 700, fontFamily: "monospace", color: C.textStrong }}>
+      <div className="tnum" style={{ fontSize: 22, fontWeight: 700, fontFamily: "var(--font-num)", color: C.textStrong }}>
         {fmtInr(c.total, { decimals: 2 })}
       </div>
       <div style={{ fontSize: 10, color: C.muted, marginBottom: 12 }}>
@@ -40,12 +40,12 @@ export default function ChargesSummary({ pnl }: { pnl: PnlResponse | null }) {
           const v = c[r.key];
           const frac = c.total > 0 ? v / c.total : 0;
           return (
-            <div key={r.key} style={{ display: "grid", gridTemplateColumns: "96px 1fr 76px", gap: 8, alignItems: "center", fontSize: 10 }}>
+            <div key={r.key} style={{ display: "grid", gridTemplateColumns: "110px 1fr 84px", gap: 10, alignItems: "center", fontSize: 12 }}>
               <span style={{ color: C.textDim }}>{r.label}</span>
-              <div style={{ height: 6, background: "#1a1a1a", borderRadius: 3 }}>
-                <div style={{ width: `${frac * 100}%`, height: "100%", background: "#8a6d1f", borderRadius: 3 }} />
+              <div style={{ height: 6, background: C.track, borderRadius: 3 }}>
+                <div style={{ width: `${frac * 100}%`, height: "100%", background: C.gold, borderRadius: 3 }} />
               </div>
-              <span className="tnum" style={{ textAlign: "right", fontFamily: "monospace", color: C.textSoft }}>
+              <span className="tnum" style={{ textAlign: "right", fontFamily: "var(--font-num)", color: C.textSoft }}>
                 {fmtInr(v, { decimals: 2 })}
               </span>
             </div>

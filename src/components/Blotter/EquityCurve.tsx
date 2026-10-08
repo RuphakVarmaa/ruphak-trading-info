@@ -86,8 +86,8 @@ export default function EquityCurve({
   return (
     <div>
       <div style={{ display: "flex", alignItems: "baseline", gap: 10, marginBottom: 8, flexWrap: "wrap" }}>
-        <span style={{ fontSize: 11, fontWeight: 700, letterSpacing: "0.08em", textTransform: "uppercase" }}>{label}</span>
-        <span className="tnum" style={{ fontSize: 10, fontFamily: "monospace", color: change >= 0 ? C.green : C.red }}>
+        <span style={{ fontSize: 15.5, fontWeight: 600, color: C.textStrong }}>{label}</span>
+        <span className="tnum" style={{ fontSize: 12.5, fontFamily: "var(--font-num)", color: change >= 0 ? C.green : C.red }}>
           {change >= 0 ? "▲" : "▼"} {fmtInr(change, { sign: true })} vs start
         </span>
         <Btn variant="ghost" style={{ marginLeft: "auto" }} aria-pressed={showTable} onClick={() => setShowTable((s) => !s)}>
@@ -159,20 +159,20 @@ export default function EquityCurve({
             </defs>
             {ticks.map((v) => (
               <g key={v}>
-                <line x1={pad.l} x2={pad.l + plotW} y1={y(v)} y2={y(v)} stroke="#1c1c1c" strokeWidth={1} />
-                <text x={pad.l - 8} y={y(v) + 3} textAnchor="end" fontSize={9} fill="#777" fontFamily="monospace">
+                <line x1={pad.l} x2={pad.l + plotW} y1={y(v)} y2={y(v)} stroke={C.borderSoft} strokeWidth={1} />
+                <text x={pad.l - 8} y={y(v) + 3} textAnchor="end" fontSize={9} fill={C.muted3} style={{ fontFamily: "var(--font-num)" }}>
                   {fmtInr(v, { compact: true })}
                 </text>
               </g>
             ))}
-            <line x1={pad.l} x2={pad.l + plotW} y1={y(baseline)} y2={y(baseline)} stroke="#4a4a4a" strokeWidth={1} />
+            <line x1={pad.l} x2={pad.l + plotW} y1={y(baseline)} y2={y(baseline)} stroke={C.borderStrong} strokeWidth={1} />
             <text
               x={pad.l + plotW - 4}
               y={last.equity >= baseline ? y(baseline) + 12 : y(baseline) - 5}
               textAnchor="end"
               fontSize={8}
               fill={C.muted}
-              fontFamily="monospace"
+              style={{ fontFamily: "var(--font-num)" }}
             >
               start {fmtInr(baseline)}
             </text>
@@ -186,14 +186,14 @@ export default function EquityCurve({
                 textAnchor={i === 0 ? "start" : i === n - 1 ? "end" : "middle"}
                 fontSize={9}
                 fill={C.muted3}
-                fontFamily="monospace"
+                style={{ fontFamily: "var(--font-num)" }}
               >
                 {fmtIstDate(points[i].t)}
               </text>
             ))}
             {active != null && a && (
               <g>
-                <line x1={x(active)} x2={x(active)} y1={pad.t} y2={pad.t + plotH} stroke="#666" strokeWidth={1} />
+                <line x1={x(active)} x2={x(active)} y1={pad.t} y2={pad.t + plotH} stroke={C.muted3} strokeWidth={1} />
                 <circle cx={x(active)} cy={y(a.equity)} r={4.5} fill={C.gold} stroke={C.panel} strokeWidth={2} />
               </g>
             )}
@@ -214,12 +214,12 @@ export default function EquityCurve({
               minWidth: 140,
             }}
           >
-            <div className="tnum" style={{ fontSize: 13, fontWeight: 700, color: C.textStrong, fontFamily: "monospace" }}>
+            <div className="tnum" style={{ fontSize: 13, fontWeight: 700, color: C.textStrong, fontFamily: "var(--font-num)" }}>
               {fmtInr(a.equity)}
             </div>
             <div style={{ fontSize: 9, color: C.muted }}>{fmtIstDate(a.t)}</div>
             {prev && (
-              <div className="tnum" style={{ fontSize: 9, fontFamily: "monospace", color: a.equity >= prev.equity ? C.green : C.red }}>
+              <div className="tnum" style={{ fontSize: 9, fontFamily: "var(--font-num)", color: a.equity >= prev.equity ? C.green : C.red }}>
                 {a.equity >= prev.equity ? "▲" : "▼"} {fmtInr(a.equity - prev.equity, { sign: true })} day
               </div>
             )}

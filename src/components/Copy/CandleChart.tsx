@@ -79,7 +79,7 @@ export default function CandleChart({ feed, marks }: { feed: IntradayFeed; marks
           {grid.map((g) => (
             <g key={g}>
               <line x1={PAD.l} x2={PAD.l + innerW} y1={y(g)} y2={y(g)} stroke={C.borderSoft} strokeWidth={1} />
-              <text x={PAD.l + innerW + 6} y={y(g) + 3} fill={C.muted3} fontSize={9} fontFamily="monospace">
+              <text x={PAD.l + innerW + 6} y={y(g) + 3} fill={C.muted3} fontSize={9} style={{ fontFamily: "var(--font-num)" }}>
                 {fmtNum(g, 0)}
               </text>
             </g>
@@ -88,7 +88,7 @@ export default function CandleChart({ feed, marks }: { feed: IntradayFeed; marks
             const [hh, mm] = tk.split(":").map(Number);
             const tx = PAD.l + ((hh * 60 + mm - OPEN_MIN) / SESSION_MIN) * innerW;
             return (
-              <text key={tk} x={tx} y={H - 6} fill={C.muted3} fontSize={9} fontFamily="monospace" textAnchor={tk === "09:15" ? "start" : tk === "15:30" ? "end" : "middle"}>
+              <text key={tk} x={tx} y={H - 6} fill={C.muted3} fontSize={9} style={{ fontFamily: "var(--font-num)" }} textAnchor={tk === "09:15" ? "start" : tk === "15:30" ? "end" : "middle"}>
                 {tk}
               </text>
             );
@@ -167,7 +167,7 @@ export default function CandleChart({ feed, marks }: { feed: IntradayFeed; marks
             <g>
               <line x1={PAD.l + innerW} x2={PAD.l + innerW + 4} y1={y(feed.last)} y2={y(feed.last)} stroke={C.textStrong} />
               <rect x={PAD.l + innerW + 4} y={y(feed.last) - 8} width={PAD.r - 6} height={16} rx={3} fill={C.textStrong} />
-              <text x={PAD.l + innerW + 8} y={y(feed.last) + 4} fill={C.panel} fontSize={10} fontFamily="monospace" fontWeight={700}>
+              <text x={PAD.l + innerW + 8} y={y(feed.last) + 4} fill={C.panel} fontSize={10} style={{ fontFamily: "var(--font-num)" }} fontWeight={700}>
                 {fmtNum(feed.last, 0)}
               </text>
             </g>
@@ -192,7 +192,7 @@ export default function CandleChart({ feed, marks }: { feed: IntradayFeed; marks
             borderRadius: 6,
             padding: "5px 8px",
             fontSize: 10,
-            fontFamily: "monospace",
+            fontFamily: "var(--font-num)",
             color: C.textSoft,
           }}
         >

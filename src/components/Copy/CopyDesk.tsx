@@ -1,31 +1,24 @@
 "use client";
 
-import { useEffect, useRef, useState, type CSSProperties, type ReactNode } from "react";
+import { useEffect, useRef, useState } from "react";
 import type { CopyTicketView, IndexId, SignalView } from "@/engine/api-types";
 import AccountSwitcher from "@/components/Live/AccountSwitcher";
 import { alpha, C, pnlColor } from "@/components/shared/colors";
-import { SERIF } from "@/components/shared/theme";
 import { fmtAge, fmtInr, fmtIstDay, fmtIstHm } from "@/components/shared/format";
-import { Btn, EmptyState, Panel, PanelHeader, Skeleton } from "@/components/shared/ui";
+import { Btn, EmptyState, PageHeader, Panel, PanelHeader, Section, Skeleton } from "@/components/shared/ui";
 import { useClientNow, useEngineState } from "@/hooks/useEngineState";
 import type { IntradayFeed } from "@/lib/market/intraday";
 import CandleChart from "./CandleChart";
 import TicketCard, { MarketChips, SetupPanel } from "./TicketCard";
-import { usePolled } from "./usePolled";
+import { usePolled } from "@/hooks/usePolled";
 
-const sectionLabel: CSSProperties = { fontSize: 10, color: C.muted, textTransform: "uppercase", letterSpacing: "0.1em", fontWeight: 700, margin: "0 0 10px" };
 const PAGE_TITLE = "Copy trades — Ruphak India Index Desk";
 
-function Section({ title, right, children }: { title: string; right?: ReactNode; children: ReactNode }) {
-  return (
-    <section>
-      <div style={{ display: "flex", alignItems: "baseline", justifyContent: "space-between", gap: 8, flexWrap: "wrap" }}>
-        <h2 style={sectionLabel}>{title}</h2>
-        {right}
-      </div>
-      {children}
-    </section>
-  );
+
+/** The chart's empty state: "no candles yet" is normal before the open; anything else is a feed problem. */
+function candleNote(error: string): string {
+  if (error.startsWith("NOT_FOUND")) return "No 5-minute candles for this day yet. The chart fills in once the market opens at 09:15 IST.";
+  return `The 5-minute chart is unavailable right now (${error.replace(/^[A-Z_]+: /, "")}). It retries on its own.`;
 }
 
 /** A short two-tone chime (Web Audio, no file to load). Browsers allow it once the page has been clicked. */
@@ -81,7 +74,7 @@ function Waiting({ signals, phase }: { signals: SignalView[] | null; phase: stri
             <div key={s.index} style={{ display: "grid", gap: 6 }}>
               <div style={{ display: "flex", justifyContent: "space-between", flexWrap: "wrap", gap: 8, fontSize: 12 }}>
                 <b style={{ color: C.textStrong }}>{s.index}</b>
-                <span style={{ color: C.muted, fontFamily: "monospace" }}>
+                <span style={{ color: C.muted, fontFamily: "var(--font-num)" }}>
                   {s.stance.toLowerCase()} {s.conviction >= 0 ? "+" : "−"}
                   {Math.abs(s.conviction).toFixed(2)} · needs {s.entryThreshold.toFixed(2)} · {s.regime.replace("_", " ").toLowerCase()}
                 </span>
@@ -122,12 +115,12 @@ function TicketRow({ t, selected, onPick }: { t: CopyTicketView; selected: boole
         fontSize: 12,
       }}
     >
-      <span style={{ fontFamily: "monospace", color: C.muted }}>{fmtIstHm(t.entry.at)}</span>
+      <span style={{ fontFamily: "var(--font-num)", color: C.muted }}>{fmtIstHm(t.entry.at)}</span>
       <span>
         <b style={{ color: C.textStrong }}>{t.headline}</b>
         <span style={{ color: C.muted2 }}> · {t.status === "OPEN" ? "open" : t.exit?.reasonText.toLowerCase()}</span>
       </span>
-      <span style={{ fontFamily: "monospace", fontWeight: 700, color: pnlColor(pnl) }}>{fmtInr(pnl, { decimals: 0, sign: true })}</span>
+      <span style={{ fontFamily: "var(--font-num)", fontWeight: 700, color: pnlColor(pnl) }}>{fmtInr(pnl, { decimals: 0, sign: true })}</span>
     </button>
   );
 }
@@ -203,21 +196,20 @@ export default function CopyDesk({ initialId }: { initialId: string | null }) {
   const accountLabel = state?.account && state.account.id !== "main" ? `${state.account.label} (${fmtInr(state.account.capitalRupees, { decimals: 0 })})` : "Main account";
 
   return (
-    <main style={{ width: "100%", maxWidth: 1080, margin: "0 auto", padding: "20px 16px 48px", display: "grid", gap: 24, boxSizing: "border-box" }}>
-      <div style={{ display: "flex", flexWrap: "wrap", alignItems: "flex-end", justifyContent: "space-between", gap: 8 }}>
-        <div>
-          <h1 style={{ margin: 0, fontSize: 28, fontWeight: 500, color: C.textStrong, fontFamily: SERIF, letterSpacing: "-0.01em" }}>Copy trades</h1>
-          <p style={{ margin: "4px 0 0", fontSize: 12, color: C.muted }}>
-            {accountLabel} · what the paper engine buys and sells, to repeat by hand in your own account{state ? ` · ${fmtIstDay(state.market.nowIst)}` : ""}
-          </p>
-        </div>
-        <div style={{ display: "flex", flexWrap: "wrap", alignItems: "center", gap: 12 }}>
-          <AccountSwitcher basePath="/copy" />
-          <span className="tnum" style={{ fontSize: 11, color: C.muted2, fontFamily: "monospace" }}>{updated}</span>
-        </div>
-      </div>
+    <main style={{ width: "100%", maxWidth: 1240, margin: "0 auto", padding: "32px 16px 56px", display: "grid", gap: 32, boxSizing: "border-box" }}>
+      <PageHeader
+        eyebrow={state ? fmtIstDay(state.market.nowIst) : "Copy trading"}
+        title="Copy trades"
+        sub={`${accountLabel}: what the paper engine buys and sells, with the levels, the setup and the price action, to repeat by hand in your own account.`}
+        right={
+          <>
+            <AccountSwitcher basePath="/copy" />
+            <span className="tnum" style={{ fontSize: 12, color: C.muted2 }}>{updated}</span>
+          </>
+        }
+      />
 
-      <div style={{ display: "flex", flexWrap: "wrap", alignItems: "center", gap: 10, padding: "10px 12px", borderRadius: 8, background: C.panel, border: `1px solid ${C.border}` }}>
+      <div style={{ display: "flex", flexWrap: "wrap", alignItems: "center", gap: 12, padding: "12px 16px", borderRadius: 14, background: C.panel, border: `1px solid ${C.border}`, boxShadow: "var(--shadow-card)" }}>
         {alertsOn ? (
           <span style={{ fontSize: 12, color: C.green, fontWeight: 700 }}>🔔 Alerts on in this tab</span>
         ) : (
@@ -279,12 +271,12 @@ export default function CopyDesk({ initialId }: { initialId: string | null }) {
                   marks={{ entry: { at: selected.entry.at, spot: selected.entry.spot, side: selected.side }, exit: selected.exit ? { at: selected.exit.at } : null, skipBeyond: selected.status === "OPEN" ? selected.entry.skipBeyondSpot : null }}
                 />
               ) : feed.error ? (
-                <EmptyState style={{ padding: 16 }}>No candles: {feed.error}</EmptyState>
+                <EmptyState style={{ padding: 16 }}>{candleNote(feed.error)}</EmptyState>
               ) : (
                 <Skeleton height={280} />
               )}
               <div style={{ marginTop: 10, display: "grid", gap: 6 }}>
-                <div style={{ fontSize: 10, color: C.muted2, textTransform: "uppercase", letterSpacing: "0.06em", fontWeight: 700 }}>The index when the engine bought</div>
+                <div style={{ fontSize: 13, color: C.muted, fontWeight: 600 }}>The index when the engine bought</div>
                 <MarketChips t={selected} />
               </div>
             </Panel>
@@ -321,7 +313,7 @@ export default function CopyDesk({ initialId }: { initialId: string | null }) {
           }
         >
           <Panel style={{ padding: 12 }}>
-            {feed.data ? <CandleChart feed={feed.data} marks={{}} /> : feed.error ? <EmptyState style={{ padding: 16 }}>No candles: {feed.error}</EmptyState> : <Skeleton height={280} />}
+            {feed.data ? <CandleChart feed={feed.data} marks={{}} /> : feed.error ? <EmptyState style={{ padding: 16 }}>{candleNote(feed.error)}</EmptyState> : <Skeleton height={280} />}
           </Panel>
         </Section>
       )}

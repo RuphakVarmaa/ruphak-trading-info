@@ -4,204 +4,76 @@ import { useState } from 'react';
 import type { IntelItem } from '@/utils/api';
 import { timeAgo } from '@/components/shared/format';
 import { useClientNow } from '@/hooks/useEngineState';
-import { getCategoryColor, getSeverityColor } from '@/components/shared/colors';
+import { C, getCategoryColor, getSeverityColor } from '@/components/shared/colors';
+import { Dot, EmptyState, PanelHeader, Skeleton, TabBar } from '@/components/shared/ui';
 
 const TABS = ['ALL', 'MINING', 'ENERGY', 'MILITARY', 'MARITIME'] as const;
+type Tab = (typeof TABS)[number];
 
 interface IntelFeedProps {
   items: IntelItem[];
+  /** First load still in flight. */
+  loading: boolean;
+  /** Set when there is nothing to show because the feed failed. */
+  error: string | null;
+  /** The server is showing its last good list after a failed refresh. */
+  stale: boolean;
 }
 
-export default function IntelFeed({ items }: IntelFeedProps) {
-  const [activeTab, setActiveTab] = useState<string>('ALL');
+/** Metals and macro headlines by category, newest first (Bing News, refreshed every few minutes). */
+export default function IntelFeed({ items, loading, error, stale }: IntelFeedProps) {
+  const [activeTab, setActiveTab] = useState<Tab>('ALL');
   // Relative times need the browser clock: render them after hydration only.
   const now = useClientNow();
-
-  const filteredItems =
-    activeTab === 'ALL'
-      ? items
-      : items.filter((item) => item.category === activeTab);
+  const filteredItems = activeTab === 'ALL' ? items : items.filter((item) => item.category === activeTab);
+  const counts: Partial<Record<Tab, number>> = {};
+  for (const i of items) if ((TABS as readonly string[]).includes(i.category)) counts[i.category as Tab] = (counts[i.category as Tab] ?? 0) + 1;
 
   return (
-    <div style={{ display: 'flex', flexDirection: 'column', height: '100%', background: '#111' }}>
-      {/* Header */}
-      <div
-        style={{
-          height: 40,
-          borderBottom: '1px solid #222',
-          padding: '0 16px',
-          display: 'flex',
-          alignItems: 'center',
-          fontSize: 11,
-          letterSpacing: '0.08em',
-          fontWeight: 700,
-          gap: 8,
-        }}
-      >
-        <span style={{ color: '#ffb300' }}>📋</span>
-        <span>INTEL FEED</span>
-        <span
-          style={{
-            color: '#4caf50',
-            fontSize: 10,
-            display: 'flex',
-            alignItems: 'center',
-            gap: 4,
-          }}
-        >
-          <span
-            style={{
-              width: 6,
-              height: 6,
-              borderRadius: '50%',
-              background: '#4caf50',
-              display: 'inline-block',
-              animation: 'pulse-ring 2s infinite ease-out',
-            }}
-          />
-          LIVE
-        </span>
-      </div>
-
-      {/* Tabs */}
-      <div
-        style={{
-          display: 'flex',
-          gap: 2,
-          padding: '6px 8px',
-          borderBottom: '1px solid #222',
-          fontSize: 10,
-          fontWeight: 700,
-          textTransform: 'uppercase',
-          letterSpacing: '0.04em',
-        }}
-      >
-        {TABS.map((tab) => (
-          <button
-            key={tab}
-            onClick={() => setActiveTab(tab)}
-            style={{
-              background: activeTab === tab ? '#2a2a2a' : 'transparent',
-              color: activeTab === tab ? '#fff' : '#555',
-              border: 'none',
-              padding: '5px 10px',
-              borderRadius: 4,
-              cursor: 'pointer',
-              fontSize: 10,
-              fontWeight: 700,
-              letterSpacing: '0.04em',
-              transition: 'all 0.15s',
-            }}
-          >
-            {tab}
-          </button>
-        ))}
-      </div>
-
-      {/* Feed Items */}
-      <div
-        style={{
-          flex: 1,
-          overflowY: 'auto',
-          padding: '12px 14px',
-          display: 'flex',
-          flexDirection: 'column',
-          gap: 16,
-        }}
-      >
-        {filteredItems.length === 0 && (
-          <div style={{ textAlign: 'center', color: '#555', fontSize: 12, paddingTop: 40 }}>
-            No intelligence items for this category.
-          </div>
-        )}
+    <div style={{ display: 'flex', flexDirection: 'column', height: '100%', background: C.panel, minHeight: 0 }}>
+      <PanelHeader
+        title="Headlines"
+        live={!loading && !error && !stale && items.length > 0}
+        right={<span style={{ color: stale ? C.orange : C.muted2 }}>{stale ? 'last good list' : loading ? 'loading…' : `${items.length} stories`}</span>}
+      />
+      <TabBar label="Headline categories" tabs={TABS} active={activeTab} onChange={setActiveTab} counts={counts} />
+      <div style={{ flex: 1, overflowY: 'auto', minHeight: 0 }}>
+        {loading &&
+          Array.from({ length: 5 }, (_, i) => (
+            <div key={i} style={{ padding: '14px 18px', borderTop: `1px solid ${C.borderSoft}` }}>
+              <Skeleton width="35%" height={11} />
+              <Skeleton width="90%" height={14} style={{ marginTop: 9 }} />
+              <Skeleton width="60%" height={14} style={{ marginTop: 6 }} />
+            </div>
+          ))}
+        {error && <EmptyState>Headlines are unavailable right now ({error}). Retrying every five minutes.</EmptyState>}
+        {!loading && !error && filteredItems.length === 0 && <EmptyState>No headlines in this category.</EmptyState>}
         {filteredItems.map((item) => (
-          <div
-            key={item.id}
-            style={{
-              borderLeft: `2px solid ${getSeverityColor(item.severity)}`,
-              paddingLeft: 12,
-              transition: 'all 0.2s',
-            }}
-          >
-            {/* Severity + Category + Time */}
-            <div
-              style={{
-                display: 'flex',
-                justifyContent: 'space-between',
-                alignItems: 'center',
-                marginBottom: 4,
-                fontSize: 10,
-              }}
-            >
-              <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-                <span
-                  style={{
-                    color: getSeverityColor(item.severity),
-                    fontWeight: 700,
-                    letterSpacing: '0.08em',
-                    display: 'flex',
-                    alignItems: 'center',
-                    gap: 4,
-                  }}
-                >
-                  {item.severity === 'FLASH' && (
-                    <span
-                      style={{
-                        width: 6,
-                        height: 6,
-                        borderRadius: '50%',
-                        background: '#f44336',
-                        display: 'inline-block',
-                        animation: 'pulse-ring 2s infinite ease-out',
-                      }}
-                    />
-                  )}
+          <article key={item.id} style={{ padding: '14px 18px', borderTop: `1px solid ${C.borderSoft}` }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 6, fontSize: 12, gap: 8 }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 8, minWidth: 0 }}>
+                <span style={{ color: getSeverityColor(item.severity), fontWeight: 700, letterSpacing: '0.04em', fontSize: 11, display: 'flex', alignItems: 'center', gap: 5 }}>
+                  {item.severity === 'FLASH' && <Dot color={C.red} pulse />}
                   {item.severity}
                 </span>
-                <span style={{ color: getCategoryColor(item.category), fontWeight: 600, fontSize: 9 }}>
-                  ⚡ {item.category}
-                </span>
+                <span style={{ color: getCategoryColor(item.category), fontWeight: 600 }}>{item.category.charAt(0) + item.category.slice(1).toLowerCase()}</span>
               </div>
-              <span style={{ color: '#555' }}>{now == null ? '' : timeAgo(item.publishedAt, now)}</span>
+              <span style={{ color: C.muted3, whiteSpace: 'nowrap' }}>{now == null ? '' : timeAgo(item.publishedAt, now)}</span>
             </div>
-
-            {/* Title / Description */}
-            <a
-              href={item.url}
-              target="_blank"
-              rel="noopener noreferrer"
-              style={{
-                color: '#ccc',
-                fontSize: 12,
-                lineHeight: 1.5,
-                textDecoration: 'none',
-                display: 'block',
-              }}
-            >
-              {'>'} {item.title}
+            <a href={item.url} target="_blank" rel="noopener noreferrer" className="link-quiet" style={{ color: C.textStrong, fontSize: 14, fontWeight: 600, lineHeight: 1.45, textDecoration: 'none', display: 'block' }}>
+              {item.title}
             </a>
-
-            {/* Tags */}
+            <div style={{ fontSize: 12, color: C.muted2, marginTop: 5 }}>{item.source}</div>
             {item.tags.length > 0 && (
-              <div style={{ display: 'flex', gap: 6, marginTop: 6, flexWrap: 'wrap' }}>
+              <div style={{ display: 'flex', gap: 6, marginTop: 8, flexWrap: 'wrap' }}>
                 {item.tags.map((tag) => (
-                  <span
-                    key={tag}
-                    style={{
-                      fontSize: 9,
-                      color: '#888',
-                      padding: '2px 8px',
-                      border: '1px solid #333',
-                      borderRadius: 3,
-                      letterSpacing: '0.03em',
-                    }}
-                  >
+                  <span key={tag} style={{ fontSize: 11, color: C.muted, padding: '2px 9px', border: `1px solid ${C.border}`, borderRadius: 999, background: C.panelAlt }}>
                     {tag}
                   </span>
                 ))}
               </div>
             )}
-          </div>
+          </article>
         ))}
       </div>
     </div>

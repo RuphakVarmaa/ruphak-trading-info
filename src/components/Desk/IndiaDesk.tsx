@@ -1,50 +1,68 @@
 "use client";
 
+import Link from "next/link";
 import { useEngineState } from "@/hooks/useEngineState";
+import PnlTiles from "@/components/Blotter/PnlTiles";
+import TradeBlotter from "@/components/Blotter/TradeBlotter";
 import { C } from "@/components/shared/colors";
+import { Section } from "@/components/shared/ui";
 import ConnectionBanner from "./ConnectionBanner";
+import DeskHeader from "./DeskHeader";
 import EngineControls from "./EngineControls";
 import EngineStatusBar from "./EngineStatusBar";
 import EventImpactFeed from "./EventImpactFeed";
-import IndexTicker from "./IndexTicker";
+import MarketStrip from "./MarketStrip";
 import ScheduledEventsStrip from "./ScheduledEventsStrip";
 import SignalConsole from "./SignalConsole";
 
-/** The INDIA INDEX DESK terminal box: controls → banner → ticker → core grid → catalysts → status bar. */
+const linkStyle = { fontSize: 12, fontWeight: 600, color: C.blue, textDecoration: "none" } as const;
+
+/** The India Index Desk: today at a glance, the signals, the news, controls and health, then the book. */
 export default function IndiaDesk() {
-  const { status } = useEngineState();
-  const dim = status === "offline" ? 0.55 : status === "stale" ? 0.8 : 1;
+  const { status, pnl } = useEngineState();
+  const dim = status === "offline" ? 0.55 : status === "stale" ? 0.85 : 1;
   return (
-    <div id="desk" style={{ padding: "0 30px 30px" }}>
-      <div
-        style={{
-          width: "100%",
-          maxWidth: 1400,
-          margin: "0 auto",
-          border: `1px solid ${C.borderStrong}`,
-          borderRadius: 10,
-          background: C.panel,
-          display: "flex",
-          flexDirection: "column",
-          boxShadow: "0 4px 40px rgba(0,0,0,0.5)",
-          overflow: "hidden",
-        }}
-      >
-        <EngineControls />
-        <ConnectionBanner />
-        <div style={{ opacity: dim, transition: "opacity 0.3s" }}>
-          <IndexTicker />
-          <div className="desk-core" style={{ display: "flex", height: 680, overflow: "hidden" }}>
-            <div style={{ flex: 1, minWidth: 0, display: "flex", flexDirection: "column", borderRight: `1px solid ${C.border}` }}>
-              <SignalConsole />
-            </div>
-            <div className="desk-feed" style={{ width: 380, flexShrink: 0, overflow: "hidden" }}>
-              <EventImpactFeed />
-            </div>
+    <div id="desk" style={{ display: "grid", gap: 28 }}>
+      <DeskHeader />
+      <ConnectionBanner />
+      <div style={{ display: "grid", gap: 32, opacity: dim, transition: "opacity 0.3s" }}>
+        <Section
+          id="today"
+          title="Today"
+          right={
+            <Link href="/live" style={linkStyle}>
+              Live P&amp;L →
+            </Link>
+          }
+        >
+          <div style={{ display: "grid", gap: 12 }}>
+            <MarketStrip />
+            <PnlTiles pnl={pnl} />
           </div>
-          <ScheduledEventsStrip />
+        </Section>
+
+        <Section id="signals" title="Signals" sub="What the engine sees on each index right now, and whether it would trade.">
+          <SignalConsole />
+        </Section>
+
+        <div className="desk-split">
+          <Section id="news" title="News moving the market" sub="Stories scored for their likely effect on NIFTY and SENSEX.">
+            <EventImpactFeed />
+          </Section>
+          <div style={{ display: "grid", gap: 28, alignContent: "start", minWidth: 0 }}>
+            <Section id="catalysts" title="Upcoming events">
+              <ScheduledEventsStrip />
+            </Section>
+            <Section id="controls" title="Controls">
+              <EngineControls />
+            </Section>
+            <Section id="health" title="Health">
+              <EngineStatusBar />
+            </Section>
+          </div>
         </div>
-        <EngineStatusBar />
+
+        <TradeBlotter />
       </div>
     </div>
   );

@@ -57,7 +57,7 @@ export function getSeverityColor(severity: IntelItem["severity"] | Severity): st
 
 export function getCategoryColor(category: IntelItem["category"]): string {
   if (category === "MINING") return C.gold;
-  if (category === "ENERGY") return "#e87940";
+  if (category === "ENERGY") return C.orange;
   if (category === "MILITARY") return C.red;
   if (category === "MARITIME") return C.blue;
   return C.muted;
@@ -137,7 +137,7 @@ export function healthColor(ok: boolean): string {
 }
 
 export function impactColor(level: ImpactLevel): string {
-  return level === "HIGH" ? C.red : level === "MED" ? C.orange : "#3a3a3a";
+  return level === "HIGH" ? C.red : level === "MED" ? C.orange : C.muted;
 }
 
 export function sourceStatusColor(s: SourceStatus): string {
@@ -157,11 +157,11 @@ export function taxonomyColor(t: EventTaxonomy): string {
     case "DOMESTIC_POLITICS_REGULATION":
       return C.red;
     case "CHINA":
-      return "#e57373";
+      return "#b83b5e";
     case "COMMODITY_SHOCK":
-      return "#e87940";
+      return C.orange;
     case "WEATHER_DISASTER":
-      return "#4db6ac";
+      return "#1f7a72";
     case "FII_FLOWS":
       return C.purple;
     case "CORPORATE_EARNINGS":

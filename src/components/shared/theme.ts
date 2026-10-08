@@ -38,5 +38,7 @@ export const CLAUDE_THEME = {
   "--viz-free": "#e6e3d8",
 } as CSSProperties;
 
-/** Headings on the themed page use a serif, as Claude does. */
-export const SERIF = "ui-serif, Georgia, Cambria, 'Times New Roman', serif";
+/** Headings use a book serif (Source Serif 4, loaded in the root layout), as Claude does. */
+export const SERIF = "var(--font-display)";
+/** Figures: the text sans with tabular digits (set on body), so columns of numbers line up. */
+export const NUM_FONT = "var(--font-num)";

@@ -4,6 +4,7 @@ import { cache } from "react";
 import type { EventClusterDetail } from "@/engine/api-types";
 import EventDetailView, { BackToDesk } from "@/components/Events/EventDetailView";
 import SiteHeader from "@/components/shared/SiteHeader";
+import { alpha, C } from "@/components/shared/colors";
 import { getEngineModeQuick } from "@/lib/engine/snapshot";
 import { getEngineApi } from "@/lib/engine/server";
 
@@ -45,7 +46,7 @@ export default async function EventPage({ params }: Props) {
   if (loaded.kind === "missing") notFound();
 
   return (
-    <div style={{ minHeight: "100vh", display: "flex", flexDirection: "column", background: "#0a0a0a", color: "#ededed", fontFamily: "var(--font-inter), 'Inter', sans-serif" }}>
+    <div style={{ minHeight: "100vh", display: "flex", flexDirection: "column", background: C.bg, color: C.text }}>
       <SiteHeader active={null} mode={mode} />
       {loaded.kind === "ok" ? (
         <EventDetailView detail={loaded.detail} source={loaded.source} />
@@ -53,9 +54,9 @@ export default async function EventPage({ params }: Props) {
         <main style={{ flex: 1, padding: "40px 30px" }}>
           <div style={{ maxWidth: 720, margin: "0 auto", display: "flex", flexDirection: "column", gap: 14 }}>
             <BackToDesk />
-            <div role="alert" style={{ border: "1px solid rgba(244,67,54,0.4)", background: "rgba(244,67,54,0.08)", borderRadius: 8, padding: "16px 18px" }}>
-              <div style={{ color: "#f44336", fontWeight: 800, fontSize: 11, letterSpacing: "0.08em", marginBottom: 6 }}>✗ ENGINE UNREACHABLE</div>
-              <div style={{ fontSize: 13, color: "#ccc" }}>
+            <div role="alert" style={{ border: `1px solid ${alpha(C.red, 0.35)}`, background: alpha(C.red, 0.06), borderRadius: 14, padding: "16px 18px" }}>
+              <div style={{ color: C.red, fontWeight: 600, fontSize: 15, marginBottom: 6 }}>✗ The engine is unreachable</div>
+              <div style={{ fontSize: 14, color: C.textSoft }}>
                 Could not load event <code>{clusterId}</code> right now. Try again in a moment.
               </div>
             </div>

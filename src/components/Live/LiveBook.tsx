@@ -1,13 +1,12 @@
 "use client";
 
-import { useState, type CSSProperties, type ReactNode } from "react";
+import { useState } from "react";
 import type { PositionView } from "@/engine/api-types";
 import PositionLive from "@/components/Desk/PositionLive";
 import { istIso } from "@/engine/clock";
 import { alpha, C, pnlColor } from "@/components/shared/colors";
-import { SERIF } from "@/components/shared/theme";
 import { fmtAge, fmtInr, fmtIstDay, fmtIstHm, fmtPct } from "@/components/shared/format";
-import { Dot, EmptyState, Panel, PanelHeader, Skeleton, StatTile } from "@/components/shared/ui";
+import { Dot, EmptyState, PageHeader, Panel, PanelHeader, Section, Skeleton, StatTile } from "@/components/shared/ui";
 import AccountSwitcher from "./AccountSwitcher";
 import { useClientNow, useEngineState, useNow } from "@/hooks/useEngineState";
 import CapitalPnlPies from "./CapitalPnlPies";
@@ -18,7 +17,6 @@ import { useNiftyFeed } from "./useNiftyFeed";
 
 const LEVEL_COLOR: Record<FeedLevel, string> = { ok: C.green, wait: C.muted, stale: C.orange, down: C.red };
 
-const sectionLabel: CSSProperties = { fontSize: 10, color: C.muted, textTransform: "uppercase", letterSpacing: "0.1em", fontWeight: 700, margin: "0 0 10px" };
 
 function FeedTile({ label, status }: { label: string; status: FeedStatus | null }) {
   const color = status ? LEVEL_COLOR[status.level] : C.muted3;
@@ -32,7 +30,7 @@ function FeedTile({ label, status }: { label: string; status: FeedStatus | null 
         minWidth: 0,
       }}
     >
-      <div style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 9, color: C.muted2, textTransform: "uppercase", letterSpacing: "0.08em", fontWeight: 700 }}>
+      <div style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 12.5, color: C.muted, fontWeight: 500 }}>
         <Dot color={color} />
         {label}
       </div>
@@ -55,7 +53,7 @@ function LossCapBar({ used, cap }: { used: number; cap: number }) {
     <div style={{ marginTop: 12 }} title="Trading stops for the day when the loss reaches the cap">
       <div style={{ display: "flex", justifyContent: "space-between", fontSize: 10, color: C.muted, marginBottom: 6 }}>
         <span>Daily loss used</span>
-        <span className="tnum" style={{ fontFamily: "monospace", color: C.textSoft }}>
+        <span className="tnum" style={{ fontFamily: "var(--font-num)", color: C.textSoft }}>
           {fmtInr(used, { decimals: 0 })} of {fmtInr(cap, { decimals: 0 })}
         </span>
       </div>
@@ -74,17 +72,6 @@ function emptyPositionsText(nowIst: string | null, phase: string | undefined): s
   return "No open positions right now. The engine enters only when news or at least two signals agree.";
 }
 
-function Section({ title, right, children }: { title: string; right?: ReactNode; children: ReactNode }) {
-  return (
-    <section>
-      <div style={{ display: "flex", alignItems: "baseline", justifyContent: "space-between", gap: 8 }}>
-        <h2 style={sectionLabel}>{title}</h2>
-        {right}
-      </div>
-      {children}
-    </section>
-  );
-}
 
 /** Today's P&L, open positions and whether the market and option-price feeds are coming through. */
 export default function LiveBook() {
@@ -132,20 +119,23 @@ export default function LiveBook() {
         : "connecting…";
 
   return (
-    <main style={{ width: "100%", maxWidth: 1080, margin: "0 auto", padding: "20px 16px 48px", display: "grid", gap: 24, boxSizing: "border-box" }}>
-      <div style={{ display: "flex", flexWrap: "wrap", alignItems: "flex-end", justifyContent: "space-between", gap: 8 }}>
-        <div>
-          <h1 style={{ margin: 0, fontSize: 28, fontWeight: 500, color: C.textStrong, fontFamily: SERIF, letterSpacing: "-0.01em" }}>Live P&amp;L</h1>
-          <p style={{ margin: "4px 0 0", fontSize: 12, color: C.muted }}>
+    <main style={{ width: "100%", maxWidth: 1240, margin: "0 auto", padding: "32px 16px 56px", display: "grid", gap: 36, boxSizing: "border-box" }}>
+      <PageHeader
+        eyebrow={state ? fmtIstDay(state.market.nowIst) : "Paper trading"}
+        title="Live P&amp;L"
+        sub={
+          <>
             {state?.account && state.account.id !== "main" ? `${state.account.label} (${fmtInr(state.account.capitalRupees, { decimals: 0 })}, one cheaper lot) · ` : ""}
-            {signals?.some((x) => x.index === "SENSEX") ? "NIFTY 50 and SENSEX options" : "NIFTY 50 options"} · paper trading with simulated fills{state ? ` · ${fmtIstDay(state.market.nowIst)}` : ""}
-          </p>
-        </div>
-        <div style={{ display: "flex", flexWrap: "wrap", alignItems: "center", gap: 12 }}>
-          <AccountSwitcher />
-          <span className="tnum" style={{ fontSize: 11, color: C.muted2, fontFamily: "monospace" }}>{updated}</span>
-        </div>
-      </div>
+            {signals?.some((x) => x.index === "SENSEX") ? "NIFTY 50 and SENSEX options" : "NIFTY 50 options"}, paper trading with simulated fills.
+          </>
+        }
+        right={
+          <>
+            <AccountSwitcher />
+            <span className="tnum" style={{ fontSize: 12, color: C.muted2 }}>{updated}</span>
+          </>
+        }
+      />
 
       <Section title="Data feeds">
         <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(230px, 1fr))", gap: 12 }}>

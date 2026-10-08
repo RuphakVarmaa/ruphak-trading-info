@@ -63,7 +63,7 @@ function PriceLine({ bars, prevClose }: { bars: NiftyFeed["bars"]; prevClose: nu
           {prevClose != null && (
             <g>
               <line x1={pad.l} x2={pad.l + innerW} y1={y(prevClose)} y2={y(prevClose)} stroke={C.borderStrong} strokeWidth={1} />
-              <text x={pad.l + innerW + 6} y={y(prevClose) + 3} fill={C.muted2} fontSize={9} fontFamily="monospace">
+              <text x={pad.l + innerW + 6} y={y(prevClose) + 3} fill={C.muted2} fontSize={9} style={{ fontFamily: "var(--font-num)" }}>
                 prev {fmtNum(prevClose, 0)}
               </text>
             </g>
@@ -72,14 +72,14 @@ function PriceLine({ bars, prevClose }: { bars: NiftyFeed["bars"]; prevClose: nu
             const [hh, mm] = tk.split(":").map(Number);
             const tx = pad.l + ((hh * 60 + mm - SESSION_OPEN_MIN) / SESSION_MIN) * innerW;
             return (
-              <text key={tk} x={tx} y={H - 6} fill={C.muted3} fontSize={9} fontFamily="monospace" textAnchor={tk === "09:15" ? "start" : tk === "15:30" ? "end" : "middle"}>
+              <text key={tk} x={tx} y={H - 6} fill={C.muted3} fontSize={9} style={{ fontFamily: "var(--font-num)" }} textAnchor={tk === "09:15" ? "start" : tk === "15:30" ? "end" : "middle"}>
                 {tk}
               </text>
             );
           })}
           <path d={d} fill="none" stroke={C.gold} strokeWidth={2} strokeLinejoin="round" strokeLinecap="round" />
           <circle cx={x(last.t)} cy={y(last.c)} r={4} fill={C.gold} stroke={C.panel} strokeWidth={2} />
-          <text x={x(last.t) + 8} y={y(last.c) + 3} fill={C.textStrong} fontSize={10} fontFamily="monospace" fontWeight={700}>
+          <text x={x(last.t) + 8} y={y(last.c) + 3} fill={C.textStrong} fontSize={10} style={{ fontFamily: "var(--font-num)" }} fontWeight={700}>
             {fmtNum(last.c, 0)}
           </text>
           {h && (
@@ -107,7 +107,7 @@ function PriceLine({ bars, prevClose }: { bars: NiftyFeed["bars"]; prevClose: nu
             fontSize: 10,
           }}
         >
-          <div style={{ color: C.textStrong, fontWeight: 700, fontFamily: "monospace" }}>{fmtNum(h.c)}</div>
+          <div style={{ color: C.textStrong, fontWeight: 700, fontFamily: "var(--font-num)" }}>{fmtNum(h.c)}</div>
           <div style={{ color: C.muted }}>{fmtIstHm(h.t)} IST{prevClose != null ? ` · ${fmtPct(((h.c - prevClose) / prevClose) * 100)}` : ""}</div>
         </div>
       )}
@@ -150,7 +150,7 @@ export default function NiftyLiveFeed({
         <PanelHeader
           title="NIFTY 50"
           right={
-            <span className="tnum" style={{ fontSize: 10, color: error ? C.orange : C.muted2, fontFamily: "monospace", fontWeight: 400, textTransform: "none", letterSpacing: 0 }}>
+            <span className="tnum" style={{ fontSize: 10, color: error ? C.orange : C.muted2, fontFamily: "var(--font-num)", fontWeight: 400, textTransform: "none", letterSpacing: 0 }}>
               {error ? `feed error: ${error}` : feed ? `last trade ${fmtIstTime(feed.asOf)} IST · updated ${clientNow && data ? fmtAge(Math.max(0, clientNow - data.at)) : "—"} ago` : "loading…"}
             </span>
           }
@@ -159,15 +159,15 @@ export default function NiftyLiveFeed({
           {feed ? (
             <>
               <div style={{ display: "flex", flexWrap: "wrap", alignItems: "baseline", gap: "4px 14px" }}>
-                <span className="tnum" style={{ fontSize: 28, fontWeight: 800, color: C.textStrong, fontFamily: "monospace" }}>{fmtNum(feed.spot)}</span>
+                <span className="tnum" style={{ fontSize: 28, fontWeight: 800, color: C.textStrong, fontFamily: "var(--font-num)" }}>{fmtNum(feed.spot)}</span>
                 {feed.change != null && feed.changePct != null && (
-                  <span className="tnum" style={{ fontSize: 14, fontWeight: 700, color: pnlColor(feed.change), fontFamily: "monospace" }}>
+                  <span className="tnum" style={{ fontSize: 14, fontWeight: 700, color: pnlColor(feed.change), fontFamily: "var(--font-num)" }}>
                     {fmtSigned(feed.change)} ({fmtPct(feed.changePct)})
                   </span>
                 )}
                 {feed.vix != null && <span style={{ fontSize: 11, color: C.muted }}>India VIX {fmtNum(feed.vix)}</span>}
               </div>
-              <div className="tnum" style={{ display: "flex", flexWrap: "wrap", gap: "2px 14px", fontSize: 10, color: C.muted, fontFamily: "monospace", margin: "4px 0 8px" }}>
+              <div className="tnum" style={{ display: "flex", flexWrap: "wrap", gap: "2px 14px", fontSize: 10, color: C.muted, fontFamily: "var(--font-num)", margin: "4px 0 8px" }}>
                 {feed.open != null && <span>open {fmtNum(feed.open)}</span>}
                 {feed.high != null && <span>high {fmtNum(feed.high)}</span>}
                 {feed.low != null && <span>low {fmtNum(feed.low)}</span>}
@@ -237,7 +237,7 @@ export default function NiftyLiveFeed({
                     return (
                       <tr key={r.strike} style={{ background: atm ? alpha(C.gold, 0.1) : undefined }}>
                         <Price side={r.ce} itm={feed != null && r.strike < feed.spot} />
-                        <td style={{ ...td, textAlign: "center", fontFamily: "monospace", fontWeight: 700, color: atm ? C.gold : C.textSoft }}>
+                        <td style={{ ...td, textAlign: "center", fontFamily: "var(--font-num)", fontWeight: 700, color: atm ? C.gold : C.textSoft }}>
                           {r.strike}
                           {atm && <div style={{ fontSize: 8, color: C.gold, fontWeight: 700 }}>ATM</div>}
                           {tags.length > 0 && <div style={{ fontSize: 8, color: C.green, fontWeight: 700 }}>● {tags.join(" · ")}</div>}

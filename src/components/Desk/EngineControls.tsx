@@ -1,12 +1,12 @@
 "use client";
 
-import { useEffect, useId, useRef, useState, type ReactNode } from "react";
+import { useEffect, useId, useRef, useState, type CSSProperties, type ReactNode } from "react";
 import type { EngineMode } from "@/engine/api-types";
 import { useEngineState, useNow, type ActionResult } from "@/hooks/useEngineState";
 import { alpha, C } from "@/components/shared/colors";
 import { fmtCountdown, fmtInr, fmtIstHm } from "@/components/shared/format";
 import { ModeBadge } from "@/components/shared/SiteHeader";
-import { Btn, ConfirmDialog, inputStyle, microLabel, Skeleton } from "@/components/shared/ui";
+import { Btn, ConfirmDialog, inputStyle, microLabel, Panel, PanelHeader, Skeleton } from "@/components/shared/ui";
 
 type DialogKind = "arm" | "kill" | "reset" | "mode" | null;
 
@@ -31,16 +31,16 @@ function Meter({
   const full = atCap && !fullIsNormal;
   const color = full ? C.red : atCap ? C.gold : frac >= 0.75 ? C.orange : C.green;
   return (
-    <div title={title} style={{ display: "flex", flexDirection: "column", gap: 3, minWidth: 96 }}>
-      <div style={{ display: "flex", justifyContent: "space-between", gap: 8, fontSize: 9, fontFamily: "monospace", whiteSpace: "nowrap" }}>
-        <span style={{ color: C.muted2, letterSpacing: "0.08em", fontWeight: 700 }}>{label}</span>
-        <span className="tnum" style={{ color: full ? C.red : C.textDim }}>
+    <div title={title} style={{ display: "flex", flexDirection: "column", gap: 6, minWidth: 0 }}>
+      <div style={{ display: "flex", justifyContent: "space-between", gap: 8, fontSize: 11, whiteSpace: "nowrap" }}>
+        <span style={{ color: C.muted, fontWeight: 600 }}>{label}</span>
+        <span className="tnum" style={{ color: full ? C.red : C.textSoft, fontFamily: "var(--font-num)" }}>
           {full ? "⚠ " : ""}
-          {format(used)}/{format(cap)}
+          {format(used)} / {format(cap)}
         </span>
       </div>
-      <div style={{ height: 3, background: C.border, borderRadius: 2 }} role="presentation">
-        <div style={{ width: `${frac * 100}%`, height: "100%", background: color, borderRadius: 2, transition: "width 0.4s" }} />
+      <div style={{ height: 6, background: C.track, borderRadius: 3 }} role="presentation">
+        <div style={{ width: `${frac * 100}%`, height: "100%", background: color, borderRadius: 3, transition: "width 0.4s" }} />
       </div>
     </div>
   );
@@ -50,7 +50,7 @@ function ArmedCountdown({ until }: { until: string }) {
   const now = useNow();
   const left = now == null ? null : Date.parse(until) - now;
   return (
-    <span className="tnum" style={{ fontFamily: "monospace" }}>
+    <span className="tnum" style={{ fontFamily: "var(--font-num)" }}>
       {left == null ? "—" : fmtCountdown(left)}
     </span>
   );
@@ -103,9 +103,9 @@ function AdminTokenPopover() {
         aria-controls={panelId}
         onClick={() => setOpen((o) => !o)}
         title={admin.verified ? "Admin token verified for this tab" : "Enter the admin token to enable controls"}
-        style={{ borderColor: admin.verified ? alpha(C.green, 0.5) : "#3a3a3a" }}
+        style={{ borderColor: admin.verified ? alpha(C.green, 0.5) : C.borderStrong, textTransform: "none", letterSpacing: "0.02em" }}
       >
-        <span aria-hidden>🔑</span> ADMIN{" "}
+        <span aria-hidden>🔑</span> Admin{" "}
         {status && (
           <span style={{ color: statusColor }} aria-label={admin.verified ? "verified" : "not verified"}>
             {status}
@@ -132,14 +132,14 @@ function AdminTokenPopover() {
             background: C.panel,
             border: `1px solid ${C.borderStrong}`,
             borderRadius: 8,
-            boxShadow: "0 8px 30px rgba(0,0,0,0.6)",
+            boxShadow: "var(--shadow-pop)",
             padding: 14,
             display: "flex",
             flexDirection: "column",
             gap: 10,
           }}
         >
-          <div style={{ fontSize: 11, color: C.textSoft, lineHeight: 1.5 }}>
+          <div style={{ fontSize: 12, color: C.textSoft, lineHeight: 1.5, textTransform: "none", letterSpacing: "normal", fontWeight: 400 }}>
             {admin.verified
               ? "Admin controls are enabled in this tab. The token is kept in session storage until the tab closes."
               : "Arm, kill switch, mode and backtests need the admin token. It is kept in this tab's session storage only."}
@@ -191,8 +191,16 @@ function AdminTokenPopover() {
   );
 }
 
-function Divider() {
-  return <span aria-hidden style={{ width: 1, alignSelf: "stretch", background: C.border, margin: "2px 2px" }} />;
+function ControlRow({ label, hint, children }: { label: string; hint: string; children: ReactNode }) {
+  return (
+    <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: "8px 16px", flexWrap: "wrap", padding: "12px 16px", borderTop: `1px solid ${C.borderSoft}` }}>
+      <div style={{ minWidth: 0, flex: "1 1 180px" }}>
+        <div style={{ fontSize: 13, fontWeight: 700, color: C.textStrong }}>{label}</div>
+        <div style={{ fontSize: 11, color: C.muted2, marginTop: 2, lineHeight: 1.4 }}>{hint}</div>
+      </div>
+      <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>{children}</div>
+    </div>
+  );
 }
 
 export default function EngineControls() {
@@ -347,109 +355,89 @@ export default function EngineControls() {
     );
   }
 
+  const pill = (bg: string, fg: string): CSSProperties => ({
+    display: "inline-flex",
+    alignItems: "center",
+    gap: 6,
+    padding: "5px 10px",
+    borderRadius: 999,
+    fontSize: 11,
+    fontWeight: 800,
+    letterSpacing: "0.04em",
+    color: fg,
+    background: bg,
+    whiteSpace: "nowrap",
+    maxWidth: 260,
+    overflow: "hidden",
+    textOverflow: "ellipsis",
+  });
+
   return (
-    <div
-      className="controls-bar"
-      style={{
-        minHeight: 46,
-        borderBottom: `1px solid ${C.border}`,
-        background: C.panelAlt,
-        display: "flex",
-        alignItems: "center",
-        flexWrap: "wrap",
-        gap: "8px 14px",
-        padding: "8px 14px",
-      }}
-    >
-      <span style={{ color: C.gold, fontSize: 11, fontWeight: 800, letterSpacing: "0.08em", fontFamily: "monospace", whiteSpace: "nowrap" }}>
-        ⚡ INDIA INDEX DESK
-      </span>
-      <Divider />
+    <Panel style={{ overflow: "visible" }}>
+      <PanelHeader title="Engine controls" right={<AdminTokenPopover />} />
       {state ? (
         <>
-          <span style={{ display: "inline-flex", alignItems: "center", gap: 8 }}>
+          <ControlRow label="Mode" hint="PAPER simulates every order. LIVE also needs the Worker's LIVE_TRADING key and an arm.">
             <ModeBadge mode={state.mode} />
             <span
               title="Worker var LIVE_TRADING: the first of three keys for a live order"
-              style={{ fontSize: 9, fontFamily: "monospace", color: state.liveTradingEnabled ? C.orange : C.muted3, whiteSpace: "nowrap" }}
+              style={{ fontSize: 11, fontFamily: "var(--font-num)", color: state.liveTradingEnabled ? C.orange : C.muted3, whiteSpace: "nowrap" }}
             >
-              LIVE KEY {state.liveTradingEnabled ? "✓ ON" : "✗ OFF"}
+              live key {state.liveTradingEnabled ? "on" : "off"}
             </span>
-            <Btn variant="ghost" disabled={!canAdmin} title={disabledTitle ?? "Switch PAPER / LIVE"} onClick={() => open("mode")}>
-              MODE ▾
+            <Btn variant="outline" disabled={!canAdmin} title={disabledTitle ?? "Switch PAPER / LIVE"} onClick={() => open("mode")}>
+              Switch mode
             </Btn>
-          </span>
-          <Divider />
-          {state.armed && state.armedUntil ? (
-            <span style={{ display: "inline-flex", alignItems: "center", gap: 8 }}>
-              <span
-                title={`Armed until ${fmtIstHm(state.armedUntil)} IST`}
-                style={{
-                  display: "inline-flex",
-                  alignItems: "center",
-                  gap: 6,
-                  padding: "4px 9px",
-                  borderRadius: 4,
-                  fontSize: 10,
-                  fontWeight: 800,
-                  letterSpacing: "0.08em",
-                  color: "#000",
-                  background: C.gold,
-                  whiteSpace: "nowrap",
-                }}
-              >
-                ◉ ARMED · <ArmedCountdown until={state.armedUntil} />
-              </span>
-              <Btn variant="outline" disabled={!canAdmin} title={disabledTitle} onClick={() => void actions.disarm()}>
-                DISARM
-              </Btn>
-            </span>
-          ) : (
-            <Btn variant="outline" disabled={!canAdmin || state.killSwitch} title={state.killSwitch ? "Reset the kill switch first" : disabledTitle} onClick={() => open("arm")}>
-              ○ ARM
-            </Btn>
-          )}
-          {state.killSwitch ? (
-            <span style={{ display: "inline-flex", alignItems: "center", gap: 8 }}>
-              <span
-                title={state.killReason ?? "Kill switch engaged"}
-                style={{
-                  padding: "4px 9px",
-                  borderRadius: 4,
-                  fontSize: 10,
-                  fontWeight: 800,
-                  letterSpacing: "0.08em",
-                  color: "#fff",
-                  background: C.red,
-                  whiteSpace: "nowrap",
-                  maxWidth: 260,
-                  overflow: "hidden",
-                  textOverflow: "ellipsis",
-                }}
-              >
-                ■ KILLED{state.killReason ? ` · ${state.killReason}` : ""}
-              </span>
-              <Btn variant="outline" disabled={!canAdmin} title={disabledTitle} onClick={() => open("reset")}>
-                RESET
-              </Btn>
-            </span>
-          ) : (
-            <Btn variant="danger" disabled={!canAdmin} title={disabledTitle ?? "Stop all new entries"} onClick={() => open("kill")}>
-              ■ KILL SWITCH
-            </Btn>
-          )}
-          <Divider />
-          <div style={{ display: "flex", gap: 14, flexWrap: "wrap" }}>
+          </ControlRow>
+          <ControlRow label="Arm" hint="The third key for live orders. It expires at the 15:30 IST close.">
+            {state.armed && state.armedUntil ? (
+              <>
+                <span title={`Armed until ${fmtIstHm(state.armedUntil)} IST`} style={pill(C.gold, "#fff")}>
+                  ◉ Armed · <ArmedCountdown until={state.armedUntil} />
+                </span>
+                <Btn variant="outline" disabled={!canAdmin} title={disabledTitle} onClick={() => void actions.disarm()}>
+                  Disarm
+                </Btn>
+              </>
+            ) : (
+              <>
+                <span style={{ fontSize: 12, color: C.muted }}>Disarmed</span>
+                <Btn variant="outline" disabled={!canAdmin || state.killSwitch} title={state.killSwitch ? "Reset the kill switch first" : disabledTitle} onClick={() => open("arm")}>
+                  ○ Arm
+                </Btn>
+              </>
+            )}
+          </ControlRow>
+          <ControlRow label="Kill switch" hint="Stops new entries at once and can exit open positions at market.">
+            {state.killSwitch ? (
+              <>
+                <span title={state.killReason ?? "Kill switch engaged"} style={pill(C.red, "#fff")}>
+                  ■ Killed{state.killReason ? ` · ${state.killReason}` : ""}
+                </span>
+                <Btn variant="outline" disabled={!canAdmin} title={disabledTitle} onClick={() => open("reset")}>
+                  Reset
+                </Btn>
+              </>
+            ) : (
+              <>
+                <span style={{ fontSize: 12, color: C.green, fontWeight: 600 }}>Off</span>
+                <Btn variant="danger" disabled={!canAdmin} title={disabledTitle ?? "Stop all new entries"} onClick={() => open("kill")}>
+                  ■ Kill switch
+                </Btn>
+              </>
+            )}
+          </ControlRow>
+          <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(150px, 1fr))", gap: 14, padding: "14px 16px", borderTop: `1px solid ${C.borderSoft}` }}>
             <Meter
-              label="DAY LOSS"
+              label="Daily loss"
               used={state.caps.dailyLossUsed}
               cap={state.caps.dailyLossCap}
               format={(n) => fmtInr(n, { compact: n >= 100_000 })}
               title="Today's realized + unrealized loss against the daily loss cap"
             />
-            <Meter label="ORDERS" used={state.caps.ordersToday} cap={state.caps.maxOrdersPerDay} format={String} title="Orders placed today against the daily cap" />
+            <Meter label="Orders today" used={state.caps.ordersToday} cap={state.caps.maxOrdersPerDay} format={String} title="Orders placed today against the daily cap" />
             <Meter
-              label="POSITIONS"
+              label="Open positions"
               used={state.caps.openPositions}
               cap={state.caps.maxPositions}
               format={String}
@@ -457,19 +445,20 @@ export default function EngineControls() {
               title="Open positions against the cap (at cap = no new entries)"
             />
           </div>
+          {!admin.verified && (
+            <div style={{ padding: "10px 16px", borderTop: `1px solid ${C.borderSoft}`, fontSize: 11, color: C.muted2, background: C.panelAlt }}>
+              The buttons need the admin token: use 🔑 Admin above.
+            </div>
+          )}
         </>
       ) : (
-        <div style={{ display: "flex", gap: 10, alignItems: "center" }}>
-          <Skeleton width={70} height={18} />
-          <Skeleton width={60} height={18} />
-          <Skeleton width={110} height={18} />
-          <Skeleton width={220} height={18} />
+        <div style={{ padding: 16, display: "grid", gap: 10 }}>
+          <Skeleton height={36} />
+          <Skeleton height={36} />
+          <Skeleton height={36} />
         </div>
       )}
-      <div style={{ marginLeft: "auto" }}>
-        <AdminTokenPopover />
-      </div>
       {dialogEl}
-    </div>
+    </Panel>
   );
 }

@@ -6,6 +6,7 @@ import ImpactChip from "@/components/Desk/ImpactChip";
 import { ScorerBadge } from "@/components/Desk/EventImpactFeed";
 import { alpha, C, dirColor, dirGlyph, getSeverityColor, taxonomyColor } from "@/components/shared/colors";
 import { enumLabel, fmtIstDateTime } from "@/components/shared/format";
+import { SERIF } from "@/components/shared/theme";
 import { microLabel, Panel, Pill, tableStyle, tableWrap, td, th, theadRow } from "@/components/shared/ui";
 
 const DIR_WORD = (d: number) => (d > 0 ? "Bullish" : d < 0 ? "Bearish" : "Neutral");
@@ -28,8 +29,8 @@ function Meta({ label, children }: { label: string; children: React.ReactNode })
 
 export function BackToDesk() {
   return (
-    <Link href="/#desk" style={{ fontSize: 11, color: C.gold, textDecoration: "none", fontWeight: 700, letterSpacing: "0.04em" }}>
-      ← Back to desk
+    <Link href="/#news" className="link-quiet" style={{ fontSize: 14, color: C.gold, textDecoration: "none", fontWeight: 600 }}>
+      ← Back to the desk
     </Link>
   );
 }
@@ -37,8 +38,8 @@ export function BackToDesk() {
 export default function EventDetailView({ detail, source }: { detail: EventClusterDetail; source: "engine" | "mock" }) {
   const sev = getSeverityColor(detail.severity);
   return (
-    <main style={{ flex: 1, padding: "24px 30px 48px" }}>
-      <article style={{ maxWidth: 1000, margin: "0 auto", display: "flex", flexDirection: "column", gap: 18 }}>
+    <main style={{ flex: 1, padding: "32px 16px 56px" }}>
+      <article style={{ maxWidth: 1000, margin: "0 auto", display: "flex", flexDirection: "column", gap: 22 }}>
         <div style={{ display: "flex", justifyContent: "space-between", gap: 12, flexWrap: "wrap" }}>
           <BackToDesk />
           {source === "mock" && <Pill color={C.purple}>◇ mock data</Pill>}
@@ -53,10 +54,10 @@ export default function EventDetailView({ detail, source }: { detail: EventClust
             {detail.isScheduledData && <Pill color={C.blue}>scheduled data</Pill>}
             {detail.pricedIn && <Pill color={C.muted}>◌ priced in</Pill>}
           </div>
-          <h1 style={{ margin: 0, fontSize: 30, fontWeight: 400, lineHeight: 1.25, color: "#e8e8e8", fontFamily: "var(--font-playfair), 'Playfair Display', Georgia, serif" }}>
+          <h1 style={{ margin: 0, fontSize: "clamp(28px, 3.6vw, 40px)", fontWeight: 500, lineHeight: 1.15, letterSpacing: "-0.02em", color: C.textStrong, fontFamily: SERIF }}>
             {detail.title}
           </h1>
-          <p style={{ margin: "10px 0 0", fontSize: 14, color: C.muted, lineHeight: 1.6 }}>{detail.summary}</p>
+          <p style={{ margin: "12px 0 0", fontSize: 16, color: C.muted, lineHeight: 1.6 }}>{detail.summary}</p>
         </div>
 
         <Panel style={{ padding: "14px 18px", borderLeft: `3px solid ${C.gold}` }}>
@@ -87,7 +88,7 @@ export default function EventDetailView({ detail, source }: { detail: EventClust
                   </div>
                   <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10, marginTop: 12 }}>
                     <Meta label="Score">
-                      <span className="tnum" style={{ fontFamily: "monospace", color }}>
+                      <span className="tnum" style={{ fontFamily: "var(--font-num)", color }}>
                         {imp.score >= 0 ? "+" : "−"}
                         {Math.abs(imp.score).toFixed(2)}
                       </span>
@@ -111,7 +112,7 @@ export default function EventDetailView({ detail, source }: { detail: EventClust
             </Meta>
             <Meta label="Still active">
               <span title="Share of the original impact remaining after time decay">{Math.round(detail.decayRemaining * 100)}% of original impact</span>
-              <div style={{ height: 4, background: "#1a1a1a", borderRadius: 2, marginTop: 5 }}>
+              <div style={{ height: 4, background: C.track, borderRadius: 2, marginTop: 5 }}>
                 <div style={{ width: `${Math.round(detail.decayRemaining * 100)}%`, height: "100%", background: C.gold, borderRadius: 2 }} />
               </div>
             </Meta>
@@ -120,7 +121,7 @@ export default function EventDetailView({ detail, source }: { detail: EventClust
             <Meta label="Horizon">{HORIZON_LABEL[detail.horizon] ?? enumLabel(detail.horizon)}</Meta>
             <Meta label="Scored">
               {detail.scoredAt ? fmtIstDateTime(detail.scoredAt) : "not yet"}
-              {detail.model && <div style={{ fontSize: 10, color: C.muted3, fontFamily: "monospace" }}>{detail.model}</div>}
+              {detail.model && <div style={{ fontSize: 10, color: C.muted3, fontFamily: "var(--font-num)" }}>{detail.model}</div>}
             </Meta>
           </div>
           <div style={{ marginTop: 14, fontSize: 11, color: C.muted }}>

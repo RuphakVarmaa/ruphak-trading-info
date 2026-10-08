@@ -23,7 +23,7 @@ export default async function LivePage({ searchParams }: { searchParams: Promise
   const account = accountFrom(await searchParams);
   const [initial, mode] = await Promise.all([getInitialEngineSnapshot(account), getEngineModeQuick()]);
   return (
-    <div style={{ ...CLAUDE_THEME, minHeight: "100vh", display: "flex", flexDirection: "column", background: C.bg, color: C.text, fontFamily: "var(--font-inter), 'Inter', sans-serif" }}>
+    <div style={{ ...CLAUDE_THEME, minHeight: "100vh", display: "flex", flexDirection: "column", background: C.bg, color: C.text }}>
       <EngineProvider key={account ?? "main"} initial={initial} account={account}>
         <LiveHeader serverMode={initial?.state?.mode ?? mode} />
         <LiveBook />

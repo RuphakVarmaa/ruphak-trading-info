@@ -28,10 +28,11 @@ export default function ConnectionBanner() {
         alignItems: "center",
         gap: 12,
         flexWrap: "wrap",
-        padding: "8px 14px",
-        fontSize: 11,
-        borderBottom: `1px solid ${alpha(color, 0.4)}`,
-        background: alpha(color, 0.1),
+        padding: "10px 14px",
+        fontSize: 12,
+        border: `1px solid ${alpha(color, 0.4)}`,
+        borderRadius: 12,
+        background: alpha(color, 0.08),
         color: C.textSoft,
       }}
     >

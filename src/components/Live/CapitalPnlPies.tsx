@@ -81,10 +81,10 @@ function Legend({ slices, total }: { slices: PieSlice[]; total: number }) {
               <span aria-hidden style={{ display: "inline-block", width: 10, height: 10, borderRadius: 2, background: s.color, marginRight: 8, verticalAlign: "-1px" }} />
               {s.label}
             </td>
-            <td className="tnum" style={{ padding: "5px 8px", textAlign: "right", fontFamily: "monospace", color: C.textStrong }}>
+            <td className="tnum" style={{ padding: "5px 8px", textAlign: "right", fontFamily: "var(--font-num)", color: C.textStrong }}>
               {fmtInr(s.value, { decimals: 0 })}
             </td>
-            <td className="tnum" style={{ padding: "5px 0 5px 4px", textAlign: "right", fontFamily: "monospace", color: C.muted }}>
+            <td className="tnum" style={{ padding: "5px 0 5px 4px", textAlign: "right", fontFamily: "var(--font-num)", color: C.muted }}>
               {fmtPct(total > 0 ? (s.value / total) * 100 : 0, 1, false)}
             </td>
           </tr>
@@ -94,7 +94,7 @@ function Legend({ slices, total }: { slices: PieSlice[]; total: number }) {
   );
 }
 
-const bigNumber = { fontSize: 20, fontWeight: 800, fontFamily: "monospace", color: C.textStrong, lineHeight: 1.1 } as const;
+const bigNumber = { fontSize: 20, fontWeight: 800, fontFamily: "var(--font-num)", color: C.textStrong, lineHeight: 1.1 } as const;
 const subLabel = { fontSize: 9, color: C.muted, marginTop: 3, lineHeight: 1.3 } as const;
 
 /** Two donuts for the Live P&L page: capital in use, and where today's P&L comes from. */

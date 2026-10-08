@@ -1,5 +1,6 @@
 import type { Metadata } from "next";
 import BacktestClient from "@/components/Backtest/BacktestClient";
+import { C } from "@/components/shared/colors";
 import SiteHeader from "@/components/shared/SiteHeader";
 import { paramsFromQuery } from "@/lib/backtestParams";
 import { getEngineModeQuick } from "@/lib/engine/snapshot";
@@ -21,7 +22,7 @@ export default async function BacktestPage({ searchParams }: { searchParams: Pro
   const mode = await getEngineModeQuick();
 
   return (
-    <div style={{ minHeight: "100vh", display: "flex", flexDirection: "column", background: "#0a0a0a", color: "#ededed", fontFamily: "var(--font-inter), 'Inter', sans-serif" }}>
+    <div style={{ minHeight: "100vh", display: "flex", flexDirection: "column", background: C.bg, color: C.text }}>
       <SiteHeader active="backtest" mode={mode} />
       <BacktestClient initialParams={initialParams} initialRunId={initialRunId} todayIst={today} />
     </div>

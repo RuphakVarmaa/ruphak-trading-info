@@ -48,7 +48,7 @@ export function PositionsTable({ positions }: { positions: PositionView[] | null
               <td style={td}>
                 <ModeCell mode={p.mode} />
               </td>
-              <td style={{ ...td, color: C.gold, fontWeight: 600, fontFamily: "monospace" }}>{p.contract.label}</td>
+              <td style={{ ...td, color: C.gold, fontWeight: 600, fontFamily: "var(--font-num)" }}>{p.contract.label}</td>
               <td style={tdNum}>{p.qty}</td>
               <td style={tdNum}>{fmtNum(p.avgPrice)}</td>
               <td style={tdNum}>{p.ltp != null ? fmtNum(p.ltp) : "—"}</td>
@@ -59,8 +59,8 @@ export function PositionsTable({ positions }: { positions: PositionView[] | null
               <td style={{ ...tdNum, color: C.textDim }}>{fmtNum(p.stopPrice)}</td>
               <td style={{ ...tdNum, color: p.trailPrice != null ? C.orange : C.muted3 }}>{p.trailPrice != null ? fmtNum(p.trailPrice) : "—"}</td>
               <td style={{ ...tdNum, color: C.textDim }}>{fmtNum(p.targetPrice)}</td>
-              <td style={{ ...td, fontFamily: "monospace" }}>{fmtIstHm(p.openedAt)}</td>
-              <td style={{ ...td, fontFamily: "monospace" }}>
+              <td style={{ ...td, fontFamily: "var(--font-num)" }}>{fmtIstHm(p.openedAt)}</td>
+              <td style={{ ...td, fontFamily: "var(--font-num)" }}>
                 <SquareOff at={p.squareOffAt} />
               </td>
             </tr>
@@ -110,11 +110,11 @@ export function OrdersTable({ data }: { data: { orders: OrderView[]; fills: Fill
               const st = STATUS_STYLE[o.status] ?? STATUS_STYLE.UNKNOWN;
               return (
                 <tr key={o.id} title={o.error ?? undefined}>
-                  <td style={{ ...td, fontFamily: "monospace" }}>{fmtIstTime(o.placedAt)}</td>
+                  <td style={{ ...td, fontFamily: "var(--font-num)" }}>{fmtIstTime(o.placedAt)}</td>
                   <td style={td}>
                     <ModeCell mode={o.mode} />
                   </td>
-                  <td style={{ ...td, fontFamily: "monospace", color: C.textStrong }}>{o.contractLabel}</td>
+                  <td style={{ ...td, fontFamily: "var(--font-num)", color: C.textStrong }}>{o.contractLabel}</td>
                   <td style={{ ...td, fontWeight: 700, color: o.side === "BUY" ? C.blue : C.orange }}>
                     {o.side === "BUY" ? "▲ BUY" : "▼ SELL"}
                   </td>
@@ -194,7 +194,7 @@ export function SignalPerformanceTable({ rows }: { rows: SignalPerformanceRow[] 
                 </td>
                 <td style={tdNum}>{modifierOnly ? "—" : fmtSigned(r.tStat)}</td>
                 <td style={tdNum}>{r.weight.toFixed(2)}</td>
-                <td style={{ ...td, fontFamily: "monospace", color: C.muted }}>{r.lastTradeAt ? `${fmtIstDate(r.lastTradeAt)} ${fmtIstHm(r.lastTradeAt)}` : "—"}</td>
+                <td style={{ ...td, fontFamily: "var(--font-num)", color: C.muted }}>{r.lastTradeAt ? `${fmtIstDate(r.lastTradeAt)} ${fmtIstHm(r.lastTradeAt)}` : "—"}</td>
               </tr>
             );
           })}
