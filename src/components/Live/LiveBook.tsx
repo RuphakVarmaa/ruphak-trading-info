@@ -7,6 +7,7 @@ import { alpha, C, pnlColor } from "@/components/shared/colors";
 import { fmtAge, fmtInr, fmtIstDay, fmtIstHm, fmtPct } from "@/components/shared/format";
 import { Dot, EmptyState, Panel, PanelHeader, Skeleton, StatTile } from "@/components/shared/ui";
 import { useClientNow, useEngineState, useNow } from "@/hooks/useEngineState";
+import CapitalPnlPies from "./CapitalPnlPies";
 import NiftyLiveFeed from "./NiftyLiveFeed";
 import { dashboardLinkStatus, engineLoopStatus, marketFeedStatus, optionPriceStatus, type FeedLevel, type FeedStatus } from "./feedStatus";
 
@@ -141,6 +142,10 @@ export default function LiveBook() {
         ) : (
           <Skeleton height={120} />
         )}
+      </Section>
+
+      <Section title="Capital and P&L split">
+        {pnl && positions ? <CapitalPnlPies capital={pnl.startingEquity} positions={open} realized={realized} charges={charges} /> : <Skeleton height={200} />}
       </Section>
 
       <Section title={`Open positions${positions ? ` (${open.length})` : ""}`}>
