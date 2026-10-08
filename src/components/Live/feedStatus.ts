@@ -15,8 +15,10 @@ export interface FeedStatus {
 
 /** 5-minute bars plus Yahoo's 1–2 minute delay. */
 export const MARKET_FEED_MAX_AGE_MS = 10 * 60_000;
-/** Open positions are re-marked every loop tick (30 s) and decisions are stored each cycle. */
+/** Open positions are re-marked every loop tick (30 s). */
 export const OPTION_PRICE_MAX_AGE_MS = 3 * 60_000;
+/** Decisions are stored once per closed 5-minute bar, after the 90 s data lag. */
+export const SIGNAL_PRICE_MAX_AGE_MS = 8 * 60_000;
 
 const ageOf = (iso: string | null | undefined, now: number): number | null => {
   const t = iso ? Date.parse(iso) : NaN;
@@ -53,14 +55,14 @@ export function optionPriceStatus(
 ): FeedStatus {
   const source = state.health.groww?.ok ? "Groww live quotes" : "Model price (Black-Scholes on India VIX), broker feed not connected";
   // Prefer the freshest open-position mark, then the premium on the latest decision's contract.
-  let price: { label: string; value: number; asOf: string } | null = null;
+  let price: { label: string; value: number; asOf: string; maxAgeMs: number } | null = null;
   for (const p of positions ?? []) {
     if (p.ltp == null || !p.ltpAsOf) continue;
-    if (!price || Date.parse(p.ltpAsOf) > Date.parse(price.asOf)) price = { label: p.contract.label, value: p.ltp, asOf: p.ltpAsOf };
+    if (!price || Date.parse(p.ltpAsOf) > Date.parse(price.asOf)) price = { label: p.contract.label, value: p.ltp, asOf: p.ltpAsOf, maxAgeMs: OPTION_PRICE_MAX_AGE_MS };
   }
   if (!price) {
     const s = signals?.find((x) => x.index === index);
-    if (s?.contract && s.contract.premium != null) price = { label: s.contract.label, value: s.contract.premium, asOf: s.computedAt };
+    if (s?.contract && s.contract.premium != null) price = { label: s.contract.label, value: s.contract.premium, asOf: s.computedAt, maxAgeMs: SIGNAL_PRICE_MAX_AGE_MS };
   }
   if (!price) {
     return inSession(state)
@@ -70,7 +72,7 @@ export function optionPriceStatus(
   const age = ageOf(price.asOf, now);
   const line = `${price.label} ₹${fmtNum(price.value)} at ${fmtIstHm(price.asOf)} IST`;
   if (!inSession(state)) return { level: "wait", headline: "Market closed", detail: `Last ${line} · source: ${source}` };
-  if (age == null || age > OPTION_PRICE_MAX_AGE_MS) {
+  if (age == null || age > price.maxAgeMs) {
     return { level: "stale", headline: "Prices delayed", detail: `Last ${line}${age == null ? "" : `, ${fmtAge(age)} old`} · source: ${source}` };
   }
   return { level: "ok", headline: "Coming through", detail: `${line} · ${fmtAge(age)} old · source: ${source}` };

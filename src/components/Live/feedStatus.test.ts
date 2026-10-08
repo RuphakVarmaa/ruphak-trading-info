@@ -60,8 +60,12 @@ describe("optionPriceStatus", () => {
   it("prefers an open position's mark over the signal premium", () => {
     expect(optionPriceStatus(state("OPEN"), [position], [signal], ms("09:40")).detail).toContain("22600 CE ₹151.50");
   });
+  it("allows a decision up to one 5-minute bar old but not a stale position mark", () => {
+    expect(optionPriceStatus(state("OPEN"), [], [signal], ms("09:44")).level).toBe("ok");
+    expect(optionPriceStatus(state("OPEN"), [position], [], ms("09:43")).level).toBe("stale");
+  });
   it("is stale when the newest price is old, and waits before the pre-open", () => {
-    expect(optionPriceStatus(state("OPEN"), [], [signal], ms("09:45")).level).toBe("stale");
+    expect(optionPriceStatus(state("OPEN"), [], [signal], ms("09:50")).level).toBe("stale");
     expect(optionPriceStatus(state("CLOSED"), [], [], ms("08:45")).level).toBe("wait");
     expect(optionPriceStatus(state("OPEN"), [], [], ms("09:40")).level).toBe("stale");
   });
