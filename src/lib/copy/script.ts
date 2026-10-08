@@ -6,8 +6,8 @@
 import type { CopyTicketView } from "@/engine/api-types";
 import { computeCharges } from "@/engine/broker/charges";
 import { DEFAULT_CONFIG } from "@/engine/config";
-import { expiryLong, exitLevels, hm, skipRule } from "./action";
-import { buyLimit, floorTick, indexLevel, LIMIT_SLIPPAGE_PCT, rupees, wholeRupees } from "./prices";
+import { copyLimit, expiryLong, exitLevels, hm, skipRule } from "./action";
+import { floorTick, indexLevel, LIMIT_SLIPPAGE_PCT, rupees, wholeRupees } from "./prices";
 
 /** The capital most people copying by hand start with; every ticket is also checked against it. */
 export const SMALL_CAPITAL = 5_000;
@@ -31,7 +31,8 @@ export function paperScript(t: CopyTicketView): string[] {
   const c = t.contract;
   const x = exitLevels(t);
   const lv = t.levels;
-  const limit = buyLimit(t.entry.premium);
+  const lim = copyLimit(t);
+  const limit = lim.price;
   const skip = skipRule(t);
   const call = c.optionType === "CE";
   const model = t.entry.priceSource === "model";
@@ -43,7 +44,7 @@ export function paperScript(t: CopyTicketView): string[] {
     `Pick the expiry ${expiryLong(c.expiry)} (${t.index} weekly).`,
     `Choose strike ${c.strike} ${call ? "CE (call)" : "PE (put)"} and tap BUY.`,
     `Quantity: ${t.lots} lot${t.lots === 1 ? "" : "s"} = ${t.qty} (lot size ${c.lotSize}).`,
-    `Order type LIMIT at ${rupees(limit)} or less: the engine paid ${rupees(t.entry.premium)} at ${hm(t.entry.at)} IST${model ? " (a model price: Groww's will differ)" : ""}, plus ${LIMIT_SLIPPAGE_PCT}% room.${skip ? ` Don't place it if ${t.index} is already ${skip.above ? "above" : "below"} ${indexLevel(skip.level)}.` : ""}`,
+    `Order type LIMIT at ${rupees(limit)} or less: the engine paid ${rupees(t.entry.premium)} at ${hm(t.entry.at)} IST${model ? " (a model price: Groww's will differ)" : ""}; the limit is the ${lim.baseLabel} plus ${LIMIT_SLIPPAGE_PCT}% room.${skip ? ` Don't place it if ${t.index} is already ${skip.above ? "above" : "below"} ${indexLevel(skip.level)}.` : ""}`,
     `Once filled, place the stop-loss: SELL ${t.qty} qty, stop-loss (SL) order, trigger ${rupees(x.stop)}, limit ${rupees(stopLossLimit(x.stop))} (${pct(lv.stopPct)} on the engine's fill; from your own fill F the trigger is F × ${stopFactor}). The limit sits ${SL_LIMIT_ROOM_PCT}% under the trigger so the order fills in a fast fall.`,
     `Target ${rupees(x.target)} (${pct(lv.targetPct)}): sell there. Keep one exit order per lot: when the premium nears the target, change the stop-loss into a LIMIT SELL at ${rupees(x.target)}, or use an OCO order if your app has one. Two open SELL orders for one lot can leave you short.`,
     `Trail: once the premium reaches ${rupees(x.trailFrom)} (${pct(lv.trailActivatePct)}), raise the stop so it gives back at most ${lv.trailGivebackPct}% of the gain from the peak: at ${rupees(x.trailFrom)} the stop goes to ${rupees(trailAtStart)}, and it rises with every new high.`,
@@ -90,7 +91,7 @@ export function sizeCheck(t: CopyTicketView, capital: number, lots: number, labe
   const exchange = DEFAULT_CONFIG.indexSpecs[t.index].exchange;
   const date = t.entry.at.slice(0, 10);
   const qty = lots * t.contract.lotSize;
-  const entry = buyLimit(t.entry.premium);
+  const entry = copyLimit(t).price;
   const stop = exitLevels(t).stop;
   const cost = entry * qty;
   const buyCharges = computeCharges("BUY", entry, qty, exchange, date).total;

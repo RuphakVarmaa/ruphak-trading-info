@@ -3,7 +3,7 @@
 /**
  * One poll per URL per page, however many components read it (the action strip and the copy page both
  * read today's trades). The fastest subscriber's interval wins. Unlike the dashboard's other polls, a
- * `background` subscriber keeps polling while the tab is hidden (every 15 s at most), so a status change
+ * `background` subscriber keeps polling while the tab is hidden (every 5 s, as far as the browser allows), so a status change
  * can still chime and notify; it polls at once when the tab comes back.
  */
 import { useCallback, useSyncExternalStore } from "react";
@@ -32,8 +32,8 @@ interface Entry {
   lastAttempt: number;
 }
 
-/** A hidden tab polls no faster than this. */
-const HIDDEN_MS = 15_000;
+/** A hidden tab polls no faster than this (browsers may throttle it to once a minute). */
+const HIDDEN_MS = 5_000;
 const EMPTY: PollState<never> = { data: null, error: null, at: null };
 const entries = new Map<string, Entry>();
 let subSeq = 0;

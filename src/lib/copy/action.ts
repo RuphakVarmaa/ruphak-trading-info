@@ -86,6 +86,11 @@ export interface ActionInput {
   feed: FeedInput;
   /** Ticket ids whose index was already seen past the skip level: that copy stays too late. */
   skipLatched?: ReadonlySet<string>;
+  /**
+   * Quantity shown for a ticket while it was open, by ticket id. A closed ticket can report double
+   * its quantity (engine issue COPY-1), and selling more than you hold opens a short: EXIT NOW uses this.
+   */
+  openQty?: ReadonlyMap<string, number>;
   /** The engine's entry window, "HH:MM" IST (defaults: the engine's config, 09:25–14:30). */
   entryFrom?: string;
   entryTo?: string;
@@ -220,11 +225,36 @@ export function isPastSkip(price: number, skip: SkipRule): boolean {
   return skip.above ? price > skip.level : price < skip.level;
 }
 
+/**
+ * The engine's own limit price for the entry order, once tickets carry it (`entry.limitPrice`, being
+ * added on the engine side); null until then. The only place that reads it: drop the cast after merging.
+ */
+export function engineEntryLimit(t: CopyTicketView): number | null {
+  const v = (t.entry as { limitPrice?: number | null }).limitPrice;
+  return typeof v === "number" && Number.isFinite(v) && v > 0 ? v : null;
+}
+
+export interface CopyLimit {
+  /** The most a copier should pay, on the tick. */
+  price: number;
+  /** What it is built from (on the tick): the engine's entry limit when the ticket has one, else its fill. */
+  base: number;
+  /** "engine limit ₹142.60" or "engine fill ₹142.50". */
+  baseLabel: string;
+}
+
+/** The copy limit: the engine's entry limit (else its fill), rounded up to the tick, plus 2 % (see buyLimit). */
+export function copyLimit(t: CopyTicketView): CopyLimit {
+  const engineLimit = engineEntryLimit(t);
+  const base = ceilTick(engineLimit ?? t.entry.premium);
+  return { price: buyLimit(base), base, baseLabel: `${engineLimit != null ? "engine limit" : "engine fill"} ${rupees(base)}` };
+}
+
 /** "BUY NIFTY 22600 CE 13-Oct · 1 lot = 65 qty · limit ≤ ₹145.35 · skip if NIFTY > 22,631". */
 export function buyOrderText(t: CopyTicketView): string {
   const c = t.contract;
   const skip = skipRule(t);
-  const parts = [`BUY ${t.index} ${c.strike} ${c.optionType} ${expiryShort(c.expiry)}`, lotsText(t.lots, t.qty), `limit ≤ ${rupees(buyLimit(t.entry.premium))}`];
+  const parts = [`BUY ${t.index} ${c.strike} ${c.optionType} ${expiryShort(c.expiry)}`, lotsText(t.lots, t.qty), `limit ≤ ${rupees(copyLimit(t).price)}`];
   if (skip) parts.push(`skip if ${t.index} ${skip.above ? ">" : "<"} ${indexLevel(skip.level)}`);
   return parts.join(" · ");
 }
@@ -246,9 +276,16 @@ export const EXIT_WORDS: Record<OrderReason, string> = {
 };
 
 /** "SELL NIFTY 22600 CE 13-Oct · 1 lot = 65 qty · market order now · stop-loss hit". */
-export function sellOrderText(t: CopyTicketView, reason: string): string {
+export function sellOrderText(t: CopyTicketView, reason: string, qty = t.qty): string {
   const c = t.contract;
-  return `SELL ${t.index} ${c.strike} ${c.optionType} ${expiryShort(c.expiry)} · ${lotsText(t.lots, t.qty)} · market order now · ${reason}`;
+  const lots = c.lotSize > 0 ? Math.max(1, Math.round(qty / c.lotSize)) : t.lots;
+  return `SELL ${t.index} ${c.strike} ${c.optionType} ${expiryShort(c.expiry)} · ${lotsText(lots, qty)} · market order now · ${reason}`;
+}
+
+/** The quantity to sell: what was shown while the trade was open, when this page saw it open. */
+export function sellQty(t: CopyTicketView, openQty?: ReadonlyMap<string, number>): number {
+  const seen = openQty?.get(t.id);
+  return seen != null && seen > 0 ? seen : t.qty;
 }
 
 export interface ExitLevels {
@@ -361,11 +398,16 @@ export function convictionTrigger(s: SignalView): string {
 
 const NONE_TODAY = "None today: this check resets at the next session.";
 
+/** An engine detail with error-code prefixes ("ENGINE_UNREACHABLE: ", "HTTP_403: ") taken out. */
+export function plainDetail(detail: string): string {
+  return detail.replace(/\b[A-Z][A-Z0-9]*(?:_[A-Z0-9]+)+:\s*/g, "").replace(/\s+/g, " ").trim();
+}
+
 /** The plain-language reason a failed gate blocks an entry, and what would unblock it. */
 export function gateBlock(g: GateResult, s: SignalView, entryFrom: string, entryTo: string): Block {
   const id = g.gate.toLowerCase();
   const rank = GATE_RANK[id] ?? UNKNOWN_RANK;
-  const detail = g.detail.trim();
+  const detail = plainDetail(g.detail);
   const index = s.index;
   const block = (reason: string, trigger: string | null): Block => ({ gate: id, rank, reason, trigger });
   switch (id) {
@@ -518,7 +560,7 @@ function openAction(input: ActionInput, t: CopyTicketView, others: string[]): In
     const a = base(input, "EXIT_NOW", t);
     const reason = `square-off ${hm(t.levels.squareOffAt)}`;
     a.headline = `SELL ${name} now — ${reason}`;
-    a.order = sellOrderText(t, reason);
+    a.order = sellOrderText(t, reason, sellQty(t, input.openQty));
     a.details = [`It is past the ${hm(t.levels.squareOffAt)} IST square-off: the engine sells every open trade now.`, ...others];
     a.notice = { title: `EXIT NOW · ${t.index}`, body: `SELL ${name} now — ${reason}` };
     return a;
@@ -529,10 +571,13 @@ function openAction(input: ActionInput, t: CopyTicketView, others: string[]): In
   const pause = pauseReason(input);
   const price = input.feed.price;
   const pastNow = pause == null && skip != null && price != null && isPastSkip(price, skip);
+  // The trailing stop is on once the premium is 30 % up: far past any copy limit, so too late to copy.
+  const trailOn = x.trail != null;
 
-  if (ageMs <= ENTER_WINDOW_MS && !latched && !pastNow) {
+  if (ageMs <= ENTER_WINDOW_MS && !latched && !pastNow && !trailOn) {
     const order = buyOrderText(t);
-    const limit = buyLimit(t.entry.premium);
+    const lim = copyLimit(t);
+    const limit = lim.price;
     const skipText = skip ? `skip if ${t.index} is ${skip.above ? "above" : "below"} ${indexLevel(skip.level)}` : null;
     if (pause) {
       const a = base(input, "PAUSED", t);
@@ -555,8 +600,11 @@ function openAction(input: ActionInput, t: CopyTicketView, others: string[]): In
     a.skip = skip;
     a.details = [
       fillLine,
-      `Limit = the engine's fill + 2%, rounded up to ₹0.05. Once filled: stop-loss ${rupees(x.stop)}, target ${rupees(x.target)}, out by ${hm(x.squareOffAt)}.`,
-      ...(price != null && skip ? [`${t.index} is at ${indexPrice(price)}: still inside the skip level of ${indexLevel(skip.level)}.`] : []),
+      `Limit = ${lim.baseLabel} + 2%, rounded up to ₹0.05. Once filled: stop-loss ${rupees(x.stop)}, target ${rupees(x.target)}, out by ${hm(x.squareOffAt)}.`,
+      ...(price != null && skip ? [`${t.index} ${indexPrice(price)} is inside the skip level ${indexLevel(skip.level)}.`] : []),
+      ...(t.live && t.live.mark > limit
+        ? [`The engine's latest mark ${rupees(t.live.mark)}${t.live.markAt ? ` (${hm(t.live.markAt)})` : ""} is already above the limit: the order may not fill. Don't raise the limit.`]
+        : []),
       ...(skip ? [] : ["The engine gave no skip level for this trade: the limit is the only cap."]),
       ...others,
     ];
@@ -568,13 +616,25 @@ function openAction(input: ActionInput, t: CopyTicketView, others: string[]): In
   a.order = manageText(t);
   a.pastSkipNow = pastNow;
   a.skip = skip;
+  if (trailOn) {
+    // Its own status: the trailing stop turning on is worth an alert (raise your stop-loss).
+    a.statusKey = `MANAGE:${t.id}:trail`;
+    a.headline = `MANAGE — trailing stop on (${rupees(x.trail!)})`;
+  }
   const why =
-    pastNow || latched
-      ? `${t.index} has passed the skip level of ${skip ? indexLevel(skip.level) : "the trade"}${pastNow && price != null ? ` (now ${indexPrice(price)})` : ""}: too late to copy.`
-      : `Opened at ${hm(t.entry.at)} IST, ${shortAge(ageMs)} ago: too late to copy.`;
+    pastNow && price != null && skip
+      ? `${t.index} ${indexPrice(price)} is past the skip level ${indexLevel(skip.level)} — don't chase.`
+      : latched && skip
+        ? `${t.index} went past the skip level ${indexLevel(skip.level)} — don't chase.`
+        : trailOn && ageMs <= ENTER_WINDOW_MS
+          ? `The premium already ran 30% up (the trailing stop is on) — don't chase.`
+          : `Opened at ${hm(t.entry.at)} IST, ${shortAge(ageMs)} ago: too late to copy.`;
   const markLine = t.live ? `Engine mark ${rupees(t.live.mark)}${t.live.markAt ? ` at ${hm(t.live.markAt)}` : ""} (${t.live.movePct >= 0 ? "+" : "−"}${Math.abs(t.live.movePct).toFixed(1)}% on the premium).` : null;
-  a.details = [why, ...(markLine ? [markLine] : []), `The time stop at ${hm(x.timeStopAt)} sells unless the premium is at least ${rupees(x.timeStopKeep)}.`, ...others];
-  a.notice = { title: `MANAGE · ${t.index}`, body: `${name}: ${a.order}` };
+  const trailLine = trailOn ? [`Holding it? Raise your stop-loss to ${rupees(x.trail!)}: the engine sells if the premium falls back there.`] : [];
+  a.details = [why, ...trailLine, ...(markLine ? [markLine] : []), `The time stop at ${hm(x.timeStopAt)} sells unless the premium is at least ${rupees(x.timeStopKeep)}.`, ...others];
+  a.notice = trailOn
+    ? { title: `TRAILING STOP ON · ${t.index}`, body: `${name}: raise your stop-loss to ${rupees(x.trail!)}. Target ${rupees(x.target)}, out by ${hm(x.squareOffAt)}.` }
+    : { title: `MANAGE · ${t.index}`, body: `${name}: ${a.order}` };
   return a;
 }
 
@@ -584,10 +644,15 @@ function exitAction(input: ActionInput, t: CopyTicketView, others: string[]): In
   const name = `${t.index} ${c.strike} ${c.optionType}`;
   const reason = EXIT_WORDS[x.reason] ?? "closed";
   const a = base(input, "EXIT_NOW", t);
+  const qty = sellQty(t, input.openQty);
   a.headline = `SELL ${name} now — ${reason}`;
-  a.order = sellOrderText(t, reason);
+  a.order = sellOrderText(t, reason, qty);
   a.pnl = x.pnl;
-  a.details = [`The engine sold at ${rupees(x.premium)} at ${hm(x.at)} IST after ${x.holdMin} min: ${wholeRupees(x.pnl, true)} after charges (${x.reasonText.toLowerCase()}).`, ...others];
+  a.details = [
+    `The engine sold at ${rupees(x.premium)} at ${hm(x.at)} IST after ${x.holdMin} min: ${wholeRupees(x.pnl, true)} after charges (${x.reasonText.toLowerCase()}).`,
+    qty !== t.qty ? `Sell the ${qty} qty shown while it was open: the closed record lists ${t.qty}, and selling more than you hold opens a short.` : "Sell only the quantity you actually hold.",
+    ...others,
+  ];
   a.notice = { title: `EXIT NOW · ${t.index}`, body: `SELL ${name} now — ${reason}` };
   return a;
 }
@@ -712,13 +777,15 @@ export function nowLine(a: IndexAction | null, t: CopyTicketView | null): string
   if (a && a.ticket?.id === t.id) {
     switch (a.kind) {
       case "ENTER_NOW":
-        return `Buy ${t.qty} qty of ${name} now with a limit of ${rupees(a.limit ?? buyLimit(t.entry.premium))} or less, then place the stop-loss at ${rupees(x.stop)}.`;
+        return `Buy ${t.qty} qty of ${name} now with a limit of ${rupees(a.limit ?? copyLimit(t).price)} or less, then place the stop-loss at ${rupees(x.stop)}.`;
       case "PAUSED":
         return `Wait: ${a.headline.replace(/^PAUSED — /, "")}. Don't buy ${name} until the live price is back${a.skip ? `, and skip it if ${t.index} is ${a.skip.above ? "above" : "below"} ${indexLevel(a.skip.level)}` : ""}.`;
       case "MANAGE":
         return `Holding ${name}? Keep the stop at ${rupees(x.trail != null && x.trail > x.stop ? x.trail : x.stop)} and sell by ${hm(x.squareOffAt)} IST. Not holding it? Don't chase it.`;
-      case "EXIT_NOW":
-        return `Sell all ${t.qty} qty of ${name} now at market (${a.headline.split(" — ")[1] ?? "the engine sold"}).`;
+      case "EXIT_NOW": {
+        const qty = Number(/= (\d+) qty/.exec(a.order ?? "")?.[1] ?? t.qty);
+        return `Sell your ${qty} qty of ${name} now at market (${a.headline.split(" — ")[1] ?? "the engine sold"}).`;
+      }
       default:
         break;
     }

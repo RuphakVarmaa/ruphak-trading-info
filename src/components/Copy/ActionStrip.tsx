@@ -9,14 +9,15 @@
  * itself (/api/engine/copy?date=…&account=…), so it can sit on the Desk as well as on /copy. It also
  * raises the status-change alerts (chime, vibration, desktop notification).
  */
-import { Fragment, type CSSProperties } from "react";
+import { Fragment, type CSSProperties, type ReactNode } from "react";
 import type { IndexId } from "@/engine/api-types";
 import { alpha, C, pnlColor } from "@/components/shared/colors";
 import { Skeleton } from "@/components/shared/ui";
 import { hms, KIND_LABEL, shortAge, type IndexAction } from "@/lib/copy/action";
 import { indexPrice, wholeRupees } from "@/lib/copy/prices";
+import { fmtDateKey } from "@/components/shared/format";
 import AlertsToggle from "./AlertsToggle";
-import { useActionAlerts } from "./alerts";
+import { useActionAlerts, useMissedTradeAlerts } from "./alerts";
 import { CopyAction } from "./CopyButton";
 import { plainError } from "./sharedPoll";
 import { TONE_COLOR } from "./tone";
@@ -49,15 +50,18 @@ export function OrderText({ text, style }: { text: string; style?: CSSProperties
   );
 }
 
-function livePriceLine(d: CopyData, index: IndexId): { text: string; stale: boolean } {
+/** The live price line; orange when stale, red when offline (the feed contract's two levels). */
+function livePriceLine(d: CopyData, index: IndexId): { text: string; color: string } {
   const q = d.live.data?.indices.find((i) => i.index === index) ?? null;
+  const offline = d.live.freshness === "offline" || (d.live.freshness === "loading" && d.live.error != null);
   const fresh = d.live.freshness === "live" && d.live.data?.stale !== true;
+  const color = offline ? C.red : fresh ? C.muted2 : C.orange;
   if (!q) {
-    if (d.live.freshness === "loading" && d.live.error == null) return { text: `${index} live price loading…`, stale: false };
-    return { text: `${index} live price unavailable`, stale: true };
+    if (d.live.freshness === "loading" && d.live.error == null) return { text: `${index} live price loading…`, color: C.muted2 };
+    return { text: `${index} live price unavailable`, color: offline ? C.red : C.orange };
   }
   const age = d.live.ageMs != null ? ` · ${shortAge(d.live.ageMs)} ago` : "";
-  return { text: `${index} ${indexPrice(q.price)}${age}${fresh ? "" : d.hidden ? " (paused in the background)" : " (stale)"}`, stale: !fresh };
+  return { text: `${index} ${indexPrice(q.price)}${age}${fresh ? "" : d.hidden ? " (paused in the background)" : offline ? " (offline)" : " (stale)"}`, color };
 }
 
 function IndexRow({ index, a, d, compact }: { index: IndexId; a: IndexAction | null; d: CopyData; compact: boolean }) {
@@ -94,7 +98,7 @@ function IndexRow({ index, a, d, compact }: { index: IndexId; a: IndexAction | n
     >
       <div style={{ display: "flex", flexWrap: "wrap", justifyContent: "space-between", alignItems: "baseline", gap: "2px 12px" }}>
         <span style={{ fontSize: 13, fontWeight: 800, letterSpacing: "0.06em", color: C.textSoft }}>{index}</span>
-        <span className="tnum" style={{ fontSize: 12, color: live.stale ? C.orange : C.muted2 }}>
+        <span className="tnum" style={{ fontSize: 12, color: live.color }}>
           {live.text}
         </span>
       </div>
@@ -152,10 +156,15 @@ function IndexRow({ index, a, d, compact }: { index: IndexId; a: IndexAction | n
   );
 }
 
-/** Both indices' statuses in large type, with the order to copy. `account`: default the EngineProvider's, else main. */
-export default function IndexActionStrip({ account, compact = false }: { account?: string; compact?: boolean }) {
+/**
+ * Both indices' statuses in large type, with the order to copy. `account`: default the EngineProvider's,
+ * else main. `headerExtra`: optional controls for the header's right side (the copy page puts its
+ * account switcher there).
+ */
+export default function IndexActionStrip({ account, compact = false, headerExtra }: { account?: string; compact?: boolean; headerExtra?: ReactNode }) {
   const d = useIndexActions(account);
   useActionAlerts(d.actions, d.account.id, d.settled);
+  useMissedTradeAlerts(d.tickets.data, d.account.id, d.date, d.nowMs, d.settled);
 
   const ticketsStale = d.ticketsAgeMs != null && d.ticketsAgeMs > TICKETS_STALE_MS;
   const engineDown = plainError(d.tickets.error) ?? (d.engineStatus === "offline" ? "Can't reach the trading engine right now." : null);
@@ -178,11 +187,12 @@ export default function IndexActionStrip({ account, compact = false }: { account
         <div style={{ display: "flex", flexWrap: "wrap", alignItems: "baseline", gap: "2px 10px", minWidth: 0 }}>
           <h2 style={{ margin: 0, fontSize: 16, fontWeight: 700, color: C.textStrong }}>What to do now</h2>
           <span style={{ fontSize: 13, color: C.muted }}>
+            {d.date ? `${fmtDateKey(d.date)} · ` : ""}
             {d.account.label}
             {d.account.capitalRupees != null && !d.account.label.includes("₹") ? ` · ${wholeRupees(d.account.capitalRupees)}` : ""}
           </span>
         </div>
-        {compact && <AlertsToggle compact />}
+        {headerExtra}
       </div>
 
       {engineDown && (
@@ -197,14 +207,13 @@ export default function IndexActionStrip({ account, compact = false }: { account
         ))}
       </div>
 
-      <div className="tnum" style={{ display: "flex", flexWrap: "wrap", gap: "2px 14px", fontSize: 12, color: C.muted2, lineHeight: 1.5 }}>
+      <div className="tnum" style={{ display: "flex", flexWrap: "wrap", alignItems: "center", gap: "4px 14px", fontSize: 12, color: C.muted2, lineHeight: 1.5 }}>
+        <AlertsToggle compact={compact} />
         <span style={{ color: ticketsStale ? C.orange : undefined }}>
           Trades: paper engine{d.ticketsAgeMs != null ? `, updated ${shortAge(d.ticketsAgeMs)} ago` : d.tickets.error ? ", not loaded" : ", loading…"}
         </span>
-        <span style={{ color: liveBad ? C.orange : undefined }}>{liveText}</span>
+        <span style={{ color: liveBad ? (d.live.freshness === "offline" || d.live.data == null ? C.red : C.orange) : undefined }}>{liveText}</span>
       </div>
-
-      {!compact && <AlertsToggle />}
     </section>
   );
 }

@@ -17,6 +17,7 @@ import { wholeRupees } from "@/lib/copy/prices";
 import { istParts } from "@/lib/ist";
 import IndexActionStrip from "./ActionStrip";
 import { titleBadge } from "./alerts";
+import { ALERTS_EXPLAINED } from "./AlertsToggle";
 import CopyChart from "./CopyChart";
 import { plainError } from "./sharedPoll";
 import { GateList, MarketChips, SetupPanel } from "./TicketParts";
@@ -24,6 +25,7 @@ import TradeCard from "./TradeCard";
 import { INDICES, useIndexActions, type CopyData } from "./useIndexActions";
 
 const PAGE_TITLE = "Copy trades — Ruphak India Index Desk";
+const SR_ONLY = { position: "absolute", width: 1, height: 1, padding: 0, margin: -1, overflow: "hidden", clip: "rect(0 0 0 0)", whiteSpace: "nowrap", border: 0 } as const;
 
 /**
  * The trade to show: an exit to act on first, then an entry (or a paused one), then the trade picked
@@ -126,9 +128,9 @@ export default function CopyDesk({ initialId, account }: { initialId: string | n
   const chartIndex = current?.index ?? watch;
   const active = d.phase === "OPEN" || d.phase === "PRE_OPEN";
   const weekend = d.nowMs != null && istParts(d.nowMs).weekday >= 6;
-  const chartDate = current ? current.entry.at.slice(0, 10) : d.phase === "HOLIDAY" || weekend ? null : d.date;
-  // Before 09:15 on a trading day today's session has no candles yet: don't ask for them.
-  const beforeOpen = !current && chartDate != null && chartDate === d.date && d.nowMs != null && istParts(d.nowMs).minutesOfDay < 9 * 60 + 15;
+  // Today's session once it has opened; before the open (and on closed days) the latest session, labelled as the previous one.
+  const opened = d.nowMs != null && istParts(d.nowMs).minutesOfDay >= 9 * 60 + 15;
+  const chartDate = current ? current.entry.at.slice(0, 10) : d.phase === "HOLIDAY" || weekend || !opened ? null : d.date;
   const signalFor = (index: IndexId) => d.signals?.find((s) => s.index === index) ?? null;
 
   const badge = titleBadge(d.actions);
@@ -151,15 +153,8 @@ export default function CopyDesk({ initialId, account }: { initialId: string | n
 
   return (
     <main style={{ width: "100%", maxWidth: 1240, margin: "0 auto", padding: "16px 16px 56px", display: "grid", gap: 18, boxSizing: "border-box", minWidth: 0 }}>
-      <header style={{ display: "flex", flexWrap: "wrap", alignItems: "center", justifyContent: "space-between", gap: "8px 16px" }}>
-        <div style={{ display: "flex", flexWrap: "wrap", alignItems: "baseline", gap: "2px 12px", minWidth: 0 }}>
-          <h1 style={{ margin: 0, fontFamily: SERIF, fontSize: 26, fontWeight: 500, letterSpacing: "-0.01em", color: C.textStrong }}>Copy trades</h1>
-          <span style={{ fontSize: 13, color: C.muted }}>{d.date ? `${fmtDateKey(d.date)} · ` : ""}paper trades to repeat by hand</span>
-        </div>
-        <AccountSwitcher basePath="/copy" />
-      </header>
-
-      <IndexActionStrip account={d.account.id} />
+      <h1 style={SR_ONLY}>Copy trades{d.date ? `, ${fmtDateKey(d.date)}` : ""}</h1>
+      <IndexActionStrip account={d.account.id} headerExtra={<AccountSwitcher basePath="/copy" />} />
 
       <section id="trade" aria-label="The trade" style={{ scrollMarginTop: 84, minWidth: 0 }}>
         {current ? (
@@ -198,7 +193,7 @@ export default function CopyDesk({ initialId, account }: { initialId: string | n
           )}
         </div>
         <Panel style={{ padding: 12 }}>
-          <CopyChart index={chartIndex} date={chartDate} ticket={current} active={active} phase={d.phase} beforeOpen={beforeOpen} />
+          <CopyChart index={chartIndex} date={chartDate} ticket={current} active={active} phase={d.phase} today={d.date} />
         </Panel>
       </section>
 
@@ -240,7 +235,7 @@ export default function CopyDesk({ initialId, account }: { initialId: string | n
           {current && current.steps.length > 0 && (
             <>
               <H3>The engine&apos;s own copy steps</H3>
-              <ol style={{ margin: 0, paddingLeft: 20, display: "grid", gap: 6, fontSize: 12.5, color: C.textSoft, lineHeight: 1.5 }}>
+              <ol style={{ listStyle: "decimal", margin: 0, paddingLeft: 20, display: "grid", gap: 6, fontSize: 12.5, color: C.textSoft, lineHeight: 1.5 }}>
                 {current.steps.map((s) => (
                   <li key={s}>{s}</li>
                 ))}
@@ -267,6 +262,9 @@ export default function CopyDesk({ initialId, account }: { initialId: string | n
         </section>
       )}
 
+      <p style={{ margin: 0, fontSize: 12.5, color: C.muted, lineHeight: 1.6 }}>
+        <b>Alerts.</b> {ALERTS_EXPLAINED}
+      </p>
       <p style={{ margin: 0, fontSize: 12, color: C.muted2, lineHeight: 1.6 }}>
         These are paper trades. Over the sessions backtested so far the strategy lost money on both accounts, so copying them with real money is likely to lose money too. Without a broker feed the
         engine&apos;s option prices are model prices, and the index data is about a minute late: check the real price, size from your own capital, and always use a stop-loss.

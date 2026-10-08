@@ -202,7 +202,7 @@ export function SetupPanel({ t }: { t: CopyTicketView }) {
         </span>
       </div>
       <ConvictionBar score={s.conviction} threshold={s.threshold} />
-      <ul style={{ margin: 0, paddingLeft: 18, display: "grid", gap: 6, fontSize: 12.5, color: C.textSoft, lineHeight: 1.45 }}>
+      <ul style={{ listStyle: "disc", margin: 0, paddingLeft: 18, display: "grid", gap: 6, fontSize: 12.5, color: C.textSoft, lineHeight: 1.45 }}>
         {s.reasons.map((r) => (
           <li key={r}>{r}</li>
         ))}

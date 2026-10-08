@@ -8,9 +8,9 @@ import type { CopyTicketView } from "@/engine/api-types";
 import { defaultCalendar, type TradingCalendar } from "@/engine/calendar/calendar";
 import { DEFAULT_CONFIG } from "@/engine/config";
 import { addDays, weekdayOf } from "@/lib/ist";
-import { exitLevels, expiryLong } from "./action";
+import { copyLimit, exitLevels, expiryLong } from "./action";
 import { stopLossLimit } from "./script";
-import { buyLimit, isOnTick } from "./prices";
+import { isOnTick } from "./prices";
 
 export interface Check {
   id: "strike" | "type" | "search" | "expiry" | "expiry_next" | "qty" | "lot_size" | "tick";
@@ -80,7 +80,7 @@ export function verifyTicket(t: CopyTicketView, cal: TradingCalendar = defaultCa
 
   // Every price this page asks you to type, as shown.
   const x = exitLevels(t);
-  const typed = [buyLimit(t.entry.premium), x.stop, stopLossLimit(x.stop), x.target, x.trailFrom, x.timeStopKeep, ...(x.trail != null ? [x.trail] : [])];
+  const typed = [copyLimit(t).price, x.stop, stopLossLimit(x.stop), x.target, x.trailFrom, x.timeStopKeep, ...(x.trail != null ? [x.trail] : [])];
   const tickOk = typed.every(isOnTick);
   const fillNote = isOnTick(t.entry.premium) ? "" : ` (the engine's fill ₹${t.entry.premium.toFixed(2)} is not, so it is rounded)`;
   out.push({

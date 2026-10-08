@@ -4,13 +4,16 @@ import { describe, expect, it } from "vitest";
 import type { CopyTicketView, OrderReason, PositionView, SessionPhase } from "@/engine/api-types";
 import {
   buyOrderText,
+  copyLimit,
   deriveIndexAction,
+  engineEntryLimit,
   expiryLong,
   expiryShort,
   GATE_RANK,
   manageText,
   nowLine,
   opensText,
+  plainDetail,
   sellOrderText,
   skipRule,
   type ActionInput,
@@ -75,6 +78,14 @@ describe("ENTER NOW", () => {
     expect(deriveIndexAction(input({ tickets: [niftyTicket()], nowMs: ms("10:08"), feed: { ...LIVE, price: 22631 } })).kind).toBe("ENTER_NOW");
     expect(deriveIndexAction(input({ tickets: [niftyTicket()], nowMs: ms("10:15:02") })).kind).toBe("ENTER_NOW");
     expect(deriveIndexAction(input({ tickets: [niftyTicket()], nowMs: ms("10:15:03") })).kind).toBe("MANAGE");
+  });
+
+  it("warns when the engine's own mark is already above the limit (don't raise it)", () => {
+    const above = deriveIndexAction(input({ tickets: [niftyTicket()], nowMs: ms("10:08") }));
+    expect(above.kind).toBe("ENTER_NOW");
+    expect(above.details).toContain("The engine's latest mark ₹151.20 (10:07) is already above the limit: the order may not fill. Don't raise the limit.");
+    const below = deriveIndexAction(input({ tickets: [niftyTicket({ live: { mark: 143.1, markAt: at("10:07:30"), pnl: 30, movePct: 0.42, peak: 143.5, mfePct: 0.7, maePct: -0.4 } })], nowMs: ms("10:08") }));
+    expect(below.details.join(" ")).not.toContain("above the limit");
   });
 
   it("drops the skip clause when the engine gave no skip level", () => {
@@ -162,7 +173,7 @@ describe("MANAGE", () => {
     const call = deriveIndexAction(input({ tickets: [niftyTicket()], nowMs: ms("10:08"), feed: { ...LIVE, price: 22631.2 } }));
     expect(call.kind).toBe("MANAGE");
     expect(call.pastSkipNow).toBe(true);
-    expect(call.details[0]).toBe("NIFTY has passed the skip level of 22,631 (now 22,631.20): too late to copy.");
+    expect(call.details[0]).toBe("NIFTY 22,631.20 is past the skip level 22,631 — don't chase.");
     const put = deriveIndexAction(input({ index: "SENSEX", tickets: [sensexTicket()], nowMs: ms("10:23"), feed: { ...LIVE, price: 81233.9 } }));
     expect(put.kind).toBe("MANAGE");
     expect(put.pastSkipNow).toBe(true);
@@ -173,6 +184,21 @@ describe("MANAGE", () => {
     const a = deriveIndexAction(input({ tickets: [niftyTicket()], nowMs: ms("10:09"), feed: LIVE, skipLatched: new Set(["pos-nifty-1005"]) }));
     expect(a.kind).toBe("MANAGE");
     expect(a.pastSkipNow).toBe(false);
+  });
+
+  it("alerts again when the trailing stop turns on, and never offers a copy then", () => {
+    const off = deriveIndexAction(input({ tickets: [niftyTicket()], nowMs: ms("11:00") }));
+    const on = deriveIndexAction(input({ tickets: [niftyTicket({ levels: { trail: 164.12 } })], nowMs: ms("11:00") }));
+    expect(on.kind).toBe("MANAGE");
+    expect(on.statusKey).toBe("MANAGE:pos-nifty-1005:trail");
+    expect(on.statusKey).not.toBe(off.statusKey);
+    expect(on.headline).toBe("MANAGE — trailing stop on (₹164.10)");
+    expect(on.notice?.title).toBe("TRAILING STOP ON · NIFTY");
+    expect(on.details).toContain("Holding it? Raise your stop-loss to ₹164.10: the engine sells if the premium falls back there.");
+    // Within 10 minutes, a 30 % run in the premium is too late to copy.
+    const early = deriveIndexAction(input({ tickets: [niftyTicket({ levels: { trail: 164.12 } })], nowMs: ms("10:08") }));
+    expect(early.kind).toBe("MANAGE");
+    expect(early.details[0]).toBe("The premium already ran 30% up (the trailing stop is on) — don't chase.");
   });
 
   it("shows the trailing stop once it is on", () => {
@@ -211,6 +237,15 @@ describe("EXIT NOW", () => {
     expect(a.order).toBe(`SELL NIFTY 22600 CE 13-Oct · 1 lot = 65 qty · market order now · ${word}`);
     expect(a.statusKey).toBe("EXIT_NOW:pos-nifty-1005");
     expect(a.tone).toBe("action");
+  });
+
+  it("sells the quantity shown while the trade was open, not a doubled closed record", () => {
+    const doubled = { ...closed("STOP", "10:12:40", -2555), qty: 130, lots: 2 };
+    const a = deriveIndexAction(input({ tickets: [doubled], nowMs: ms("10:15"), openQty: new Map([["pos-nifty-1005", 65]]) }));
+    expect(a.order).toBe("SELL NIFTY 22600 CE 13-Oct · 1 lot = 65 qty · market order now · stop-loss hit");
+    expect(a.details[1]).toBe("Sell the 65 qty shown while it was open: the closed record lists 130, and selling more than you hold opens a short.");
+    const unseen = deriveIndexAction(input({ tickets: [closed("STOP", "10:12:40", -2555)], nowMs: ms("10:15") }));
+    expect(unseen.details[1]).toBe("Sell only the quantity you actually hold.");
   });
 
   it("reports the engine's exit price and P&L", () => {
@@ -377,6 +412,26 @@ describe("DONE and LOADING", () => {
   });
 });
 
+describe("the copy limit", () => {
+  it("builds on the engine's entry limit once tickets carry it, else on its fill", () => {
+    expect(engineEntryLimit(niftyTicket())).toBeNull();
+    expect(copyLimit(niftyTicket())).toEqual({ price: 145.35, base: 142.5, baseLabel: "engine fill ₹142.50" });
+    const withLimit = niftyTicket({ entry: { limitPrice: 142.6 } as Partial<CopyTicketView["entry"]> });
+    expect(engineEntryLimit(withLimit)).toBe(142.6);
+    expect(copyLimit(withLimit)).toEqual({ price: 145.5, base: 142.6, baseLabel: "engine limit ₹142.60" });
+    expect(buyOrderText(withLimit)).toContain("limit ≤ ₹145.50");
+    // An off-tick fill is rounded up to the tick first.
+    expect(copyLimit(niftyTicket({ entry: { premium: 142.53 } })).base).toBe(142.55);
+  });
+
+  it("takes error codes out of the engine's details", () => {
+    expect(plainDetail("quote failed: ENGINE_UNREACHABLE: Network error")).toBe("quote failed: Network error");
+    expect(plainDetail("6.2% (θ 1.10, costs 0.45 per unit)")).toBe("6.2% (θ 1.10, costs 0.45 per unit)");
+    const s = signal({ conviction: 0.7, gates: withGate(withGate(rangeGates(0.7), "conviction", true, "score +0.70"), "quote", false, "quote failed: GROWW_HTTP_403: forbidden") });
+    expect(deriveIndexAction(input({ signal: s })).details[0]).toBe("No usable option quote: quote failed: forbidden");
+  });
+});
+
 describe("helpers", () => {
   it("formats expiries and opening times", () => {
     expect(expiryShort("2026-10-13")).toBe("13-Oct");
@@ -404,7 +459,7 @@ describe("helpers", () => {
     const manage = deriveIndexAction(input({ tickets: [niftyTicket()] }));
     expect(nowLine(manage, manage.ticket)).toBe("Holding NIFTY 22600 CE? Keep the stop at ₹99.75 and sell by 15:05 IST. Not holding it? Don't chase it.");
     const exit = deriveIndexAction(input({ tickets: [closed("STOP", "10:12:40", -2555)], nowMs: ms("10:15") }));
-    expect(nowLine(exit, exit.ticket)).toBe("Sell all 65 qty of NIFTY 22600 CE now at market (stop-loss hit).");
+    expect(nowLine(exit, exit.ticket)).toBe("Sell your 65 qty of NIFTY 22600 CE now at market (stop-loss hit).");
     const old = closed("STOP", "10:12:40", -2555);
     expect(nowLine(null, old)).toBe("NIFTY 22600 CE closed at 10:12 IST (stop-loss hit): nothing to do.");
   });

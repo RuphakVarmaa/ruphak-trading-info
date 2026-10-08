@@ -9,9 +9,9 @@
  * pauses for a moment while the live feed catches up).
  */
 import { useEffect, useRef, useSyncExternalStore } from "react";
-import type { IndexId } from "@/engine/api-types";
-import { KIND_LABEL, type ActionKind, type IndexAction } from "@/lib/copy/action";
-import { readSession, writeSession } from "./clientStores";
+import type { CopyTicketView, IndexId } from "@/engine/api-types";
+import { EXIT_WINDOW_MS, EXIT_WORDS, hm, KIND_LABEL, type ActionKind, type IndexAction } from "@/lib/copy/action";
+import { readSeen, readSession, writeSeen, writeSession } from "./clientStores";
 
 const INDICES: readonly IndexId[] = ["NIFTY", "SENSEX"];
 export const PAUSE_ALERT_DELAY_MS = 3_000;
@@ -202,6 +202,36 @@ export function useActionAlerts(actions: Record<IndexId, IndexAction> | null, ac
     }
     return () => timers.forEach(clearTimeout);
   }, [keys, account, ready]);
+}
+
+/**
+ * A trade that opened and closed between two polls and was first seen after its EXIT NOW window
+ * (a sleeping laptop, a throttled background tab) never shows a status of its own: announce it once.
+ * The first look in a tab only records what is there.
+ */
+export function useMissedTradeAlerts(tickets: CopyTicketView[] | null, account: string, date: string | null, nowMs: number | null, ready: boolean): void {
+  useEffect(() => {
+    if (!ready || !tickets || !date || nowMs == null) return;
+    const prev = readSeen(account, date);
+    const firstLook = prev?.ids == null;
+    const known = new Set(prev?.ids ?? []);
+    const fresh = tickets.filter((t) => !known.has(t.id));
+    if (!firstLook && fresh.length === 0) return;
+    if (!firstLook) {
+      for (const t of fresh) {
+        const x = t.exit;
+        if (t.status !== "CLOSED" || !x || nowMs - Date.parse(x.at) <= EXIT_WINDOW_MS) continue;
+        const name = `${t.index} ${t.contract.strike} ${t.contract.optionType}`;
+        const body = `${name} opened at ${hm(t.entry.at)} and closed at ${hm(x.at)} IST (${EXIT_WORDS[x.reason]}) between two updates. Nothing to do unless you bought it; if you did, sell it now.`;
+        if (readOn()) {
+          chime("EXIT_NOW");
+          vibrate("EXIT_NOW");
+          desktopNotice(`MISSED TRADE · ${t.index}`, body, `copy-missed-${t.id}`, true);
+        }
+      }
+    }
+    writeSeen(account, date, { openQty: prev?.openQty ?? {}, ids: [...known, ...fresh.map((t) => t.id)] });
+  }, [tickets, account, date, nowMs, ready]);
 }
 
 /** "● ENTER NOW NIFTY" for the tab title, from the most urgent status (null when nothing is live). */

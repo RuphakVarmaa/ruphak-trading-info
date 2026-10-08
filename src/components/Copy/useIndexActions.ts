@@ -12,7 +12,7 @@ import { useClientNow, useEngineState, useNow, type ConnectionStatus } from "@/h
 import { useLiveIndices, type LiveIndicesState } from "@/hooks/useLiveIndices";
 import { deriveIndexAction, type FeedInput, type IndexAction } from "@/lib/copy/action";
 import { istDate, nextSessionOpen, sessionPhaseAt, toIstIso } from "@/lib/ist";
-import { latchSkip, useDocumentHidden, useSkipLatch } from "./clientStores";
+import { latchSkip, readSeen, useDocumentHidden, useSeenTickets, useSkipLatch, writeSeen } from "./clientStores";
 import { useSharedPoll, type PollState } from "./sharedPoll";
 
 export const INDICES: readonly IndexId[] = ["NIFTY", "SENSEX"];
@@ -109,6 +109,9 @@ export function useIndexActions(accountProp?: string): CopyData {
   const nextOpenAt = now != null ? (state && Date.parse(state.market.nextOpenAt) > now ? state.market.nextOpenAt : toIstIso(nextSessionOpen(now))) : null;
   const holidayName = sameDayState ? state.market.holidayName : null;
 
+  const seen = useSeenTickets(accountId, date);
+  const openQty = useMemo(() => new Map(Object.entries(seen?.openQty ?? {})), [seen]);
+
   const actions = useMemo(() => {
     if (now == null) return null;
     const out = {} as Record<IndexId, IndexAction>;
@@ -127,10 +130,22 @@ export function useIndexActions(accountProp?: string): CopyData {
         holidayName,
         feed: feedFor(live, index, hidden),
         skipLatched: latched,
+        openQty,
       });
     }
     return out;
-  }, [now, accountId, signals, tickets.data, tickets.error, ticketsAgeMs, positions, phase, nextOpenAt, holidayName, live, hidden, latched]);
+  }, [now, accountId, signals, tickets.data, tickets.error, ticketsAgeMs, positions, phase, nextOpenAt, holidayName, live, hidden, latched, openQty]);
+
+  // Remember the quantity each trade showed while open (first sighting wins).
+  useEffect(() => {
+    if (!date || !tickets.data) return;
+    const prev = readSeen(accountId, date);
+    const add = tickets.data.filter((t) => t.status === "OPEN" && prev?.openQty[t.id] == null);
+    if (add.length === 0) return;
+    const openQtyNext = { ...(prev?.openQty ?? {}) };
+    for (const t of add) openQtyNext[t.id] = t.qty;
+    writeSeen(accountId, date, { openQty: openQtyNext, ids: prev?.ids });
+  }, [tickets.data, accountId, date]);
 
   // Once the index is seen past a trade's skip level on fresh data, that copy stays too late.
   useEffect(() => {

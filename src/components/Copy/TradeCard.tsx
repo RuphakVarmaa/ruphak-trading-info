@@ -6,11 +6,12 @@
  * contract rules. Below: the size check for the account and for ₹5,000, the copier's own fill, and the
  * step-by-step script with a "Copy all steps" button.
  */
+import { useMemo } from "react";
 import type { CopyTicketView } from "@/engine/api-types";
 import { alpha, C, pnlColor } from "@/components/shared/colors";
 import { Pill } from "@/components/shared/ui";
-import { expiryLong, exitLevels, EXIT_WORDS, hm, hms, KIND_LABEL, shortAge, skipRule, type IndexAction } from "@/lib/copy/action";
-import { buyLimit, indexLevel, LIMIT_SLIPPAGE_PCT, rupees, wholeRupees } from "@/lib/copy/prices";
+import { copyLimit, expiryLong, exitLevels, EXIT_WORDS, hm, hms, KIND_LABEL, shortAge, skipRule, type IndexAction } from "@/lib/copy/action";
+import { indexLevel, LIMIT_SLIPPAGE_PCT, rupees, wholeRupees } from "@/lib/copy/prices";
 import { paperScript, scriptText, sizeChecks, stopLossLimit } from "@/lib/copy/script";
 import { verifyTicket } from "@/lib/copy/verify";
 import { CopyAction, CopyTile } from "./CopyButton";
@@ -21,7 +22,7 @@ const pctText = (x: number) => `${x > 0 ? "+" : x < 0 ? "−" : ""}${Math.abs(x)
 const TICKETS_STALE_MS = 30_000;
 
 function Checks({ t }: { t: CopyTicketView }) {
-  const checks = verifyTicket(t);
+  const checks = useMemo(() => verifyTicket(t), [t]);
   const bad = checks.filter((c) => !c.ok);
   return (
     <div style={{ display: "grid", gap: 6 }}>
@@ -54,12 +55,12 @@ function Checks({ t }: { t: CopyTicketView }) {
 }
 
 function SizeCheckRows({ t }: { t: CopyTicketView }) {
-  const rows = sizeChecks(t);
+  const rows = useMemo(() => sizeChecks(t), [t]);
   const x = exitLevels(t);
   return (
     <div style={{ display: "grid", gap: 6 }}>
       <div style={{ fontSize: 13, fontWeight: 700, color: C.textSoft }}>
-        Size check <span style={{ fontWeight: 400, color: C.muted }}>(bought at the {rupees(buyLimit(t.entry.premium))} limit, stopped at {rupees(x.stop)}, both orders&apos; charges included)</span>
+        Size check <span style={{ fontWeight: 400, color: C.muted }}>(bought at the {rupees(copyLimit(t).price)} limit, stopped at {rupees(x.stop)}, both orders&apos; charges included)</span>
       </div>
       {rows.map((r) => (
         <div key={r.label} className="tnum" style={{ display: "grid", gap: 2, padding: "8px 10px", borderRadius: 8, background: r.fits ? C.panelAlt : alpha(C.red, 0.06), border: `1px solid ${r.fits ? C.border : alpha(C.red, 0.45)}` }}>
@@ -81,7 +82,7 @@ function SizeCheckRows({ t }: { t: CopyTicketView }) {
 }
 
 function Script({ t }: { t: CopyTicketView }) {
-  const steps = paperScript(t);
+  const steps = useMemo(() => paperScript(t), [t]);
   return (
     <div style={{ display: "grid", gap: 8 }}>
       <div style={{ display: "flex", flexWrap: "wrap", alignItems: "center", justifyContent: "space-between", gap: 8 }}>
@@ -90,7 +91,7 @@ function Script({ t }: { t: CopyTicketView }) {
       </div>
       <details>
         <summary style={{ cursor: "pointer", fontSize: 13, color: C.muted, minHeight: 32, display: "flex", alignItems: "center" }}>Show the steps</summary>
-        <ol style={{ margin: "8px 0 0", paddingLeft: 22, display: "grid", gap: 7, fontSize: 13.5, color: C.textSoft, lineHeight: 1.5 }}>
+        <ol style={{ listStyle: "decimal", margin: "8px 0 0", paddingLeft: 24, display: "grid", gap: 7, fontSize: 13.5, color: C.textSoft, lineHeight: 1.5 }}>
           {steps.map((s) => (
             <li key={s}>{s}</li>
           ))}
@@ -106,11 +107,15 @@ export default function TradeCard({ t, a, ticketsAgeMs }: { t: CopyTicketView; a
   const lv = t.levels;
   const x = exitLevels(t);
   const exit = a?.kind === "EXIT_NOW";
+  // On EXIT NOW, sell what the order says (the quantity shown while the trade was open).
+  const qty = exit ? Number(/= (\d+) qty/.exec(a?.order ?? "")?.[1] ?? t.qty) : t.qty;
+  const lots = c.lotSize > 0 ? Math.max(1, Math.round(qty / c.lotSize)) : t.lots;
   // Frame the tiles the current status acts on: the buy for ENTER NOW, the exits while holding.
   const act = a?.kind === "ENTER_NOW" || exit;
   const hold = a?.kind === "MANAGE";
   const open = t.status === "OPEN";
-  const limit = buyLimit(t.entry.premium);
+  const lim = copyLimit(t);
+  const limit = lim.price;
   const skip = skipRule(t);
   const call = c.optionType === "CE";
   const status = a ? KIND_LABEL[a.kind] : open ? "OPEN" : "CLOSED";
@@ -141,10 +146,11 @@ export default function TradeCard({ t, a, ticketsAgeMs }: { t: CopyTicketView; a
       <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(min(100%, 150px), 1fr))", gap: 8 }}>
         <CopyTile label="Side" value={exit ? "SELL" : "BUY"} copy={exit ? "SELL" : "BUY"} valueColor={act ? C.gold : undefined} emphasis={act} />
         <CopyTile label="Search" value={t.searchText} copy={t.searchText} />
+        <CopyTile label="Exchange symbol" value={<span style={{ fontSize: 15 }}>{c.tradingSymbol}</span>} copy={c.tradingSymbol} sub={c.growwSymbol ? `Groww ${c.growwSymbol}` : undefined} />
         <CopyTile label="Strike" value={String(c.strike)} copy={String(c.strike)} />
         <CopyTile label="Type" value={`${c.optionType} · ${call ? "call" : "put"}`} copy={c.optionType} />
         <CopyTile label="Expiry" value={expiryLong(c.expiry)} copy={expiryCopy} sub={`${t.index} weekly`} />
-        <CopyTile label="Quantity" value={String(t.qty)} copy={String(t.qty)} sub={`${t.lots} lot${t.lots === 1 ? "" : "s"} × ${c.lotSize}`} />
+        <CopyTile label="Quantity" value={String(qty)} copy={String(qty)} sub={`${lots} lot${lots === 1 ? "" : "s"} × ${c.lotSize}`} />
         {exit ? (
           <CopyTile label="Order type" value="Market" copy="MARKET" sub="sell now" emphasis />
         ) : (
@@ -153,7 +159,7 @@ export default function TradeCard({ t, a, ticketsAgeMs }: { t: CopyTicketView; a
               label="Buy limit"
               value={rupees(limit)}
               copy={limit.toFixed(2)}
-              sub={a?.kind === "MANAGE" ? "too late now: don't chase" : `at or below · engine ${rupees(t.entry.premium)} + ${LIMIT_SLIPPAGE_PCT}%`}
+              sub={a?.kind === "MANAGE" ? "too late now: don't chase" : `at or below · ${lim.baseLabel} + ${LIMIT_SLIPPAGE_PCT}%`}
               emphasis={act}
             />
             <CopyTile label="Stop-loss trigger" value={rupees(x.stop)} copy={x.stop.toFixed(2)} valueColor={C.red} sub={`${pctText(lv.stopPct)} · SL limit ${rupees(stopLossLimit(x.stop))}`} emphasis={hold} />

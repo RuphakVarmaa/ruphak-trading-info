@@ -71,6 +71,60 @@ export function useSkipLatch(): ReadonlySet<string> {
 }
 
 // ---------------------------------------------------------------------------
+// Tickets seen in this tab: the quantity shown while each was open (a closed record can list double,
+// engine issue COPY-1), and which ids have been seen at all (to catch a trade that opened and closed
+// between two polls). Per account and date.
+// ---------------------------------------------------------------------------
+
+export interface SeenTickets {
+  /** Quantity shown while open, by ticket id. */
+  openQty: Record<string, number>;
+  /** Every ticket id seen (absent until the first look in this tab is recorded). */
+  ids?: string[];
+}
+
+const seenListeners = new Set<() => void>();
+const seenCache = new Map<string, SeenTickets | null>();
+const seenKey = (account: string, date: string) => `copy:seen:${account}:${date}`;
+
+export function readSeen(account: string, date: string): SeenTickets | null {
+  const key = seenKey(account, date);
+  if (!seenCache.has(key)) {
+    let v: SeenTickets | null = null;
+    try {
+      const raw = readSession(key);
+      v = raw ? (JSON.parse(raw) as SeenTickets) : null;
+    } catch {
+      v = null;
+    }
+    seenCache.set(key, v);
+  }
+  return seenCache.get(key) ?? null;
+}
+
+export function writeSeen(account: string, date: string, v: SeenTickets): void {
+  const key = seenKey(account, date);
+  seenCache.set(key, v);
+  writeSession(key, JSON.stringify(v));
+  seenListeners.forEach((l) => l());
+}
+
+function subscribeSeen(cb: () => void) {
+  seenListeners.add(cb);
+  return () => {
+    seenListeners.delete(cb);
+  };
+}
+
+export function useSeenTickets(account: string, date: string | null): SeenTickets | null {
+  return useSyncExternalStore(
+    subscribeSeen,
+    () => (date ? readSeen(account, date) : null),
+    () => null,
+  );
+}
+
+// ---------------------------------------------------------------------------
 // Tab visibility
 // ---------------------------------------------------------------------------
 
