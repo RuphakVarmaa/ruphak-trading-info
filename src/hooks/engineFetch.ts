@@ -51,7 +51,43 @@ export async function fetchEnvelope<T>(url: string, init: RequestInit = {}, time
   }
 }
 
+/** The machine-readable code of a failed request (for logic), e.g. "ENGINE_UNREACHABLE"; null when unknown. */
+export function errorCode(err: unknown): string | null {
+  return err instanceof EnvelopeError ? err.code : null;
+}
+
+/** First letter upper case and a full stop at the end: messages from the server read as sentences. */
+function sentence(text: string): string {
+  const t = text.trim();
+  if (!t) return t;
+  const s = t.charAt(0).toUpperCase() + t.slice(1);
+  return /[.!?]$/.test(s) ? s : `${s}.`;
+}
+
+/**
+ * A plain sentence for people, never a raw code ("ENGINE_UNREACHABLE: ..."). Use errorCode() for logic.
+ * Messages that come from the server for a request it refused (a conflict, a bad value) are kept: they
+ * are written for people.
+ */
 export function errorText(err: unknown): string {
-  if (err instanceof EnvelopeError) return `${err.code}: ${err.message}`;
-  return err instanceof Error ? err.message : String(err);
+  if (err instanceof EnvelopeError) {
+    switch (err.code) {
+      case "ENGINE_UNREACHABLE":
+        if (err.status === 0) return /timed out/i.test(err.message) ? "The server took too long to answer." : "Could not reach the server. Check the connection.";
+        if (/^Unexpected response/.test(err.message)) return "The server sent an answer the page could not read.";
+        return "The trading engine is not answering right now.";
+      case "UNAUTHORIZED":
+        return "The admin token was not accepted.";
+      case "ADMIN_DISABLED":
+        return "Admin actions are turned off on this server.";
+      case "NOT_FOUND":
+        return "Nothing was found for that request.";
+      case "CONFLICT":
+      case "BAD_REQUEST":
+        return err.message && err.message !== err.code ? sentence(err.message) : "The request was refused.";
+      default:
+        return "Something went wrong on the server.";
+    }
+  }
+  return "Something went wrong.";
 }

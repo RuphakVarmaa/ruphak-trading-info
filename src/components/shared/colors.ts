@@ -15,36 +15,36 @@ import type {
 } from "@/engine/api-types";
 import type { IntelItem } from "@/utils/api";
 
-/**
- * Each colour is a CSS variable with today's dark value as the fallback, so every page looks the
- * same unless a wrapper sets the variables (see theme.ts, used by the Live P&L page).
- */
-const token = (name: string, dark: string) => `var(--c-${name}, ${dark})`;
+/** Each colour is a CSS variable defined once, in :root (app/globals.css). */
+const token = (name: string) => `var(--c-${name})`;
 
 export const C = {
-  bg: token("bg", "#0a0a0a"),
-  panel: token("panel", "#111"),
-  panelAlt: token("panelAlt", "#0f0f0f"),
-  panelDeep: token("panelDeep", "#0d0d0d"),
-  border: token("border", "#222"),
-  borderStrong: token("borderStrong", "#2a2a2a"),
-  borderSoft: token("borderSoft", "#1a1a1a"),
-  thead: token("thead", "#151515"),
-  navActive: token("navActive", "#1c1c1c"),
-  track: token("track", "#1f1f1f"),
-  gold: token("gold", "#ffb300"),
-  green: token("green", "#4caf50"),
-  red: token("red", "#f44336"),
-  orange: token("orange", "#ff9800"),
-  blue: token("blue", "#2196f3"),
-  purple: token("purple", "#ab7df8"),
-  text: token("text", "#ededed"),
-  textStrong: token("textStrong", "#eee"),
-  textSoft: token("textSoft", "#ccc"),
-  textDim: token("textDim", "#aaa"),
-  muted: token("muted", "#888"),
-  muted2: token("muted2", "#666"),
-  muted3: token("muted3", "#555"),
+  bg: token("bg"),
+  panel: token("panel"),
+  panelAlt: token("panelAlt"),
+  panelDeep: token("panelDeep"),
+  border: token("border"),
+  borderStrong: token("borderStrong"),
+  borderSoft: token("borderSoft"),
+  thead: token("thead"),
+  navActive: token("navActive"),
+  track: token("track"),
+  /** Accessible terracotta: text, links, buttons. */
+  gold: token("gold"),
+  /** Brand terracotta for lines, bars and tints only (not text). */
+  goldBright: token("goldBright"),
+  green: token("green"),
+  red: token("red"),
+  orange: token("orange"),
+  blue: token("blue"),
+  purple: token("purple"),
+  text: token("text"),
+  textStrong: token("textStrong"),
+  textSoft: token("textSoft"),
+  textDim: token("textDim"),
+  muted: token("muted"),
+  muted2: token("muted2"),
+  muted3: token("muted3"),
 } as const;
 
 // --- moved from IntelFeed -------------------------------------------------------
