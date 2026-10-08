@@ -158,6 +158,14 @@ export class YahooMarketDataSource implements MarketDataSource {
       if (arr && arr.length > 0) ltp[id] = arr[arr.length - 1].c;
     }
 
+    // When each latest price was traded: Yahoo's regularMarketTime for the newest bar's running close.
+    const asOfMs: Record<string, number> = {};
+    for (const [sym, arr] of Object.entries(candles)) {
+      const last = arr[arr.length - 1];
+      const mt = this.marketTimeMs.get(sym);
+      if (last && mt !== undefined && mt >= last.t) asOfMs[sym] = Math.min(mt, now);
+    }
+
     let freshest = -Infinity;
     if (this.ltp) {
       try {
@@ -166,6 +174,7 @@ export class YahooMarketDataSource implements MarketDataSource {
           const v = live[id];
           if (typeof v === "number" && Number.isFinite(v) && v > 0) {
             ltp[id] = v;
+            asOfMs[INDEX_SYMBOL[id]] = now;
             if (FRESHNESS_INDICES.includes(id)) freshest = now;
           }
         }
@@ -186,7 +195,7 @@ export class YahooMarketDataSource implements MarketDataSource {
     }
     const dataAgeSec = Number.isFinite(freshest) ? Math.max(0, (now - freshest) / 1000) : NO_DATA_AGE_SEC;
 
-    return { t, candles, daily, ltp, dataAgeSec };
+    return { t, candles, daily, ltp, dataAgeSec, asOfMs };
   }
 
   private async doRefresh(): Promise<void> {

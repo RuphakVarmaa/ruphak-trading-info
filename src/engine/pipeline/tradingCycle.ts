@@ -102,7 +102,9 @@ export function quoteRows(snap: MarketSnapshot): QuoteRow[] {
       }
     }
     const change = prev !== undefined ? price - prev : 0;
-    const asOf = last ? Math.min(snap.t, last.t + 5 * MINUTE_MS) : snap.t;
+    // When the price was traded (the source's time); without one (replays), the bar's end.
+    const traded = snap.asOfMs?.[r.symbol];
+    const asOf = Math.min(snap.t, traded ?? (last ? last.t + 5 * MINUTE_MS : snap.t));
     out.push({ key: r.key, label: r.label, price, change, changePct: prev ? (change / prev) * 100 : 0, asOf });
   }
   return out;

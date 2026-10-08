@@ -33,6 +33,25 @@ describe("Desk quotes when Yahoo's daily chart lags a session (DF-2)", () => {
   });
 });
 
+describe("Desk quote times (DF-5)", () => {
+  it("use the source's last trade time instead of the engine's tick", () => {
+    const traded = istAt("2026-10-09", "09:57") + 30_000;
+    const s: MarketSnapshot = {
+      t: istAt("2026-10-09", "10:00"),
+      candles: { "BZ=F": [bar("2026-10-09", "09:50", 65.2), bar("2026-10-09", "09:55", 65.4)] },
+      daily: { "BZ=F": [bar("2026-10-08", "00:00", 65)] },
+      ltp: {},
+      dataAgeSec: 0,
+      asOfMs: { "BZ=F": traded },
+    };
+    expect(quoteRows(s).find((q) => q.key === "BRENT")!.asOf).toBe(traded);
+    // Without a trade time (replays), the bar's end, never after the tick.
+    const { asOfMs: _drop, ...noTime } = s;
+    void _drop;
+    expect(quoteRows(noTime).find((q) => q.key === "BRENT")!.asOf).toBe(istAt("2026-10-09", "10:00"));
+  });
+});
+
 describe("decision inputs when the daily chart lags a session (DF-2)", () => {
   it("take the previous close from the 5-minute bars, so they do not change", () => {
     const fx = loadMarketFixtures();

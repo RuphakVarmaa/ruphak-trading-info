@@ -283,6 +283,22 @@ describe("YahooMarketDataSource", () => {
   });
 });
 
+describe("quote times (DF-5)", () => {
+  it("are the source's last trade time, or the fetch time of a broker LTP", async () => {
+    const t = istAt("2026-10-09", "10:00");
+    const bars: Candle[] = [{ t: istAt("2026-10-09", "09:50"), o: 1, h: 1, l: 1, c: 1, v: 0 }, { t: istAt("2026-10-09", "09:55"), o: 2, h: 2, l: 2, c: 2, v: 0 }];
+    const traded = istAt("2026-10-09", "09:57") + 30_000;
+    const yahoo = fakeYahoo({ override: (c) => (c.interval === "5m" && (c.symbol === "BZ=F" || c.symbol === "^BSESN") ? chartBody(c.symbol, bars, traded / 1000) : null) });
+    const c = clock(t);
+    const src = new YahooMarketDataSource({ calendar: cal, fetchImpl: yahoo.fetchImpl, now: c.now, ltp: async () => ({ NIFTY: 25_300 }) });
+    const snap = await src.snapshot(t);
+    expect(snap.asOfMs?.["BZ=F"]).toBe(traded);
+    expect(snap.asOfMs?.["^BSESN"]).toBe(traded);
+    // NIFTY's price is Groww's LTP fetched now.
+    expect(snap.asOfMs?.["^NSEI"]).toBe(t);
+  });
+});
+
 describe("a daily chart that lags the previous session", () => {
   // At 00:30 IST on 9 Oct Yahoo's daily chart still had no close for 8 Oct (the bar is dropped).
   const bar = (date: string, c: number): Candle => ({ t: istAt(date, "09:15"), o: c, h: c, l: c, c, v: 0 });

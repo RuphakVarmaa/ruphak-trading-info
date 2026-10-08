@@ -122,6 +122,11 @@ export interface MarketSnapshot {
   ltp: Partial<Record<FeatureIndexId, number>>;
   /** Age in seconds of the freshest index observation at `t`. */
   dataAgeSec: number;
+  /**
+   * When each symbol's latest price was traded (epoch ms): Yahoo's regularMarketTime, or the fetch
+   * time of a broker LTP that replaced it. Absent in replays.
+   */
+  asOfMs?: Partial<Record<string, number>>;
 }
 
 // ---------------------------------------------------------------------------
