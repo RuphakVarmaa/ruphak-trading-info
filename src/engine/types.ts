@@ -768,6 +768,11 @@ export interface RiskState {
   lastStopOutMs: Partial<Record<IndexId, number>>;
   /** Free cash for new premium when sizing from current equity (small accounts). */
   cashRupees?: number;
+  /**
+   * Entry orders sent but not filled yet (a resting limit, a live order still at the exchange). Each
+   * may still fill, so it holds a position slot and counts as a trade today.
+   */
+  pendingEntries?: { index: IndexId; side: TradeSide }[];
 }
 
 export interface Heartbeat {

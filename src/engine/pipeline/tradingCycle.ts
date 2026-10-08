@@ -27,7 +27,7 @@ import type {
 import { MARKET_SYMBOLS } from "../types";
 import { haltReason } from "../risk/limits";
 import { submitEntry } from "./execution";
-import { loadRiskState } from "./riskState";
+import { isPendingEntry, loadRiskState, pendingEntry } from "./riskState";
 
 export interface TradingCycleOptions {
   /** Disable the event layer (no-events baseline in backtests). */
@@ -142,7 +142,7 @@ export async function runTradingCycle(deps: EngineDeps, opts: TradingCycleOption
         if (position) {
           risk.openPositions.push(position);
           risk.entriesToday[index] += 1;
-        }
+        } else if (isPendingEntry(order)) (risk.pendingEntries ??= []).push(pendingEntry(order));
         logger.info("entry", { index, symbol: decision.plan.contract.tradingSymbol, qty: decision.plan.qty, status: order.status });
       }
     } catch (err) {

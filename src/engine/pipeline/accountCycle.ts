@@ -11,7 +11,7 @@ import { haltReason } from "../risk/limits";
 import { planEntry } from "../strategy/planner";
 import type { PlanDecision } from "../types";
 import { submitEntry } from "./execution";
-import { loadRiskState } from "./riskState";
+import { isPendingEntry, loadRiskState, pendingEntry } from "./riskState";
 import { shouldPersistDecision, type CycleReport } from "./tradingCycle";
 
 export interface FollowerOptions {
@@ -60,7 +60,7 @@ export async function runFollowerEntries(deps: EngineDeps, signals: CycleReport,
         if (position) {
           risk.openPositions.push(position);
           risk.entriesToday[index] += 1;
-        }
+        } else if (isPendingEntry(order)) (risk.pendingEntries ??= []).push(pendingEntry(order));
         logger.info("follower entry", { index, symbol: decision.plan.contract.tradingSymbol, qty: decision.plan.qty, status: order.status });
       }
     } catch (err) {
