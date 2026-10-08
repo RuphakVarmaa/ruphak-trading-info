@@ -543,7 +543,6 @@ function openAction(input: ActionInput, t: CopyTicketView, others: string[]): In
       a.alert = !pause.quiet;
       a.details = [
         `${pause.sentence} Don't buy on old data.`,
-        `The trade: ${order}.`,
         skipText ? `To check it yourself, look at ${t.index} in Groww: ${skipText}.` : `The engine gave no skip level: use the limit as the cap.`,
         ...others,
       ];

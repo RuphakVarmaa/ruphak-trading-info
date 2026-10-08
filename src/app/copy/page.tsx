@@ -10,7 +10,7 @@ export const dynamic = "force-dynamic";
 
 export const metadata: Metadata = {
   title: "Copy trades — Ruphak India Index Desk",
-  description: "What the paper engine buys and sells on NIFTY and SENSEX options, with the levels, the setup and the price action, to copy by hand.",
+  description: "What to do now on NIFTY and SENSEX options, from the paper engine's trades: the exact order to copy, its levels, the setup and the price action.",
 };
 
 type Query = Record<string, string | string[] | undefined>;
@@ -28,7 +28,7 @@ export default async function CopyPage({ searchParams }: { searchParams: Promise
     <div style={{ ...CLAUDE_THEME, minHeight: "100vh", display: "flex", flexDirection: "column", background: C.bg, color: C.text }}>
       <EngineProvider key={account ?? "main"} initial={initial} account={account}>
         <LiveHeader serverMode={initial?.state?.mode ?? mode} active="copy" />
-        <CopyDesk initialId={id} />
+        <CopyDesk initialId={id} account={account} />
       </EngineProvider>
     </div>
   );
