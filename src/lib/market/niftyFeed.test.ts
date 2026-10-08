@@ -1,10 +1,10 @@
 import { describe, expect, it } from "vitest";
 import { defaultCalendar } from "@/engine/calendar/calendar";
-import { istAt } from "@/engine/clock";
+import { istAt, istDate } from "@/engine/clock";
 import type { YahooChart } from "@/engine/market/yahooClient";
 import type { Candle } from "@/engine/types";
 import { recordedChart } from "./__fixtures__/liveFixtures";
-import { buildNiftyFeed, checkedDayRange, niftySession, prevSessionClose } from "./niftyFeed";
+import { buildNiftyFeed, checkedDayRange, niftySession, prevCloseFromBars, prevSessionClose } from "./niftyFeed";
 
 const chart = (candles: Candle[], meta: Partial<YahooChart["meta"]> = {}): YahooChart => ({
   symbol: "^NSEI",
@@ -56,6 +56,33 @@ describe("buildNiftyFeed", () => {
   it("leaves the change unknown without a prior close", () => {
     const f = buildNiftyFeed(nifty, null, null, now, null)!;
     expect(f).toMatchObject({ spot: 22231.8, prevClose: null, change: null, changePct: null });
+  });
+});
+
+describe("prevCloseFromBars (the 5-minute fallback while the daily close is missing)", () => {
+  const five = recordedChart("^NSEI 5m");
+
+  it("takes the last bar of the previous trading day", () => {
+    // Friday 2026-10-09: Thursday's 15:30 closing print. Thursday: Wednesday's last bar, which is its daily close.
+    expect(prevCloseFromBars(five, "2026-10-09", defaultCalendar)).toBe(22231.8);
+    expect(prevCloseFromBars(five, "2026-10-08", defaultCalendar)).toBe(22603.05);
+    expect(prevCloseFromBars(recordedChart("^BSESN 5m"), "2026-10-09", defaultCalendar)).toBe(71593.24);
+    expect(prevCloseFromBars(recordedChart("^INDIAVIX 5m"), "2026-10-09", defaultCalendar, 4)).toBe(15.275);
+  });
+
+  it("gives null when the last bar before the session is from two sessions back", () => {
+    const noThursday = { ...five, candles: five.candles.filter((c) => istDate(c.t) < "2026-10-08") };
+    expect(prevCloseFromBars(noThursday, "2026-10-09", defaultCalendar)).toBeNull();
+    expect(prevCloseFromBars({ ...five, candles: [] }, "2026-10-09", defaultCalendar)).toBeNull();
+  });
+
+  it("looks past a holiday to the trading day before it", () => {
+    // Monday 2026-10-05 after the Friday 2026-10-02 holiday: Thursday 2026-10-01 is the previous trading day.
+    const bars = chart([
+      { t: istAt("2026-10-01", "15:25"), o: 22420, h: 22430, l: 22410, c: 22421.94921875, v: 0 },
+      { t: istAt("2026-10-05", "09:15"), o: 22532.4, h: 22540, l: 22520, c: 22530, v: 0 },
+    ]);
+    expect(prevCloseFromBars(bars, "2026-10-05", defaultCalendar)).toBe(22421.95);
   });
 });
 

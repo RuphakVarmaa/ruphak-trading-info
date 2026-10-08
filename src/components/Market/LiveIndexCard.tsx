@@ -75,7 +75,10 @@ export default function LiveIndexCard({
         </div>
         <div className="tnum" style={{ fontSize: 12.5, color: C.muted, marginTop: -6 }}>
           {index.prevClose != null ? (
-            <>vs previous close {fmtNum(index.prevClose)} (Yahoo daily chart)</>
+            <>
+              vs previous close {fmtNum(index.prevClose)} (
+              {index.prevCloseSource === "intraday" ? "last 5-minute bar of the previous session; Yahoo's daily close is not out yet" : "Yahoo daily chart"})
+            </>
           ) : (
             <>Previous close not available yet from Yahoo, so no change is shown.</>
           )}

@@ -6,6 +6,9 @@
 
 export type LiveIndexId = "NIFTY" | "SENSEX";
 
+/** Source of a previous close: Yahoo's daily chart, or the previous trading day's last 5-minute bar. */
+export type PrevCloseSource = "daily" | "intraday";
+
 /** One 1-minute bar; `t` is the bar's open time in epoch ms. Index volume is always 0 on Yahoo. */
 export interface LiveIndexBar {
   t: number;
@@ -24,10 +27,16 @@ export interface LiveIndex {
   /** The source's last price (2 decimals). */
   price: number;
   /**
-   * Close of the trading day before the last price's day (from the daily chart, calendar-checked); null
-   * when unknown. Never the 1-minute chart's meta.previousClose, which can be two sessions old.
+   * Close of the trading day before the last price's day (from the daily chart, calendar-checked; while
+   * Yahoo has not filled that close in, the day's last 5-minute bar, see prevCloseSource); null when
+   * unknown. Never the 1-minute chart's meta.previousClose, which can be two sessions old.
    */
   prevClose: number | null;
+  /**
+   * Where prevClose came from: "daily" (Yahoo's daily chart) or "intraday" (the previous trading day's last
+   * 5-minute bar, used only while the daily close is missing). Absent when prevClose is null.
+   */
+  prevCloseSource?: PrevCloseSource;
   /** price - prevClose (2 decimals); null without a previous close. */
   change: number | null;
   /** Percent (3 decimals); null without a previous close. */
@@ -66,8 +75,10 @@ export interface LiveIndex {
 
 export interface LiveVix {
   price: number;
-  /** Close of the trading day before the last value's day (daily chart, calendar-checked); null when unknown. */
+  /** Close of the trading day before the last value's day (daily chart, calendar-checked; see LiveIndex.prevClose); null when unknown. */
   prevClose: number | null;
+  /** As on LiveIndex. India VIX's last 5-minute bar can differ from its daily close by a few hundredths. */
+  prevCloseSource?: PrevCloseSource;
   change: number | null;
   changePct: number | null;
   /** IST ISO time of the last value. */

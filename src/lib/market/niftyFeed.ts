@@ -67,6 +67,32 @@ export function prevSessionClose(daily: YahooChart, session: string, calendar?: 
   return Math.round(bar.c * 100) / 100;
 }
 
+/**
+ * Fallback for prevSessionClose while Yahoo's daily chart lacks the close: the last bar dated before
+ * `session` in an intraday chart (5-minute, range 5d; the 15:30 closing print or the finalized 15:25 bar,
+ * as the engine's features read it), only when that bar's IST date is the calendar's previous trading day.
+ * A bar from two sessions back gives null. Rounded to `decimals` (2 for an index, 4 for India VIX).
+ * For NIFTY this has matched the daily close; India VIX's last bar can differ from its daily close
+ * (2026-10-07: 13.8975 against 13.89), so the daily close is preferred whenever Yahoo has it.
+ */
+export function prevCloseFromBars(chart: YahooChart, session: string, calendar: TradingCalendar, decimals = 2): number | null {
+  let expected: string;
+  try {
+    expected = calendar.prevTradingDay(session);
+  } catch {
+    return null; // no trading day within 30 days
+  }
+  for (let i = chart.candles.length - 1; i >= 0; i--) {
+    const bar = chart.candles[i];
+    const day = istDate(bar.t);
+    if (day >= session) continue;
+    if (day !== expected || !(bar.c > 0)) return null;
+    const f = 10 ** decimals;
+    return Math.round(bar.c * f) / f;
+  }
+  return null;
+}
+
 /** Yahoo's own day high and low (chart meta regularMarketDayHigh/Low, which the shared parser drops). */
 export interface DayRange {
   high: number | null;

@@ -8,14 +8,17 @@
  * - A symbol that fails is served from its last good value for up to 2 minutes, marked stale; after that it
  *   is listed in `missing`. With no index left the caller answers 502.
  * - Previous closes come from the daily charts (calendar-checked, see prevSessionClose), re-read every
- *   10 minutes (every minute while unknown) and at once when the last price moves to a new day.
+ *   10 minutes (every minute while unknown) and at once when the last price moves to a new day. While
+ *   Yahoo has not filled in the daily close (it can stay empty for hours after the session), the previous
+ *   trading day's last 5-minute bar stands in (calendar-checked, see prevCloseFromBars), kept for the day
+ *   and labelled `prevCloseSource: "intraday"`; the daily close replaces it once it appears.
  */
 import { defaultCalendar, type TradingCalendar } from "@/engine/calendar/calendar";
 import { istDate, istIso } from "@/engine/clock";
 import { fetchYahooChart, type YahooChart } from "@/engine/market/yahooClient";
 import { buildLiveIndex, buildLiveVix, LIVE_INDEX_IDS, LIVE_INDEX_SPECS, LIVE_SOURCE, quoteSession, VIX_SYMBOL, type LiveChart } from "./liveFeed";
-import type { LiveIndex, LiveIndexId, LiveIndicesFeed, LiveVix } from "./liveIndices";
-import { prevSessionClose, type DayRange } from "./niftyFeed";
+import type { LiveIndex, LiveIndexId, LiveIndicesFeed, LiveVix, PrevCloseSource } from "./liveIndices";
+import { prevCloseFromBars, prevSessionClose, type DayRange } from "./niftyFeed";
 
 /** Reuse of a finished fetch while the market is open or in pre-open, and otherwise. */
 export const LIVE_TTL_MS = 1500;
@@ -60,6 +63,15 @@ interface Good<T> {
   at: number;
 }
 
+/** One symbol's previous close for a day (the day of its last price), with where it came from. */
+interface PrevCloseEntry {
+  session: string;
+  value: number | null;
+  source: PrevCloseSource | null;
+  /** When it was last read or confirmed. */
+  at: number;
+}
+
 interface State {
   /** Start time of the latest finished fetch. */
   fetchedAt: number | null;
@@ -67,7 +79,7 @@ interface State {
   errors: Partial<Record<Key, string>>;
   indices: Partial<Record<LiveIndexId, Good<LiveIndex>>>;
   vix: Good<LiveVix> | null;
-  prev: Partial<Record<Key, { session: string; value: number | null; at: number }>>;
+  prev: Partial<Record<Key, PrevCloseEntry>>;
   inflight: Promise<void> | null;
   /** Start time of the running fetch. */
   inflightAt: number;
@@ -115,14 +127,28 @@ export async function fetchLiveChart(symbol: string, fetchImpl?: typeof fetch, t
 const fetchDaily = (key: Key, fetchImpl: typeof fetch | undefined, timeoutMs = FETCH_TIMEOUT_MS) =>
   fetchYahooChart(SYMBOL[key], { interval: "1d", range: "1mo", timeoutMs, fetchImpl });
 
+/** The 5-minute chart (range 5d, as /api/market/intraday and the engine read it), for the previous close while the daily lacks it. */
+const fetchFiveMinute = (key: Key, fetchImpl: typeof fetch | undefined) =>
+  fetchYahooChart(SYMBOL[key], { interval: "5m", range: "5d", timeoutMs: DAY_TURN_TIMEOUT_MS, fetchImpl });
+
 const prevDue = (key: Key, now: number): boolean => {
   const c = state.prev[key];
   return !c || now - c.at >= (c.value !== null ? PREV_CLOSE_TTL_MS : PREV_CLOSE_RETRY_MS);
 };
 
+/** Remembers one symbol's previous close for its day and hands it back. */
+function remember(key: Key, entry: PrevCloseEntry): PrevCloseEntry {
+  state.prev[key] = entry;
+  return entry;
+}
+
 /**
- * The close before `session` for one symbol: from the daily chart read in this fetch (read now if the
- * cached close is for another day), else the cached close for the same day, else null.
+ * The close before `session` for one symbol, kept per day:
+ * 1. the daily chart read in this fetch (read now, with the 5-minute chart beside it, when the cached
+ *    close is for another day): its calendar-checked close wins whenever it is there;
+ * 2. else the close already kept for the same day;
+ * 3. else the previous trading day's last 5-minute bar (calendar-checked, see prevCloseFromBars);
+ * 4. else null (tried again a minute later).
  */
 async function resolvePrevClose(
   key: Key,
@@ -131,17 +157,22 @@ async function resolvePrevClose(
   now: number,
   fetchImpl: typeof fetch | undefined,
   calendar: TradingCalendar,
-): Promise<number | null> {
+): Promise<PrevCloseEntry> {
   const cached = state.prev[key];
-  const sameDay = cached?.session === session ? cached.value : null;
+  const same = cached?.session === session ? cached : null;
   let chart = daily.status === "fulfilled" ? daily.value : null;
-  if (daily.status === "fulfilled" && chart === null && cached?.session !== session) {
-    chart = await fetchDaily(key, fetchImpl, DAY_TURN_TIMEOUT_MS).catch(() => null);
+  let bars: YahooChart | null | undefined;
+  if (daily.status === "fulfilled" && chart === null && !same) {
+    // The last price moved to a new day: read its daily chart now, and the 5-minute chart beside it in case the daily lacks the close.
+    [chart, bars] = await Promise.all([fetchDaily(key, fetchImpl, DAY_TURN_TIMEOUT_MS).catch(() => null), fetchFiveMinute(key, fetchImpl).catch(() => null)]);
   }
-  if (!chart) return sameDay;
-  const value = prevSessionClose(chart, session, calendar) ?? sameDay;
-  state.prev[key] = { session, value, at: now };
-  return value;
+  if (!chart && same) return same; // not read this time, or the read failed: the day's close stands
+  const fromDaily = chart ? prevSessionClose(chart, session, calendar) : null;
+  if (fromDaily !== null) return remember(key, { session, value: fromDaily, source: "daily", at: now });
+  if (same && same.value !== null) return remember(key, { ...same, at: now });
+  if (bars === undefined) bars = await fetchFiveMinute(key, fetchImpl).catch(() => null);
+  const fromBars = bars ? prevCloseFromBars(bars, session, calendar, key === "VIX" ? 4 : 2) : null;
+  return remember(key, { session, value: fromBars, source: fromBars !== null ? "intraday" : null, at: now });
 }
 
 type Loaded = { key: Key; chart: LiveChart; prevClose: number | null; value: LiveIndex | LiveVix } | { key: Key; error: string };
@@ -150,8 +181,9 @@ async function loadOne(key: Key, intraday: Promise<LiveChart>, daily: Promise<Ya
   const [chart, dailyResult] = await Promise.allSettled([intraday, daily]);
   if (chart.status === "rejected") return { key, error: messageOf(chart.reason) };
   const session = quoteSession(chart.value.chart);
-  const prevClose = session ? await resolvePrevClose(key, session, dailyResult, now, fetchImpl, calendar) : null;
-  const value = key === "VIX" ? buildLiveVix(chart.value.chart, prevClose) : buildLiveIndex(key, chart.value, prevClose);
+  const prev = session ? await resolvePrevClose(key, session, dailyResult, now, fetchImpl, calendar) : null;
+  const prevClose = prev?.value ?? null;
+  const value = key === "VIX" ? buildLiveVix(chart.value.chart, prevClose, prev?.source) : buildLiveIndex(key, chart.value, prevClose, prev?.source);
   return value ? { key, chart: chart.value, prevClose, value } : { key, error: "no price in the response" };
 }
 

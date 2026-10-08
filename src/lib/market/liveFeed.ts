@@ -14,7 +14,7 @@
 import { istDate, istIso } from "@/engine/clock";
 import type { YahooChart } from "@/engine/market/yahooClient";
 import { MARKET_SYMBOLS } from "@/engine/types";
-import { istTimeOn, openingRangeOf, runningVwap, type LiveIndex, type LiveIndexBar, type LiveIndexId, type LiveVix } from "./liveIndices";
+import { istTimeOn, openingRangeOf, runningVwap, type LiveIndex, type LiveIndexBar, type LiveIndexId, type LiveVix, type PrevCloseSource } from "./liveIndices";
 import { checkedDayRange, niftySession } from "./niftyFeed";
 
 export const LIVE_INDEX_SPECS: Record<LiveIndexId, { label: string; symbol: string }> = {
@@ -90,9 +90,10 @@ export function dayRange(src: LiveChart, bars: readonly LiveIndexBar[], price: n
 
 /**
  * One index from its 1-minute chart. `prevClose` is the close of the trading day before
- * quoteSession(chart) (see prevSessionClose); null leaves the change unknown. Null without a price.
+ * quoteSession(chart) (see prevSessionClose, prevCloseFromBars) and `prevCloseSource` where it came from;
+ * null leaves the change unknown. Null without a price.
  */
-export function buildLiveIndex(id: LiveIndexId, src: LiveChart, prevClose: number | null): LiveIndex | null {
+export function buildLiveIndex(id: LiveIndexId, src: LiveChart, prevClose: number | null, prevCloseSource?: PrevCloseSource | null): LiveIndex | null {
   const q = lastQuote(src.chart);
   if (!q) return null;
   const quoteDay = istDate(q.ms);
@@ -107,6 +108,7 @@ export function buildLiveIndex(id: LiveIndexId, src: LiveChart, prevClose: numbe
     symbol: LIVE_INDEX_SPECS[id].symbol,
     price,
     prevClose: prev,
+    ...(prev != null && prevCloseSource ? { prevCloseSource } : {}),
     change: prev != null ? round2(price - prev) : null,
     changePct: prev != null ? round3(((price - prev) / prev) * 100) : null,
     open: bars[0]?.o ?? null,
@@ -120,8 +122,8 @@ export function buildLiveIndex(id: LiveIndexId, src: LiveChart, prevClose: numbe
   };
 }
 
-/** India VIX from its 1-minute chart (4 decimals); `prevClose` as for buildLiveIndex. Null without a value. */
-export function buildLiveVix(chart: YahooChart, prevClose: number | null): LiveVix | null {
+/** India VIX from its 1-minute chart (4 decimals); `prevClose` and its source as for buildLiveIndex. Null without a value. */
+export function buildLiveVix(chart: YahooChart, prevClose: number | null, prevCloseSource?: PrevCloseSource | null): LiveVix | null {
   const q = lastQuote(chart);
   if (!q) return null;
   const price = round4(q.price);
@@ -129,6 +131,7 @@ export function buildLiveVix(chart: YahooChart, prevClose: number | null): LiveV
   return {
     price,
     prevClose: prev,
+    ...(prev != null && prevCloseSource ? { prevCloseSource } : {}),
     change: prev != null ? round4(price - prev) : null,
     changePct: prev != null ? round3(((price - prev) / prev) * 100) : null,
     asOf: istIso(q.ms),

@@ -5,6 +5,9 @@
  * pre-open), trimmed to the fields the parser and the feed read; values untouched. 1-minute range=1d for
  * ^NSEI and ^BSESN (376 bars, 09:15 through the 15:30 closing print; India VIX keeps its last 15 bars) and
  * daily range=1mo (2026-09-14 and 2026-10-02 are holidays, as null rows; the 2026-10-08 bar has a null close).
+ * 5-minute range=5d fetched 01:31 IST, kept from 2026-10-07: that day ends with its 15:25 bar (NIFTY
+ * 22,603.05, the daily close), 2026-10-08 with its 15:30 closing print (NIFTY 22,231.80). India VIX's last
+ * 5-minute bar is not its daily close (2026-10-07: 13.8975 against 13.89).
  *
  * Synthetic: chartJson() builds a response of the same shape from bars, for cases the recording lacks.
  */
@@ -16,15 +19,21 @@ import nsei1d from "./yahoo-1d-1mo-NSEI-2026-10-08.json";
 import bsesn1m from "./yahoo-1m-1d-BSESN-2026-10-08.json";
 import vix1m from "./yahoo-1m-1d-INDIAVIX-2026-10-08.json";
 import nsei1m from "./yahoo-1m-1d-NSEI-2026-10-08.json";
+import bsesn5m from "./yahoo-5m-5d-BSESN-2026-10-08.json";
+import vix5m from "./yahoo-5m-5d-INDIAVIX-2026-10-08.json";
+import nsei5m from "./yahoo-5m-5d-NSEI-2026-10-08.json";
 
 /** Recorded responses keyed "<symbol> <interval>". */
 export const RECORDED: Record<string, unknown> = {
   "^NSEI 1m": nsei1m,
   "^NSEI 1d": nsei1d,
+  "^NSEI 5m": nsei5m,
   "^BSESN 1m": bsesn1m,
   "^BSESN 1d": bsesn1d,
+  "^BSESN 5m": bsesn5m,
   "^INDIAVIX 1m": vix1m,
   "^INDIAVIX 1d": vix1d,
+  "^INDIAVIX 5m": vix5m,
 };
 
 export const recordedChart = (key: string): YahooChart => parseYahooChart(RECORDED[key], key.split(" ")[0]);
@@ -42,12 +51,12 @@ export interface RawBar {
 export const bar = (date: string, hm: string, o: number | null, h: number | null = o, l: number | null = o, c: number | null = o): RawBar => ({ t: istAt(date, hm), o, h, l, c });
 
 /** A chart v8 response like Yahoo's, from bars and meta (epoch-second regularMarketTime). */
-export function chartJson(symbol: string, interval: "1m" | "1d", bars: RawBar[], meta: Record<string, unknown> = {}) {
+export function chartJson(symbol: string, interval: "1m" | "5m" | "1d", bars: RawBar[], meta: Record<string, unknown> = {}) {
   return {
     chart: {
       result: [
         {
-          meta: { symbol, gmtoffset: 19800, exchangeTimezoneName: "Asia/Kolkata", dataGranularity: interval, range: interval === "1m" ? "1d" : "1mo", ...meta },
+          meta: { symbol, gmtoffset: 19800, exchangeTimezoneName: "Asia/Kolkata", dataGranularity: interval, range: { "1m": "1d", "5m": "5d", "1d": "1mo" }[interval], ...meta },
           timestamp: bars.map((b) => Math.floor(b.t / 1000)),
           indicators: {
             quote: [

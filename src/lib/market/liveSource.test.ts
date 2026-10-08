@@ -1,7 +1,7 @@
 import { beforeEach, describe, expect, it } from "vitest";
 import { istAt } from "@/engine/clock";
 import { bar, chartJson, RECORDED, recordedBars, type RawBar } from "./__fixtures__/liveFixtures";
-import { __resetLiveSourceForTests, getLiveFeed, getNiftyCharts, IDLE_TTL_MS, LIVE_TTL_MS, plainReason, STALE_OK_MS } from "./liveSource";
+import { __resetLiveSourceForTests, getLiveFeed, getNiftyCharts, IDLE_TTL_MS, LIVE_TTL_MS, plainReason, PREV_CLOSE_TTL_MS, STALE_OK_MS } from "./liveSource";
 
 type Body = unknown | "fail" | "timeout" | "hang";
 
@@ -137,17 +137,17 @@ describe("getLiveFeed: one shared upstream fetch", () => {
     expect(yahoo.calls).toHaveLength(9);
   });
 
-  it("re-reads the daily charts at once when the last price moves to a new day", async () => {
-    const yahoo = fakeYahoo();
+  it("re-reads the daily charts at once when the last price moves to a new day; with no close anywhere the change stays unknown", async () => {
+    const yahoo = fakeYahoo({ ...RECORDED, "^NSEI 5m": "fail" });
     const t0 = ist("2026-10-09", "09:10");
     await getLiveFeed({ nowMs: t0, fetchImpl: yahoo.fetchImpl });
-    // 09:15 on 2026-10-09: Yahoo's daily chart still lacks the 2026-10-08 close (null), so the change is unknown.
-    const first = [bar("2026-10-09", "09:15", 22250, 22270, 22240, 22260)];
-    yahoo.routes.set("^NSEI 1m", chartJson("^NSEI", "1m", first, { regularMarketPrice: 22260, regularMarketTime: Math.floor(ist("2026-10-09", "09:15", 20) / 1000) }));
+    // 09:15 on 2026-10-09: Yahoo's daily chart still lacks the 2026-10-08 close (null) and the 5-minute chart fails.
+    yahoo.routes.set("^NSEI 1m", firstBar("^NSEI", 22260));
     const r = await getLiveFeed({ nowMs: ist("2026-10-09", "09:15", 30), fetchImpl: yahoo.fetchImpl });
     expect(yahoo.calls.filter((c) => c === "^NSEI 1d")).toHaveLength(2);
     if (!r.ok) throw new Error(r.error);
     expect(r.feed.indices[0]).toMatchObject({ session: "2026-10-09", price: 22260, prevClose: null, change: null, open: 22250 });
+    expect(r.feed.indices[0].prevCloseSource).toBeUndefined();
 
     // Once Yahoo fills in the 2026-10-08 close, the next read (a minute later while unknown) picks it up.
     const d1 = recordedBars("^NSEI 1d").map((b) => (b.t === istAt("2026-10-08", "09:15") ? { ...b, c: 22231.80078125 } : b));
@@ -157,7 +157,83 @@ describe("getLiveFeed: one shared upstream fetch", () => {
     expect(mid.feed.indices[0].prevClose).toBeNull(); // not re-read yet
     const later = await getLiveFeed({ nowMs: ist("2026-10-09", "09:16", 31), fetchImpl: yahoo.fetchImpl });
     if (!later.ok) throw new Error(later.error);
-    expect(later.feed.indices[0]).toMatchObject({ prevClose: 22231.8, change: 28.2 });
+    expect(later.feed.indices[0]).toMatchObject({ prevClose: 22231.8, change: 28.2, prevCloseSource: "daily" });
+  });
+});
+
+/** The first 1-minute bar of Friday 2026-10-09 (open 22250 for NIFTY), quoted at 09:15:20. */
+function firstBar(key: "^NSEI" | "^BSESN" | "^INDIAVIX", price: number) {
+  const open = key === "^NSEI" ? 22250 : price;
+  return chartJson(key, "1m", [bar("2026-10-09", "09:15", open, Math.max(open, price) + 10, Math.min(open, price) - 10, price)], {
+    regularMarketPrice: price,
+    regularMarketTime: Math.floor(ist("2026-10-09", "09:15", 20) / 1000),
+  });
+}
+
+/** Yahoo at Friday's open: the first bars of 2026-10-09, while the daily charts still lack Thursday's close. */
+function fridayOpen(yahoo: ReturnType<typeof fakeYahoo>) {
+  yahoo.routes.set("^NSEI 1m", firstBar("^NSEI", 22260));
+  yahoo.routes.set("^BSESN 1m", firstBar("^BSESN", 71650));
+  yahoo.routes.set("^INDIAVIX 1m", firstBar("^INDIAVIX", 15.1));
+}
+
+describe("previous close from the 5-minute chart while the daily close is missing", () => {
+  it("uses Thursday's last 5-minute bar at Friday's open, reads it once per session, and labels the source", async () => {
+    const yahoo = fakeYahoo();
+    await getLiveFeed({ nowMs: ist("2026-10-09", "09:10"), fetchImpl: yahoo.fetchImpl });
+    expect(yahoo.calls.filter((c) => c.endsWith(" 5m"))).toHaveLength(0); // the daily close was there for Thursday's session
+    fridayOpen(yahoo);
+    const r = await getLiveFeed({ nowMs: ist("2026-10-09", "09:15", 30), fetchImpl: yahoo.fetchImpl });
+    if (!r.ok) throw new Error(r.error);
+    const [n, s] = r.feed.indices;
+    expect(n).toMatchObject({ session: "2026-10-09", price: 22260, prevClose: 22231.8, change: 28.2, changePct: 0.127, prevCloseSource: "intraday" });
+    expect(s).toMatchObject({ price: 71650, prevClose: 71593.24, change: 56.76, prevCloseSource: "intraday" });
+    expect(r.feed.vix).toMatchObject({ price: 15.1, prevClose: 15.275, change: -0.175, prevCloseSource: "intraday" });
+    // Read beside the daily charts at the day turn, then kept for the session.
+    expect(yahoo.calls.filter((c) => c.endsWith(" 5m")).sort()).toEqual(["^BSESN 5m", "^INDIAVIX 5m", "^NSEI 5m"]);
+    await getLiveFeed({ nowMs: ist("2026-10-09", "09:15", 30) + LIVE_TTL_MS, fetchImpl: yahoo.fetchImpl });
+    await getLiveFeed({ nowMs: ist("2026-10-09", "09:15", 30) + PREV_CLOSE_TTL_MS, fetchImpl: yahoo.fetchImpl });
+    expect(yahoo.calls.filter((c) => c.endsWith(" 5m"))).toHaveLength(3);
+  });
+
+  it("gives null when the 5-minute chart's last bar before the session is from two sessions back", async () => {
+    const noThursday = recordedBars("^NSEI 5m").filter((b) => b.t < istAt("2026-10-08", "00:00"));
+    const yahoo = fakeYahoo({ ...RECORDED, "^NSEI 5m": chartJson("^NSEI", "5m", noThursday) });
+    await getLiveFeed({ nowMs: ist("2026-10-09", "09:10"), fetchImpl: yahoo.fetchImpl });
+    fridayOpen(yahoo);
+    const r = await getLiveFeed({ nowMs: ist("2026-10-09", "09:15", 30), fetchImpl: yahoo.fetchImpl });
+    if (!r.ok) throw new Error(r.error);
+    expect(r.feed.indices[0]).toMatchObject({ prevClose: null, change: null, changePct: null });
+    expect(r.feed.indices[0].prevCloseSource).toBeUndefined();
+    expect(r.feed.indices[1]).toMatchObject({ prevClose: 71593.24, prevCloseSource: "intraday" }); // SENSEX's chart was fine
+  });
+
+  it("prefers the daily close when Yahoo has it, even if the 5-minute bar differs", async () => {
+    const filled = recordedBars("^NSEI 1d").map((b) => (b.t === istAt("2026-10-08", "09:15") ? { ...b, c: 22231.80078125 } : b));
+    const offBar = recordedBars("^NSEI 5m").map((b, i, all) => (i === all.length - 1 ? { ...b, c: 22225 } : b));
+    const yahoo = fakeYahoo({ ...RECORDED, "^NSEI 1d": chartJson("^NSEI", "1d", filled), "^NSEI 5m": chartJson("^NSEI", "5m", offBar) });
+    await getLiveFeed({ nowMs: ist("2026-10-09", "09:10"), fetchImpl: yahoo.fetchImpl });
+    fridayOpen(yahoo);
+    const r = await getLiveFeed({ nowMs: ist("2026-10-09", "09:15", 30), fetchImpl: yahoo.fetchImpl });
+    if (!r.ok) throw new Error(r.error);
+    expect(r.feed.indices[0]).toMatchObject({ prevClose: 22231.8, change: 28.2, prevCloseSource: "daily" });
+  });
+
+  it("moves to the daily close once Yahoo fills it in (at the next 10-minute read)", async () => {
+    const yahoo = fakeYahoo();
+    await getLiveFeed({ nowMs: ist("2026-10-09", "09:10"), fetchImpl: yahoo.fetchImpl });
+    fridayOpen(yahoo);
+    const t1 = ist("2026-10-09", "09:15", 30);
+    const first = await getLiveFeed({ nowMs: t1, fetchImpl: yahoo.fetchImpl });
+    if (!first.ok) throw new Error(first.error);
+    expect(first.feed.indices[0]).toMatchObject({ prevClose: 22231.8, prevCloseSource: "intraday" });
+
+    const filled = recordedBars("^NSEI 1d").map((b) => (b.t === istAt("2026-10-08", "09:15") ? { ...b, c: 22231.80078125 } : b));
+    yahoo.routes.set("^NSEI 1d", chartJson("^NSEI", "1d", filled));
+    const later = await getLiveFeed({ nowMs: t1 + PREV_CLOSE_TTL_MS, fetchImpl: yahoo.fetchImpl });
+    if (!later.ok) throw new Error(later.error);
+    expect(later.feed.indices[0]).toMatchObject({ prevClose: 22231.8, prevCloseSource: "daily" });
+    expect(later.feed.indices[1]).toMatchObject({ prevClose: 71593.24, prevCloseSource: "intraday" }); // SENSEX's daily still lacks it
   });
 });
 

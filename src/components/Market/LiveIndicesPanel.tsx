@@ -100,7 +100,8 @@ export default function LiveIndicesPanel() {
                 {vt.change}
               </span>
               <span className="tnum" style={{ fontSize: 12, color: C.muted2 }}>
-                previous close {vt.prevClose ?? "not available yet"} · last value {fmtIstTime(vix.asOf)} IST
+                previous close {vt.prevClose ?? "not available yet"}
+                {vix.prevCloseSource === "intraday" ? " (last 5-minute bar)" : ""} · last value {fmtIstTime(vix.asOf)} IST
               </span>
               {vix.stale && <span style={{ fontSize: 12, color: C.orange }}>Not refreshed in the latest fetch.</span>}
             </>
