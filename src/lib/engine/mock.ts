@@ -10,6 +10,7 @@
  * state.market.nowIst tells the dashboard which "now" that is.
  */
 import type {
+  AccountView,
   BacktestParams,
   BacktestResult,
   ChargesView,
@@ -36,6 +37,7 @@ import type {
   SignalView,
   SourceHealthView,
   SourceName,
+  SuggestedContract,
 } from "@/engine/api-types";
 import {
   HOUR_MS,
@@ -57,6 +59,7 @@ import {
   isMockHoliday,
   MOCK_HOLIDAYS,
   optionCharges,
+  makeContract,
   ROUND_TRIP_CHARGES,
   type MockSeed,
   type PositionSeed,
@@ -66,7 +69,7 @@ import {
 import { copyTicketView } from "@/engine/copy/copyTicket";
 import type { Position, TradePlan } from "@/engine/types";
 import { simulateBacktest } from "./mockBacktest";
-import { clamp, hashString, round2 } from "./random";
+import { clamp, gauss, hashString, mulberry32, round2 } from "./random";
 
 export interface MockConfig {
   adminToken: string | null;
@@ -97,6 +100,217 @@ function scaleCharges(c: ChargesView, k: number): ChargesView {
   };
 }
 
+// ---------------------------------------------------------------------------
+// Paper accounts: main plus two followers that take main's entries with their own capital, one lot of a
+// cheaper strike (premium band), wider stops and their own caps. Followers are always paper.
+// ---------------------------------------------------------------------------
+
+interface FollowerTrade {
+  index: IndexId;
+  strike: number;
+  type: "CE" | "PE";
+  entry: number;
+  /** Exit premium for a trade closed today; null while it is open. */
+  exit: number | null;
+  /** Greeks for the mock's mark (per unit of the index, per minute). */
+  delta: number;
+  thetaPerMin: number;
+  peak: number;
+}
+
+interface FollowerSpec {
+  account: AccountView;
+  /** Order-id prefix, so ids stay unique across books. */
+  prefix: string;
+  /** Today's PE (stopped out at 10:12) and CE (open since 11:05), mirroring main's two NIFTY trades. */
+  pe: FollowerTrade;
+  ce: FollowerTrade;
+  stopPct: number;
+  targetPct: number;
+  dailyLossCapPct: number;
+  maxTradesPerDay: number;
+  /** One closed trade's gross P&L in rupees: mean, spread and the stop / target bounds. */
+  perTrade: { mean: number; sd: number; lo: number; hi: number };
+}
+
+const FOLLOWERS: FollowerSpec[] = [
+  {
+    account: { id: "small10k", label: "₹10k account", shortLabel: "₹10k", paperOnly: true, capitalRupees: 10_000 },
+    prefix: "s10k-",
+    // NIFTY premium band ₹40–70 (one lot of 65 costs ₹2,600–4,550).
+    pe: { index: "NIFTY", strike: 22350, type: "PE", entry: 52.35, exit: 33.95, delta: -0.28, thetaPerMin: 0.012, peak: 52.35 },
+    ce: { index: "NIFTY", strike: 22800, type: "CE", entry: 58.4, exit: null, delta: 0.3, thetaPerMin: 0.012, peak: 74.65 },
+    stopPct: -35,
+    targetPct: 60,
+    dailyLossCapPct: 25,
+    maxTradesPerDay: 3,
+    perTrade: { mean: 75, sd: 900, lo: -1300, hi: 2200 },
+  },
+  {
+    account: { id: "small5k", label: "₹5k account", shortLabel: "₹5k", paperOnly: true, capitalRupees: 5_000 },
+    prefix: "s5k-",
+    // NIFTY premium band ₹20–38 (one lot of 65 costs ₹1,300–2,470).
+    pe: { index: "NIFTY", strike: 22300, type: "PE", entry: 31.2, exit: 20.25, delta: -0.2, thetaPerMin: 0.008, peak: 31.2 },
+    ce: { index: "NIFTY", strike: 22850, type: "CE", entry: 34.65, exit: null, delta: 0.22, thetaPerMin: 0.008, peak: 44.1 },
+    stopPct: -35,
+    targetPct: 60,
+    dailyLossCapPct: 25,
+    maxTradesPerDay: 3,
+    perTrade: { mean: 58, sd: 520, lo: -760, hi: 1280 },
+  },
+];
+
+/** One paper account's book. Main's comes from the fixture seed; a follower's mirrors main's trades. */
+interface Book {
+  account: AccountView;
+  prefix: string;
+  positions: PositionSeed[];
+  orders: OrderView[];
+  fills: FillView[];
+  realizedToday: number;
+  chargesToday: ChargesView;
+  tradesToday: number;
+  killSwitch: boolean;
+  killReason: string | null;
+  /** Closed trading days before the anchor date, oldest first. */
+  history: DailyPnlView[];
+  performance: SignalPerformanceRow[];
+  /** The contract the account would buy on a NIFTY entry now. */
+  niftyPlan: SuggestedContract | null;
+  dailyLossCap: number;
+  maxTradesPerDay: number;
+}
+
+function mainBook(seed: MockSeed): Book {
+  return {
+    account: { id: "main", label: "Main account", shortLabel: "Main", paperOnly: false, capitalRupees: seed.startingEquity },
+    prefix: "",
+    positions: clone(seed.positions),
+    orders: clone(seed.orders),
+    fills: clone(seed.fills),
+    realizedToday: seed.realizedToday,
+    chargesToday: clone(seed.chargesToday),
+    tradesToday: seed.tradesToday,
+    killSwitch: false,
+    killReason: null,
+    history: seed.history,
+    performance: seed.performance,
+    niftyPlan: seed.positions.find((p) => p.index === "NIFTY")?.contract ?? null,
+    dailyLossCap: DAILY_LOSS_CAP,
+    maxTradesPerDay: MAX_TRADES_PER_DAY,
+  };
+}
+
+/** A follower's book: main's NIFTY trades of the day at the follower's strikes, one lot each, and its own history. */
+function followerBook(seed: MockSeed, f: FollowerSpec): Book {
+  const mainOpen = seed.positions.find((p) => p.index === "NIFTY");
+  const expiry = mainOpen?.contract.expiry ?? seed.positions[0]?.contract.expiry ?? seed.anchorDate;
+  const at = (hhmmss: string) => toIstIso(istAt(seed.anchorDate, hhmmss));
+  const lot = 1;
+  const pe = makeContract(f.pe.index, expiry, f.pe.strike, f.pe.type, lot, f.pe.entry);
+  const ce = makeContract(f.ce.index, expiry, f.ce.strike, f.ce.type, lot, f.ce.entry);
+  const qty = pe.lotSize * lot;
+  const peBuy = optionCharges("BUY", f.pe.entry, qty, "NIFTY");
+  const peSell = optionCharges("SELL", f.pe.exit ?? f.pe.entry, qty, "NIFTY");
+  const ceBuy = optionCharges("BUY", f.ce.entry, ce.lotSize * lot, "NIFTY");
+  const order = (id: string, placedAt: string, c: SuggestedContract, side: "BUY" | "SELL", type: "LIMIT" | "MARKET", limit: number | null, fill: number, reason: OrderReason, planId: string): OrderView => ({
+    id: `${f.prefix}${id}`,
+    placedAt: at(placedAt),
+    mode: "PAPER",
+    contractLabel: c.label,
+    tradingSymbol: c.tradingSymbol,
+    side,
+    qty: c.lotSize * lot,
+    orderType: type,
+    limitPrice: limit,
+    status: "FILLED",
+    reason,
+    filledQty: c.lotSize * lot,
+    avgFillPrice: fill,
+    planId,
+    error: null,
+  });
+  const pePlan = `pln-nifty-0931-${f.account.id}`;
+  const cePlan = `pln-nifty-1105-${f.account.id}`;
+  const orders: OrderView[] = [
+    order("ord-0931-entry", "09:31:12", pe, "BUY", "LIMIT", round2(f.pe.entry + 0.05), f.pe.entry, "ENTRY", pePlan),
+    order("ord-1012-stop", "10:12:40", pe, "SELL", "MARKET", null, f.pe.exit ?? f.pe.entry, "STOP", pePlan),
+    order("ord-1105-entry", "11:05:02", ce, "BUY", "LIMIT", round2(f.ce.entry + 0.05), f.ce.entry, "ENTRY", cePlan),
+  ];
+  const fills: FillView[] = [
+    { id: `${f.prefix}fil-0931`, orderId: orders[0].id, at: at("09:31:13"), price: f.pe.entry, qty, charges: peBuy.total },
+    { id: `${f.prefix}fil-1012`, orderId: orders[1].id, at: at("10:12:41"), price: f.pe.exit ?? f.pe.entry, qty, charges: peSell.total },
+    { id: `${f.prefix}fil-1105`, orderId: orders[2].id, at: at("11:05:03"), price: f.ce.entry, qty: ce.lotSize * lot, charges: ceBuy.total },
+  ];
+  const openedAt = istAt(seed.anchorDate, "11:05:02");
+  const position: PositionSeed = {
+    id: `pos-nifty-1105-${f.account.id}`,
+    planId: cePlan,
+    index: "NIFTY",
+    contract: ce,
+    qty: ce.lotSize * lot,
+    avgPrice: f.ce.entry,
+    entrySpot: mainOpen?.entrySpot ?? 22588,
+    delta: f.ce.delta,
+    thetaPerMin: f.ce.thetaPerMin,
+    openedAt,
+    peak: f.ce.peak,
+    stopPct: f.stopPct,
+    targetPct: f.targetPct,
+    trailActivatePct: 30,
+    trailGivebackPct: 50,
+    timeStopAt: openedAt + 120 * MINUTE_MS,
+    squareOffAt: istAt(seed.anchorDate, "15:05"),
+    dominantSource: mainOpen?.dominantSource ?? "EVENT",
+    entryCharges: ceBuy.total,
+  };
+
+  // History: main's trading days, at most three of main's trades a day, sized for one cheap lot.
+  const rand = mulberry32(hashString(`history:${seed.anchorDate}:${f.account.id}`));
+  const roundTrip = round2(optionCharges("BUY", f.ce.entry, qty, "NIFTY").total + optionCharges("SELL", f.ce.entry * 1.05, qty, "NIFTY").total);
+  const capital = f.account.capitalRupees;
+  const raw = seed.history.map((d) => {
+    const trades = Math.min(d.trades, f.maxTradesPerDay);
+    return Array.from({ length: trades }, () => clamp(f.perTrade.mean + f.perTrade.sd * gauss(rand), f.perTrade.lo, f.perTrade.hi));
+  });
+  // One cheap lot is a big bet for a small account: keep the 60-day path between 80% and 145% of the
+  // capital (where its loss caps and premium cap would hold it) by shrinking outcomes towards the mean.
+  const path = (k: number): DailyPnlView[] => {
+    let equity = capital;
+    return seed.history.map((d, i) => {
+      const trades = raw[i].length;
+      const gross = round2(raw[i].reduce((sum, g) => sum + f.perTrade.mean + k * (g - f.perTrade.mean), 0));
+      const charges = round2(roundTrip * trades);
+      const net = round2(gross - charges);
+      equity = round2(equity + net);
+      return { date: d.date, realized: gross, unrealized: 0, charges, net, trades, equityEnd: equity };
+    });
+  };
+  const inBand = (h: DailyPnlView[]) => h.every((d) => d.equityEnd >= 0.8 * capital && d.equityEnd <= 1.45 * capital);
+  const history = [1, 0.8, 0.6, 0.45, 0.3, 0.2, 0.1].map(path).find(inBand) ?? path(0);
+  // Rupee figures scale with the premium of one lot (main trades a lot of a pricier strike).
+  const scale = (f.ce.entry * qty) / Math.max(1, (mainOpen?.avgPrice ?? 140) * (mainOpen?.qty ?? 65));
+  const performance = seed.performance.map((r) => ({ ...r, expectancyRupees: round2(r.expectancyRupees * scale) }));
+
+  return {
+    account: f.account,
+    prefix: f.prefix,
+    positions: [position],
+    orders,
+    fills,
+    realizedToday: round2(((f.pe.exit ?? f.pe.entry) - f.pe.entry) * qty),
+    chargesToday: addCharges(addCharges(peBuy, peSell), ceBuy),
+    tradesToday: 1,
+    killSwitch: false,
+    killReason: null,
+    history,
+    performance,
+    niftyPlan: ce,
+    dailyLossCap: round2((f.account.capitalRupees * f.dailyLossCapPct) / 100),
+    maxTradesPerDay: f.maxTradesPerDay,
+  };
+}
+
 interface BacktestRun {
   params: BacktestParams;
   startedAt: number;
@@ -110,14 +324,8 @@ export class MockEngineApi implements EngineApi {
   private readonly seed: MockSeed;
   private mode: EngineMode = "PAPER";
   private armedUntil: number | null = null;
-  private killSwitch = false;
-  private killReason: string | null = null;
-  private positions: PositionSeed[];
-  private orders: OrderView[];
-  private fills: FillView[];
-  private realizedToday: number;
-  private chargesToday: ChargesView;
-  private tradesToday: number;
+  /** Books by account id: main first, then the followers. */
+  private readonly books: Map<string, Book>;
   private quoteDev: Record<string, number> = {};
   private convDev: Record<IndexId, number> = { NIFTY: 0, SENSEX: 0 };
   private lastJitter = 0;
@@ -130,12 +338,18 @@ export class MockEngineApi implements EngineApi {
     const t0 = clockMode === "real" ? real : istAt(anchor, SIM_START);
     this.simOffset = t0 - real;
     this.seed = buildSeed(anchor, t0);
-    this.positions = clone(this.seed.positions);
-    this.orders = clone(this.seed.orders);
-    this.fills = clone(this.seed.fills);
-    this.realizedToday = this.seed.realizedToday;
-    this.chargesToday = clone(this.seed.chargesToday);
-    this.tradesToday = this.seed.tradesToday;
+    this.books = new Map([["main", mainBook(this.seed)], ...FOLLOWERS.map((f): [string, Book] => [f.account.id, followerBook(this.seed, f)])]);
+  }
+
+  /** The book for `account` (main when omitted); unknown accounts are refused, as the engine does. */
+  private book(account?: string): Book {
+    const b = this.books.get(account ?? "main");
+    if (!b) throw new Error(`BAD_REQUEST: This engine runs no account called '${account}'. Accounts: ${[...this.books.keys()].join(", ")}.`);
+    return b;
+  }
+
+  private get main(): Book {
+    return this.book();
   }
 
   configure(cfg: MockConfig): void {
@@ -169,17 +383,19 @@ export class MockEngineApi implements EngineApi {
       }
     }
     if (this.armedUntil != null && now >= this.armedUntil) this.armedUntil = null;
-    for (const pos of [...this.positions]) {
-      const ltp = this.mark(pos, now);
-      pos.peak = Math.max(pos.peak, ltp);
-      const trail = this.trailPrice(pos);
-      let reason: OrderReason | null = null;
-      if (now >= pos.squareOffAt) reason = "SQUARE_OFF";
-      else if (ltp <= this.stopPrice(pos)) reason = "STOP";
-      else if (ltp >= this.targetPrice(pos)) reason = "TARGET";
-      else if (trail != null && ltp <= trail) reason = "TRAIL";
-      else if (now >= pos.timeStopAt && (ltp / pos.avgPrice - 1) * 100 < 10) reason = "TIME_STOP";
-      if (reason) this.closePosition(pos, reason, now);
+    for (const book of this.books.values()) {
+      for (const pos of [...book.positions]) {
+        const ltp = this.mark(pos, now);
+        pos.peak = Math.max(pos.peak, ltp);
+        const trail = this.trailPrice(pos);
+        let reason: OrderReason | null = null;
+        if (now >= pos.squareOffAt) reason = "SQUARE_OFF";
+        else if (ltp <= this.stopPrice(pos)) reason = "STOP";
+        else if (ltp >= this.targetPrice(pos)) reason = "TARGET";
+        else if (trail != null && ltp <= trail) reason = "TRAIL";
+        else if (now >= pos.timeStopAt && (ltp / pos.avgPrice - 1) * 100 < 10) reason = "TIME_STOP";
+        if (reason) this.closePosition(book, pos, reason, now);
+      }
     }
     return now;
   }
@@ -219,14 +435,14 @@ export class MockEngineApi implements EngineApi {
     return round2(pos.avgPrice + (pos.peak - pos.avgPrice) * (1 - pos.trailGivebackPct / 100));
   }
 
-  private closePosition(pos: PositionSeed, reason: OrderReason, now: number): void {
+  private closePosition(book: Book, pos: PositionSeed, reason: OrderReason, now: number): void {
     const price = tick05(this.mark(pos, now) - 0.1);
     const charges = optionCharges("SELL", price, pos.qty, pos.index);
-    const id = `ord-${istParts(now).hour}${String(istParts(now).minute).padStart(2, "0")}-${++this.seq}`;
-    this.orders.unshift({
+    const id = `${book.prefix}ord-${istParts(now).hour}${String(istParts(now).minute).padStart(2, "0")}-${++this.seq}`;
+    book.orders.unshift({
       id,
       placedAt: toIstIso(now),
-      mode: this.positionMode(),
+      mode: book.account.paperOnly ? "PAPER" : this.positionMode(),
       contractLabel: pos.contract.label,
       tradingSymbol: pos.contract.tradingSymbol,
       side: "SELL",
@@ -240,11 +456,11 @@ export class MockEngineApi implements EngineApi {
       planId: pos.planId,
       error: null,
     });
-    this.fills.push({ id: `fil-${this.seq}`, orderId: id, at: toIstIso(now + 1000), price, qty: pos.qty, charges: charges.total });
-    this.realizedToday = round2(this.realizedToday + (price - pos.avgPrice) * pos.qty);
-    this.chargesToday = addCharges(this.chargesToday, charges);
-    this.tradesToday += 1;
-    this.positions = this.positions.filter((p) => p.id !== pos.id);
+    book.fills.push({ id: `${book.prefix}fil-${this.seq}`, orderId: id, at: toIstIso(now + 1000), price, qty: pos.qty, charges: charges.total });
+    book.realizedToday = round2(book.realizedToday + (price - pos.avgPrice) * pos.qty);
+    book.chargesToday = addCharges(book.chargesToday, charges);
+    book.tradesToday += 1;
+    book.positions = book.positions.filter((p) => p.id !== pos.id);
   }
 
   private positionMode(): "PAPER" | "LIVE" {
@@ -256,22 +472,22 @@ export class MockEngineApi implements EngineApi {
   // Read model builders
   // -------------------------------------------------------------------------
 
-  private unrealized(now: number): number {
-    return round2(this.positions.reduce((s, p) => s + (this.mark(p, now) - p.avgPrice) * p.qty, 0));
+  private unrealized(book: Book, now: number): number {
+    return round2(book.positions.reduce((s, p) => s + (this.mark(p, now) - p.avgPrice) * p.qty, 0));
   }
 
-  private todayPnl(now: number): DailyPnlView {
-    const unrealized = this.unrealized(now);
-    const last = this.seed.history[this.seed.history.length - 1];
-    const net = round2(this.realizedToday + unrealized - this.chargesToday.total);
+  private todayPnl(book: Book, now: number): DailyPnlView {
+    const unrealized = this.unrealized(book, now);
+    const last = book.history[book.history.length - 1];
+    const net = round2(book.realizedToday + unrealized - book.chargesToday.total);
     return {
       date: this.seed.anchorDate,
-      realized: this.realizedToday,
+      realized: book.realizedToday,
       unrealized,
-      charges: this.chargesToday.total,
+      charges: book.chargesToday.total,
       net,
-      trades: this.tradesToday,
-      equityEnd: round2((last?.equityEnd ?? this.seed.startingEquity) + net),
+      trades: book.tradesToday,
+      equityEnd: round2((last?.equityEnd ?? book.account.capitalRupees) + net),
     };
   }
 
@@ -301,38 +517,40 @@ export class MockEngineApi implements EngineApi {
       gnews: { ok: true, lastOkAt: ago(3 * MINUTE_MS), detail: "62/100 requests used today" },
       rss: { ok: true, lastOkAt: ago(4 * MINUTE_MS) },
       gdelt: { ok: false, lastOkAt: ago(14 * MINUTE_MS), detail: "HTTP 429 from shared egress; backing off 5 min" },
-      claude: { ok: true, lastOkAt: ago(6 * MINUTE_MS), detail: "claude-opus-5-5 · cache hits 91%" },
+      claude: { ok: true, lastOkAt: ago(6 * MINUTE_MS), detail: "News scorer · cache hits 91%" },
     };
     if (this.mode === "LIVE") h.relay = { ok: false, lastOkAt: null, detail: "Order relay not configured" };
     return h;
   }
 
-  private stateDto(now: number): EngineStateDTO {
+  private stateDto(now: number, book: Book = this.main): EngineStateDTO {
     const phase = sessionPhaseAt(now, isMockHoliday);
     const date = istDate(now);
-    const today = this.todayPnl(now);
+    const today = this.todayPnl(book, now);
+    const follower = book.account.paperOnly;
     const open = istAt(date, SESSION.open);
     const close = istAt(date, SESSION.close);
     const decisions = phase === "OPEN" || now >= close ? Math.floor((Math.min(now, close) - open) / 30_000) * 2 : 0;
     return {
       dataSource: "mock",
-      mode: this.mode,
+      // Follower accounts are paper only: never LIVE, never armed.
+      mode: follower ? "PAPER" : this.mode,
       liveTradingEnabled: false,
-      armed: this.armedUntil != null,
-      armedUntil: this.armedUntil == null ? null : toIstIso(this.armedUntil),
-      killSwitch: this.killSwitch,
-      killReason: this.killReason,
+      armed: !follower && this.armedUntil != null,
+      armedUntil: follower || this.armedUntil == null ? null : toIstIso(this.armedUntil),
+      killSwitch: book.killSwitch,
+      killReason: book.killReason,
       caps: {
-        dailyLossCap: DAILY_LOSS_CAP,
+        dailyLossCap: book.dailyLossCap,
         dailyLossUsed: Math.max(0, round2(-today.net)),
         maxPositions: MAX_POSITIONS,
-        openPositions: this.positions.length,
+        openPositions: book.positions.length,
         maxOrdersPerDay: MAX_ORDERS_PER_DAY,
-        ordersToday: this.orders.length,
+        ordersToday: book.orders.length,
       },
       heartbeat: {
         lastTickAt: toIstIso(now - 7000),
-        phase: this.killSwitch
+        phase: this.main.killSwitch
           ? "KILLED"
           : phase === "OPEN"
             ? "OPEN"
@@ -362,6 +580,8 @@ export class MockEngineApi implements EngineApi {
         llmInputTokensToday: this.seed.stats.llmInputTokensToday,
         llmOutputTokensToday: this.seed.stats.llmOutputTokensToday,
       },
+      account: clone(book.account),
+      accounts: [...this.books.values()].map((b) => clone(b.account)),
     };
   }
 
@@ -418,11 +638,11 @@ export class MockEngineApi implements EngineApi {
     };
   }
 
-  private gates(seed: SignalSeed, conviction: number, now: number): GateResult[] {
+  private gates(seed: SignalSeed, conviction: number, now: number, book: Book): GateResult[] {
     const minutes = istParts(now).minutesOfDay;
     const inWindow = sessionPhaseAt(now, isMockHoliday) === "OPEN" && minutes >= 9 * 60 + 25 && minutes < 14 * 60 + 30;
     const age = Math.round((now - Date.parse(this.quotes(now).find((q) => q.key === seed.index)?.asOf ?? "")) / 1000);
-    const holding = this.positions.some((p) => p.index === seed.index);
+    const holding = book.positions.some((p) => p.index === seed.index);
     return seed.gates.map((g): GateResult => {
       switch (g.gate) {
         case "SESSION":
@@ -430,17 +650,17 @@ export class MockEngineApi implements EngineApi {
         case "DATA_AGE":
           return { ...g, passed: age <= 180, detail: `Spot ${Number.isFinite(age) ? age : "?"} s old (max 180 s)` };
         case "KILL_SWITCH":
-          return { ...g, passed: !this.killSwitch, detail: this.killSwitch ? `Engaged: ${this.killReason ?? "manual"}` : "Not engaged" };
+          return { ...g, passed: !book.killSwitch, detail: book.killSwitch ? `Engaged: ${book.killReason ?? "manual"}` : "Not engaged" };
         case "CONVICTION": {
           const pass = Math.abs(conviction) >= seed.threshold;
           return { ...g, passed: pass, detail: `${fmtSigned(conviction)} ${pass ? "≥" : "<"} ${seed.threshold.toFixed(2)} (${seed.regime})` };
         }
         case "EXPOSURE": {
-          const used = this.positions.length;
-          if (holding) return { ...g, passed: true, detail: `${used}/${MAX_POSITIONS} position (this plan) · ${this.tradesToday + used}/${MAX_TRADES_PER_DAY} trades today` };
+          const used = book.positions.length;
+          if (holding) return { ...g, passed: true, detail: `${used}/${MAX_POSITIONS} position (this plan) · ${book.tradesToday + used}/${book.maxTradesPerDay} trades today` };
           const pass = used < MAX_POSITIONS;
-          const other = this.positions[0]?.index;
-          return { ...g, passed: pass, detail: pass ? `${used}/${MAX_POSITIONS} positions · ${this.tradesToday}/${MAX_TRADES_PER_DAY} trades today` : `${used}/${MAX_POSITIONS} position slots used (${other})` };
+          const other = book.positions[0]?.index;
+          return { ...g, passed: pass, detail: pass ? `${used}/${MAX_POSITIONS} positions · ${book.tradesToday}/${book.maxTradesPerDay} trades today` : `${used}/${MAX_POSITIONS} position slots used (${other})` };
         }
         default:
           return { ...g };
@@ -467,15 +687,14 @@ export class MockEngineApi implements EngineApi {
     return out;
   }
 
-  private signalView(seed: SignalSeed, now: number): SignalView {
+  private signalView(seed: SignalSeed, now: number, book: Book): SignalView {
     const conviction = round2(seed.baseConviction + this.convDev[seed.index]);
-    const gates = this.gates(seed, conviction, now);
-    const pos = this.positions.find((p) => p.index === seed.index) ?? null;
-    const plannedContract =
-      seed.index === "NIFTY" ? (pos?.contract ?? this.seed.positions.find((p) => p.index === "NIFTY")?.contract ?? null) : null;
+    const gates = this.gates(seed, conviction, now, book);
+    const pos = book.positions.find((p) => p.index === seed.index) ?? null;
+    const plannedContract = seed.index === "NIFTY" ? (pos?.contract ?? book.niftyPlan) : null;
     const allGatesPassed = gates.every((g) => g.passed !== false);
     let noPlanReason: string | null = null;
-    if (this.killSwitch) noPlanReason = "Kill switch engaged: no new entries";
+    if (book.killSwitch) noPlanReason = "Kill switch engaged: no new entries";
     else if (Math.abs(conviction) < seed.threshold)
       noPlanReason = `Below threshold: conviction ${fmtSigned(conviction)} < ${seed.threshold.toFixed(2)} (${seed.regime})`;
     else if (!pos) noPlanReason = "Position closed today; 15-minute re-entry cooldown";
@@ -506,7 +725,7 @@ export class MockEngineApi implements EngineApi {
   }
 
   /** The open position as a copy ticket, built by the engine's own builder from the fixture. */
-  private copyTicket(pos: PositionSeed, now: number): CopyTicketView {
+  private copyTicket(book: Book, pos: PositionSeed, now: number): CopyTicketView {
     const seed = this.seed.signals.find((s) => s.index === pos.index);
     const mark = this.mark(pos, now);
     const c = pos.contract;
@@ -583,32 +802,33 @@ export class MockEngineApi implements EngineApi {
           quoteSource: "synthetic",
         }
       : null;
-    const account = { id: "main", label: "Main account", shortLabel: "Main", paperOnly: false, capitalRupees: this.seed.startingEquity };
-    return copyTicketView({ position, plan, account, timeStopMinPnlPct: 10 });
+    return copyTicketView({ position, plan, account: clone(book.account), timeStopMinPnlPct: 10 });
   }
 
   // -------------------------------------------------------------------------
   // EngineApi: reads
   // -------------------------------------------------------------------------
 
-  async getState(): Promise<EngineStateDTO> {
+  async getState(account?: string): Promise<EngineStateDTO> {
     const now = this.read();
-    return clone(this.stateDto(now));
+    return clone(this.stateDto(now, this.book(account)));
   }
 
-  async getSignals(): Promise<SignalView[]> {
+  async getSignals(account?: string): Promise<SignalView[]> {
     const now = this.read();
-    return clone(this.seed.signals.map((s) => this.signalView(s, now)));
+    const book = this.book(account);
+    return clone(this.seed.signals.map((s) => this.signalView(s, now, book)));
   }
 
-  async getPositions(): Promise<PositionView[]> {
+  async getPositions(account?: string): Promise<PositionView[]> {
     const now = this.read();
-    return clone(this.positions.map((p) => this.positionView(p, now)));
+    return clone(this.book(account).positions.map((p) => this.positionView(p, now)));
   }
 
-  async getCopyTickets(date: string): Promise<CopyTicketView[]> {
+  async getCopyTickets(date: string, account?: string): Promise<CopyTicketView[]> {
     const now = this.read();
-    return clone(this.positions.filter((p) => istDate(p.openedAt) === date).map((p) => this.copyTicket(p, now)));
+    const book = this.book(account);
+    return clone(book.positions.filter((p) => istDate(p.openedAt) === date).map((p) => this.copyTicket(book, p, now)));
   }
 
   async getEvents(q: EventsQuery): Promise<EventClusterView[]> {
@@ -629,23 +849,27 @@ export class MockEngineApi implements EngineApi {
     return e ? clone({ ...e, decayRemaining: this.decay(e, now) }) : null;
   }
 
-  async getOrders(date: string): Promise<{ orders: OrderView[]; fills: FillView[] }> {
+  async getOrders(date: string, account?: string): Promise<{ orders: OrderView[]; fills: FillView[] }> {
     this.read();
+    const book = this.book(account);
     const isToday = date === this.seed.anchorDate || date === istDate(Date.now());
     if (!isToday) return { orders: [], fills: [] };
-    const orders = [...this.orders].sort((a, b) => Date.parse(b.placedAt) - Date.parse(a.placedAt));
-    const fills = [...this.fills].sort((a, b) => Date.parse(b.at) - Date.parse(a.at));
+    const orders = [...book.orders].sort((a, b) => Date.parse(b.placedAt) - Date.parse(a.placedAt));
+    const fills = [...book.fills].sort((a, b) => Date.parse(b.at) - Date.parse(a.at));
     return clone({ orders, fills });
   }
 
-  async getPnl(days: number): Promise<PnlResponse> {
+  async getPnl(days: number, account?: string): Promise<PnlResponse> {
     const now = this.read();
-    const n = clamp(Math.floor(days), 1, this.seed.history.length);
-    const history = this.seed.history.slice(-n);
-    const today = this.todayPnl(now);
+    const book = this.book(account);
+    const n = clamp(Math.floor(days), 1, book.history.length);
+    const history = book.history.slice(-n);
+    const today = this.todayPnl(book, now);
     const first = history[0];
     const startingEquity = round2(first.equityEnd - first.net);
     const windowTrades = history.reduce((s, d) => s + d.trades, 0);
+    // History charges are per round trip at the account's own premiums.
+    const perTrade = windowTrades > 0 ? history.reduce((s, d) => s + d.charges, 0) / windowTrades / ROUND_TRIP_CHARGES.total : 1;
     const equityCurve = [
       { t: toIstIso(istAt(first.date, "09:15")), equity: startingEquity },
       ...history.map((d) => ({ t: toIstIso(istAt(d.date, "15:30")), equity: d.equityEnd })),
@@ -657,13 +881,13 @@ export class MockEngineApi implements EngineApi {
       today,
       history,
       equityCurve,
-      charges: addCharges(scaleCharges(ROUND_TRIP_CHARGES, windowTrades), this.chargesToday ?? emptyCharges()),
+      charges: addCharges(scaleCharges(ROUND_TRIP_CHARGES, windowTrades * perTrade), book.chargesToday ?? emptyCharges()),
     });
   }
 
-  async getPerformance(): Promise<SignalPerformanceRow[]> {
+  async getPerformance(account?: string): Promise<SignalPerformanceRow[]> {
     this.read();
-    return clone(this.seed.performance);
+    return clone(this.book(account).performance);
   }
 
   async getScheduled(hours: number): Promise<ScheduledEventView[]> {
@@ -726,24 +950,28 @@ export class MockEngineApi implements EngineApi {
     void actor;
     this.assertToken(token);
     const now = this.advance();
-    if (armed && this.killSwitch) throw new Error("CONFLICT: kill switch is engaged; reset it before arming");
+    if (armed && this.main.killSwitch) throw new Error("CONFLICT: kill switch is engaged; reset it before arming");
     this.armedUntil = armed ? nextSessionClose(now, isMockHoliday) : null;
     return clone(this.stateDto(now));
   }
 
-  async setKillSwitch(token: string, req: KillSwitchRequest, actor: string): Promise<EngineStateDTO> {
+  /** `account`: main (default), a follower id, or "all". */
+  async setKillSwitch(token: string, req: KillSwitchRequest, actor: string, account?: string): Promise<EngineStateDTO> {
     this.assertToken(token);
     const now = this.advance();
-    if (req.engaged) {
-      this.killSwitch = true;
-      this.killReason = req.reason.trim() || `Manual kill by ${actor}`;
-      this.armedUntil = null;
-      if (req.squareOff) for (const pos of [...this.positions]) this.closePosition(pos, "KILL_SWITCH", now);
-    } else {
-      this.killSwitch = false;
-      this.killReason = null;
+    const books = account === "all" ? [...this.books.values()] : [this.book(account)];
+    for (const book of books) {
+      if (req.engaged) {
+        book.killSwitch = true;
+        book.killReason = req.reason.trim() || `Manual kill by ${actor}`;
+        if (!book.account.paperOnly) this.armedUntil = null;
+        if (req.squareOff) for (const pos of [...book.positions]) this.closePosition(book, pos, "KILL_SWITCH", now);
+      } else {
+        book.killSwitch = false;
+        book.killReason = null;
+      }
     }
-    return clone(this.stateDto(now));
+    return clone(this.stateDto(now, account === "all" ? this.main : books[0]));
   }
 
   async setMode(token: string, mode: EngineMode, actor: string): Promise<EngineStateDTO> {
