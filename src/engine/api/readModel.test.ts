@@ -283,3 +283,32 @@ describe("read model for the ₹10k account", () => {
     expect((await main.getState()).killReason).toBe("main only");
   });
 });
+
+describe("source health", () => {
+  it("reads every health key at once and keeps the freshest per source", async () => {
+    const repo = new InMemoryRepository(DEFAULT_CONFIG, NOW);
+    await repo.state.set("health:bing_rss", { ok: true, lastOkMs: NOW - 60_000, lastErrorMs: null });
+    await repo.state.set("health:publisher_rss", { ok: false, lastOkMs: NOW - 600_000, lastErrorMs: NOW, detail: "503" });
+    await repo.state.set("health:yahoo", { ok: true, lastOkMs: NOW, lastErrorMs: null });
+    let inFlight = 0;
+    let most = 0;
+    const get = repo.state.get.bind(repo.state);
+    const state = {
+      ...repo.state,
+      get: async <T,>(key: string) => {
+        inFlight++;
+        most = Math.max(most, inFlight);
+        await new Promise((r) => setTimeout(r, 1));
+        inFlight--;
+        return get<T>(key);
+      },
+    };
+    const model = new ReadModel({ repo: { ...repo, state } as unknown as InMemoryRepository, cfg: DEFAULT_CONFIG, calendar: defaultCalendar, now: NOW, liveTradingEnabled: false, version: "test" });
+    const h = await model.health();
+    // All 11 keys (7 sources) are requested together instead of one after another.
+    expect(most).toBe(11);
+    expect(h.rss).toEqual({ ok: true, lastOkAt: "2026-10-07T10:59:00+05:30" });
+    expect(h.yahoo).toEqual({ ok: true, lastOkAt: "2026-10-07T11:00:00+05:30" });
+    expect(h.gdelt).toBeUndefined();
+  });
+});

@@ -235,10 +235,11 @@ export class ReadModel {
 
   async health(): Promise<Partial<Record<SourceName, SourceHealthView>>> {
     const out: Partial<Record<SourceName, SourceHealthView>> = {};
-    for (const name of SOURCE_NAMES) {
+    // Every key at once (11 sequential D1 reads made /state take about 3 s); same choice as before.
+    const read = await Promise.all(SOURCE_NAMES.map((name) => Promise.all(HEALTH_KEYS[name].map((key) => this.ctx.repo.state.get<SourceHealth>(key)))));
+    for (const [i, name] of SOURCE_NAMES.entries()) {
       let best: SourceHealth | null = null;
-      for (const key of HEALTH_KEYS[name]) {
-        const h = await this.ctx.repo.state.get<SourceHealth>(key);
+      for (const h of read[i]) {
         if (h && (!best || (h.lastOkMs ?? 0) > (best.lastOkMs ?? 0))) best = h;
       }
       if (best) out[name] = { ok: best.ok, lastOkAt: best.lastOkMs ? istIso(best.lastOkMs) : null, ...(best.detail ? { detail: best.detail } : {}) };
