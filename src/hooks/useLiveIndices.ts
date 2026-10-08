@@ -11,7 +11,7 @@ import { useSyncExternalStore } from "react";
 import { EnvelopeError, fetchEnvelope } from "@/hooks/engineFetch";
 import { useClientNow } from "@/hooks/useEngineState";
 import { fallbackPhase } from "@/components/shared/market";
-import { freshnessOf, IDLE_POLL_MS, LIVE_POLL_MS, mergeBars, sinceFor, type Freshness, type LiveIndicesFeed } from "@/lib/market/liveIndices";
+import { freshnessOf, mergeBars, pollIntervalFor, sinceFor, type Freshness, type LiveIndicesFeed } from "@/lib/market/liveIndices";
 
 export const LIVE_FEED_URL = "/api/market/live";
 
@@ -50,8 +50,7 @@ function plainPollError(err: unknown): string {
 }
 
 function intervalNow(): number {
-  const phase = snapshot.data?.marketPhase ?? fallbackPhase(Date.now());
-  return phase === "OPEN" || phase === "PRE_OPEN" ? LIVE_POLL_MS : IDLE_POLL_MS;
+  return pollIntervalFor(snapshot.data?.marketPhase ?? fallbackPhase(Date.now()));
 }
 
 async function tick() {
@@ -106,5 +105,7 @@ export interface LiveIndicesState extends Snapshot {
 export function useLiveIndices(): LiveIndicesState {
   const s = useSyncExternalStore(subscribe, getSnapshot, getServerSnapshot);
   const now = useClientNow();
-  return { ...s, ageMs: s.at != null && now != null ? Math.max(0, now - s.at) : null, freshness: freshnessOf(s.at, now) };
+  // Judged against the interval the poll is on, so the 30 s idle poll is not "stale" between polls.
+  const pollMs = pollIntervalFor(s.data?.marketPhase ?? (now != null ? fallbackPhase(now) : "OPEN"));
+  return { ...s, ageMs: s.at != null && now != null ? Math.max(0, now - s.at) : null, freshness: freshnessOf(s.at, now, pollMs) };
 }

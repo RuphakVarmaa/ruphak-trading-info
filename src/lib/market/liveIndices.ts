@@ -109,14 +109,22 @@ export const OFFLINE_AFTER_MS = 60_000;
 
 export type Freshness = "loading" | "live" | "stale" | "offline";
 
-/** Freshness of the feed from the browser time of the last good response. Pure. */
-export function freshnessOf(lastOkAt: number | null, now: number | null): Freshness {
+/**
+ * Freshness of the feed from the browser time of the last good response. Pure. `pollMs` is the poll
+ * interval in force: a slower poll moves both thresholds out by the extra wait, so a 30 s idle poll
+ * does not read as stale between its own polls (default: the 1.5 s live poll, the plain thresholds).
+ */
+export function freshnessOf(lastOkAt: number | null, now: number | null, pollMs: number = LIVE_POLL_MS): Freshness {
   if (lastOkAt == null || now == null) return "loading";
   const age = Math.max(0, now - lastOkAt);
-  if (age <= STALE_AFTER_MS) return "live";
-  if (age <= OFFLINE_AFTER_MS) return "stale";
+  const slack = Math.max(0, pollMs - LIVE_POLL_MS);
+  if (age <= STALE_AFTER_MS + slack) return "live";
+  if (age <= OFFLINE_AFTER_MS + slack) return "stale";
   return "offline";
 }
+
+/** The client poll interval for a payload's market phase. */
+export const pollIntervalFor = (phase: LiveIndicesFeed["marketPhase"]): number => (phase === "OPEN" || phase === "PRE_OPEN" ? LIVE_POLL_MS : IDLE_POLL_MS);
 
 /** A bar's typical price, (high + low + close) / 3. */
 export const typicalPrice = (b: LiveIndexBar): number => (b.h + b.l + b.c) / 3;

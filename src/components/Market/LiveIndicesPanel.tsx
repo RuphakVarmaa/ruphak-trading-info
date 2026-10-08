@@ -8,7 +8,7 @@ import { SERIF } from "@/components/shared/theme";
 import { Dot, EmptyState, Panel, Skeleton } from "@/components/shared/ui";
 import { useClientNow } from "@/hooks/useEngineState";
 import { useLiveIndices } from "@/hooks/useLiveIndices";
-import { IDLE_POLL_MS, LIVE_POLL_MS, type LiveIndexId } from "@/lib/market/liveIndices";
+import { LIVE_POLL_MS, pollIntervalFor, type LiveIndexId } from "@/lib/market/liveIndices";
 import FreshnessBadge from "./FreshnessBadge";
 import LiveIndexCard from "./LiveIndexCard";
 import LiveIndexChart from "./LiveIndexChart";
@@ -61,7 +61,7 @@ export default function LiveIndicesPanel() {
   const now = useClientNow();
   const headingId = useId();
   const phase = data?.marketPhase ?? (now != null ? fallbackPhase(now) : null);
-  const status = panelStatus(live, phase === "OPEN" || phase === "PRE_OPEN" ? LIVE_POLL_MS : IDLE_POLL_MS);
+  const status = panelStatus(live, phase ? pollIntervalFor(phase) : LIVE_POLL_MS);
   const feed = entryFreshness(data, null, freshness, ageMs);
   const vix = data?.vix ?? null;
   const vt = vix ? vixText(vix) : null;

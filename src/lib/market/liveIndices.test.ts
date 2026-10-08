@@ -3,7 +3,7 @@ import { istAt } from "@/engine/clock";
 import { parseYahooChart } from "@/engine/market/yahooClient";
 import { chartJson, recordedBars } from "./__fixtures__/liveFixtures";
 import { buildLiveIndex } from "./liveFeed";
-import { barsSince, freshnessOf, mergeBars, openingRangeOf, runningVwap, SINCE_OVERLAP_MS, sinceFor, type LiveIndicesFeed } from "./liveIndices";
+import { barsSince, freshnessOf, IDLE_POLL_MS, LIVE_POLL_MS, mergeBars, openingRangeOf, runningVwap, SINCE_OVERLAP_MS, sinceFor, type LiveIndicesFeed } from "./liveIndices";
 
 /** The recorded 2026-10-08 session as served at `hm`, both indices. */
 function feedAt(hm: string): LiveIndicesFeed {
@@ -67,6 +67,14 @@ describe("pure helpers", () => {
     expect(freshnessOf(0, 10_000)).toBe("live");
     expect(freshnessOf(0, 10_001)).toBe("stale");
     expect(freshnessOf(0, 60_001)).toBe("offline");
+  });
+
+  it("does not call a feed stale between its own 30-second polls while the market is closed", () => {
+    expect(freshnessOf(0, 29_000, IDLE_POLL_MS)).toBe("live");
+    expect(freshnessOf(0, 38_500, IDLE_POLL_MS)).toBe("live");
+    expect(freshnessOf(0, 38_501, IDLE_POLL_MS)).toBe("stale");
+    expect(freshnessOf(0, 88_501, IDLE_POLL_MS)).toBe("offline");
+    expect(freshnessOf(0, 10_001, LIVE_POLL_MS)).toBe("stale");
   });
 
   it("running VWAP and the opening range", () => {
