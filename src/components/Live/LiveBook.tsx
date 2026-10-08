@@ -7,6 +7,7 @@ import { alpha, C, pnlColor } from "@/components/shared/colors";
 import { fmtAge, fmtInr, fmtIstDay, fmtIstHm, fmtPct } from "@/components/shared/format";
 import { Dot, EmptyState, Panel, PanelHeader, Skeleton, StatTile } from "@/components/shared/ui";
 import { useClientNow, useEngineState, useNow } from "@/hooks/useEngineState";
+import NiftyLiveFeed from "./NiftyLiveFeed";
 import { dashboardLinkStatus, engineLoopStatus, marketFeedStatus, optionPriceStatus, type FeedLevel, type FeedStatus } from "./feedStatus";
 
 const LEVEL_COLOR: Record<FeedLevel, string> = { ok: C.green, wait: C.muted, stale: C.orange, down: C.red };
@@ -159,6 +160,10 @@ export default function LiveBook() {
             ))}
           </div>
         )}
+      </Section>
+
+      <Section title="NIFTY 50 live feed and option chain">
+        <NiftyLiveFeed positions={open} />
       </Section>
     </main>
   );
