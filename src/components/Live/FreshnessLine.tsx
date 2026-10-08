@@ -19,8 +19,7 @@ export default function FreshnessLine({ rows }: { rows: FeedRow[] }) {
   return (
     <details style={{ minWidth: 0, background: C.panel, border: `1px solid ${C.border}`, borderRadius: 12, padding: "10px 14px" }}>
       <summary
-        aria-label="Data feeds: show details"
-        style={{ cursor: "pointer", display: "flex", flexWrap: "wrap", alignItems: "center", gap: "6px 18px", fontSize: 13, color: C.muted, listStyle: "none" }}
+        style={{ cursor: "pointer", display: "flex", flexWrap: "wrap", alignItems: "center", gap: "6px 18px", fontSize: 13, color: C.muted }}
       >
         {rows.map((r) => {
           const color = r.status ? LEVEL_COLOR[r.status.level] : C.muted3;

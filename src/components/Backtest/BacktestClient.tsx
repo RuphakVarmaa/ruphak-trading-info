@@ -39,7 +39,7 @@ const accountOptionLabel = (a: BacktestAccount) =>
 
 /** The account's capital and default exits in one line, from its registry entry. */
 function accountHint(a: BacktestAccount): string {
-  const base = `${fmtInr(a.capitalRupees, { decimals: 0 })} capital; default stop ${a.stopPct}% and target +${a.targetPct}% of premium`;
+  const base = `${fmtInr(a.capitalRupees, { decimals: 0 })} capital; default stop ${fmtPct(a.stopPct, 0)} and target ${fmtPct(a.targetPct, 0)} of premium`;
   return a.id === "main" ? `${base}.` : `${base}. Follows the main account's signals, which replay alongside it.`;
 }
 

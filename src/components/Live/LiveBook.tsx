@@ -138,7 +138,7 @@ export default function LiveBook() {
               />
               <StatTile label="Realized" value={fmtInr(realized, { decimals: 0, sign: true })} color={pnlColor(realized)} sub="closed trades, before charges" />
               <StatTile label="Unrealized" value={fmtInr(unrealized, { decimals: 0, sign: true })} color={pnlColor(unrealized)} sub={`${open.length} open · ${marks}, before charges`} />
-              <StatTile label="Charges" value={fmtInr(charges, { decimals: 0 })} color={C.textSoft} sub="brokerage, STT, exchange fees, stamp duty, GST" />
+              <StatTile label="Charges" value={fmtInr(charges, { decimals: 0 })} color={C.textSoft} sub="brokerage, taxes, exchange fees" />
             </div>
             {state && <LossCapBar used={Math.max(0, -net)} cap={state.caps.dailyLossCap} />}
             <p style={{ margin: "14px 0 0", fontSize: 12.5, color: C.muted, lineHeight: 1.55 }}>
