@@ -12,6 +12,10 @@ export interface SizingInput {
   /** Premium already deployed in open positions, rupees. */
   openPremiumRupees: number;
   settings: EngineSettings;
+  /** Free cash for new premium (small accounts); no cash cap when undefined. */
+  cashRupees?: number;
+  /** Round-trip charges reserved per lot from the free cash. */
+  chargeReservePerLot?: number;
 }
 
 export interface SizingResult {
@@ -54,6 +58,7 @@ export function sizePosition(i: SizingInput, cfg: EngineConfig): SizingResult {
     ["max lots per order (settings)", i.settings.maxLotsPerOrder],
   ];
   if (i.contract.freezeQty && i.contract.freezeQty > 0) caps.push(["exchange freeze quantity", Math.floor(i.contract.freezeQty / i.contract.lotSize)]);
+  if (i.cashRupees !== undefined) caps.push(["cash available", Math.floor(Math.max(0, i.cashRupees) / (unit + Math.max(0, i.chargeReservePerLot ?? 0)))]);
   let lots = Infinity;
   let limitedBy = "";
   for (const [name, n] of caps) {

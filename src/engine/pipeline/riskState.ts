@@ -53,7 +53,7 @@ export async function loadRiskState(repo: Repository, cfg: EngineConfig, setting
   for (const p of closedToday) {
     if (p.exitReason === "STOP" && p.exitMs !== undefined && (lastStopOutMs[p.index] ?? 0) < p.exitMs) lastStopOutMs[p.index] = p.exitMs;
   }
-  return {
+  const state: RiskState = {
     nowMs,
     settings,
     capitalRupees: cfg.capitalRupees,
@@ -64,4 +64,12 @@ export async function loadRiskState(repo: Repository, cfg: EngineConfig, setting
     entriesToday,
     lastStopOutMs,
   };
+  if (cfg.sizing.useCurrentEquity) {
+    // Small accounts size from what they have: capital plus prior net P&L, and only the cash not
+    // already tied up in open premium (entry charges are already in today's charges).
+    const openPremium = openPositions.reduce((s, p) => s + p.avgEntry * p.qty, 0);
+    state.capitalRupees = day.startEquity;
+    state.cashRupees = day.startEquity + day.realized - day.charges - openPremium;
+  }
+  return state;
 }

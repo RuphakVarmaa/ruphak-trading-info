@@ -759,6 +759,8 @@ export interface RiskState {
   entriesToday: Record<IndexId, number>;
   /** Last stop-out time per index, for cooldowns. */
   lastStopOutMs: Partial<Record<IndexId, number>>;
+  /** Free cash for new premium when sizing from current equity (small accounts). */
+  cashRupees?: number;
 }
 
 export interface Heartbeat {

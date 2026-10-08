@@ -4,10 +4,11 @@
  * when the conviction and every applicable gate pass and sizing yields at least one lot.
  */
 import type { TradingCalendar } from "../calendar/calendar";
-import { MINUTE_MS } from "../clock";
+import { MINUTE_MS, istDate } from "../clock";
 import type { EngineConfig } from "../config";
 import { yearsToExpiry } from "../pricing/timeToExpiry";
 import { syntheticVol } from "../pricing/syntheticOptionPricer";
+import { roundTripChargesPerUnit } from "../broker/charges";
 import { marketableLimit, quoteProblem } from "../broker/fillModel";
 import type { IdGenerator, InstrumentProvider, OptionQuoteSource } from "../ports";
 import type {
@@ -16,17 +17,19 @@ import type {
   GateResult,
   IndexId,
   MarketFeatures,
+  OptionContract,
   PlanDecision,
   Position,
+  Quote,
   RiskState,
   SignalPerformance,
   TradePlan,
 } from "../types";
-import { riskGates } from "../risk/limits";
+import { dailyLoss, riskGates } from "../risk/limits";
 import { attributionShares, dominantSource, findPerf } from "./conviction";
 import { convictionGate, edgeGates, evaluateEdge, eventFreshnessGate, liquidityGates, sessionGates, squareOffMs, type EdgeResult } from "./gates";
 import { indicatorView } from "../market/features";
-import { chooseContract } from "./optionSelect";
+import { chooseContract, choosePremiumBandContract } from "./optionSelect";
 import { sizePosition } from "./sizing";
 
 export interface PlanContext {
@@ -84,11 +87,57 @@ export async function planEntry(a: PlanArgs, ctx: PlanContext): Promise<PlanDeci
     return decision;
   }
 
+  const quoteOpts = (c: OptionContract) => ({
+    tickSize: c.tickSize,
+    slippageTicksMarket: cfg.broker.slippageTicksMarket,
+    depthLevels: cfg.broker.partialFillDepthLevels,
+    maxQuoteAgeMs: cfg.gates.maxDataAgeSec * 1000,
+  });
+  const perf = findPerf(a.perf, dom, index);
+  const chargeReservePerLot = (premium: number, oc: OptionContract) =>
+    a.risk.cashRupees === undefined ? 0 : roundTripChargesPerUnit(premium, oc.lotSize, oc.exchange, istDate(t)) * oc.lotSize;
+  const sizeFor = (premium: number, oc: OptionContract) =>
+    sizePosition(
+      {
+        premium,
+        contract: oc,
+        perf,
+        sizeMult: c.sizeMult,
+        capitalRupees: a.risk.capitalRupees,
+        openPremiumRupees: openPremium(a.risk.openPositions),
+        settings: a.risk.settings,
+        cashRupees: a.risk.cashRupees,
+        chargeReservePerLot: chargeReservePerLot(premium, oc),
+      },
+      cfg,
+    );
+
   // Suggested contract and its economics, computed even when a gate fails (for display).
-  const contract = await chooseContract(index, f.spot, side, t, ctx.instruments, ctx.calendar, cfg);
+  let contract: OptionContract | null;
+  let bandQuote: Quote | null = null;
+  if (cfg.selection.mode === "PREMIUM_BAND") {
+    const pick = await choosePremiumBandContract({
+      index,
+      spot: f.spot,
+      vix: f.vix,
+      side,
+      t,
+      instruments: ctx.instruments,
+      optionQuotes: ctx.optionQuotes,
+      calendar: ctx.calendar,
+      cfg,
+      quoteOk: (q, c) => quoteProblem(q, t, quoteOpts(c)) === null,
+      affordable: (premium, c) => sizeFor(premium, c).lots >= 1,
+    });
+    contract = pick.contract;
+    bandQuote = pick.quote;
+    gates.push(pick.gate);
+  } else {
+    contract = await chooseContract(index, f.spot, side, t, ctx.instruments, ctx.calendar, cfg);
+  }
   decision.contract = contract;
   if (!contract) {
-    gates.push({ gate: "contract", label: "Contract available", passed: false, detail: "no listed contract for the ATM strike" });
+    gates.push({ gate: "contract", label: "Contract available", passed: false, detail: cfg.selection.mode === "PREMIUM_BAND" ? "no strike near the money" : "no listed contract for the ATM strike" });
     decision.gates = gates;
     decision.noPlanReason = "no contract";
     return decision;
@@ -97,13 +146,8 @@ export async function planEntry(a: PlanArgs, ctx: PlanContext): Promise<PlanDeci
   let premium: number | null = null;
   let limitPrice: number | null = null;
   try {
-    const q = await ctx.optionQuotes.quote(contract, { t, spot: f.spot, vix: f.vix });
-    const problem = quoteProblem(q, t, {
-      tickSize: contract.tickSize,
-      slippageTicksMarket: cfg.broker.slippageTicksMarket,
-      depthLevels: cfg.broker.partialFillDepthLevels,
-      maxQuoteAgeMs: cfg.gates.maxDataAgeSec * 1000,
-    });
+    const q = bandQuote ?? (await ctx.optionQuotes.quote(contract, { t, spot: f.spot, vix: f.vix }));
+    const problem = quoteProblem(q, t, quoteOpts(contract));
     gates.push({ gate: "quote", label: "Usable option quote", passed: problem === null, detail: problem ?? `${q.source} bid ${q.bid} / ask ${q.ask}` });
     if (problem === null) {
       premium = q.ask;
@@ -128,24 +172,25 @@ export async function planEntry(a: PlanArgs, ctx: PlanContext): Promise<PlanDeci
     return decision;
   }
 
-  const size = sizePosition(
-    {
-      premium,
-      contract,
-      perf: findPerf(a.perf, dom, index),
-      sizeMult: c.sizeMult,
-      capitalRupees: a.risk.capitalRupees,
-      openPremiumRupees: openPremium(a.risk.openPositions),
-      settings: a.risk.settings,
-    },
-    cfg,
-  );
+  const size = sizeFor(premium, contract);
   gates.push({
     gate: "size",
     label: "At least one lot within risk limits",
     passed: size.lots >= 1,
     detail: size.lots >= 1 ? `${size.lots} lot(s), ₹${Math.round(size.riskRupees).toLocaleString("en-IN")} at risk (${size.limitedBy})` : `0 lots (${size.limitedBy})`,
   });
+  if (cfg.risk.prospectiveLossCap && size.lots >= 1) {
+    // Small accounts: a stop-out on this trade must not push today's loss past the daily cap.
+    const cap = Math.min(a.risk.settings.dailyLossCapInr, (a.risk.capitalRupees * cfg.risk.dailyLossCapPct) / 100);
+    const lost = dailyLoss(a.risk);
+    const atRisk = size.riskRupees + chargeReservePerLot(premium, contract) * size.lots;
+    gates.push({
+      gate: "loss_room",
+      label: "Room under the daily loss cap",
+      passed: lost + atRisk <= cap,
+      detail: `₹${Math.round(lost)} lost today + ₹${Math.round(atRisk)} at risk vs cap ₹${Math.round(cap)}`,
+    });
+  }
   decision.gates = gates;
 
   if (!allPass(gates)) {
