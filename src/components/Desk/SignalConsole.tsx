@@ -72,7 +72,7 @@ function SignalCard({ index, signal, loaded }: { index: IndexId; signal: SignalV
                 {fmtNum(signal.spot)}
               </span>
             )}
-            {quote && (
+            {quote && quote.change != null && quote.changePct != null && (
               <span className="tnum" style={{ fontSize: 12, fontFamily: "var(--font-num)", fontWeight: 700, color: dirColor(quote.change) }}>
                 {dirGlyph(quote.change)}
                 {fmtPct(Math.abs(quote.changePct), 2, false)}

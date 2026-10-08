@@ -225,12 +225,9 @@ export function isPastSkip(price: number, skip: SkipRule): boolean {
   return skip.above ? price > skip.level : price < skip.level;
 }
 
-/**
- * The engine's own limit price for the entry order, once tickets carry it (`entry.limitPrice`, being
- * added on the engine side); null until then. The only place that reads it: drop the cast after merging.
- */
+/** The engine's own limit price for the entry order (`entry.limitPrice`); null for market orders. */
 export function engineEntryLimit(t: CopyTicketView): number | null {
-  const v = (t.entry as { limitPrice?: number | null }).limitPrice;
+  const v = t.entry.limitPrice;
   return typeof v === "number" && Number.isFinite(v) && v > 0 ? v : null;
 }
 

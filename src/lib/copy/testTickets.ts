@@ -55,7 +55,7 @@ export function niftyTicket(o: Over = {}): CopyTicketView {
     expiryLabel: "Tue 13 Oct",
     qty: 65,
     lots: 1,
-    entry: { at: at("10:05:02"), premium: 142.5, costRupees: 9262.5, charges: 22.6, priceSource: "model", spot: 22588, skipBeyondSpot: 22631.4 },
+    entry: { at: at("10:05:02"), premium: 142.5, limitPrice: null, costRupees: 9262.5, charges: 22.6, priceSource: "model", spot: 22588, skipBeyondSpot: 22631.4 },
     levels: {
       stopPct: -30,
       stop: 99.75,
@@ -107,7 +107,7 @@ export function sensexTicket(o: Over = {}): CopyTicketView {
     expiryLabel: "Thu 15 Oct",
     qty: 20,
     lots: 1,
-    entry: { at: at("10:20:00"), premium: 168.35, costRupees: 3367, charges: 21.8, priceSource: "broker", spot: 81320, skipBeyondSpot: 81233.6 },
+    entry: { at: at("10:20:00"), premium: 168.35, limitPrice: null, costRupees: 3367, charges: 21.8, priceSource: "broker", spot: 81320, skipBeyondSpot: 81233.6 },
     levels: {
       stopPct: -35,
       stop: 109.43,

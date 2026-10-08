@@ -9,7 +9,7 @@ import { Dot, Skeleton } from "@/components/shared/ui";
 function QuoteCard({ q, open }: { q: IndexQuote; open: boolean }) {
   const now = useNow();
   const ageMs = now != null ? Math.max(0, now - Date.parse(q.asOf)) : null;
-  const color = dirColor(q.change);
+  const color = q.change == null ? C.muted : dirColor(q.change);
   const decimals = q.key === "USDINR" ? 3 : 2;
   return (
     <div
@@ -24,7 +24,13 @@ function QuoteCard({ q, open }: { q: IndexQuote; open: boolean }) {
         {fmtNum(q.price, decimals)}
       </div>
       <div className="tnum" style={{ fontSize: 12, fontWeight: 700, fontFamily: "var(--font-num)", color, marginTop: 2, whiteSpace: "nowrap" }}>
-        {dirGlyph(q.change)} {fmtNum(Math.abs(q.change), decimals)} ({fmtPct(Math.abs(q.changePct), 2, false)})
+        {q.change == null || q.changePct == null ? (
+          <span title="No previous close from the source yet">— no previous close</span>
+        ) : (
+          <>
+            {dirGlyph(q.change)} {fmtNum(Math.abs(q.change), decimals)} ({fmtPct(Math.abs(q.changePct), 2, false)})
+          </>
+        )}
       </div>
     </div>
   );
