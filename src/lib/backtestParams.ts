@@ -1,10 +1,52 @@
 /** Backtest form defaults and URL query (de)serialization shared by the page and its client. */
+import { ACCOUNTS, parseAccountId, type AccountId } from "@/engine/accounts";
 import type { BacktestParams } from "@/engine/api-types";
+import { DEFAULT_CONFIG } from "@/engine/config";
 import { addDays, isIsoDate } from "@/lib/ist";
 
-export function defaultBacktestParams(todayIst: string): BacktestParams {
+/** One paper account as the backtest form offers it, read from the engine's account registry. */
+export interface BacktestAccount {
+  id: AccountId;
+  label: string;
+  shortLabel: string;
+  capitalRupees: number;
+  /** The account's own default stop and target, percent of the option premium. */
+  stopPct: number;
+  targetPct: number;
+}
+
+/** Every account in src/engine/accounts.ts, main first: a new account appears here without a code change. */
+export const BACKTEST_ACCOUNTS: readonly BacktestAccount[] = (Object.keys(ACCOUNTS) as AccountId[]).map((id) => {
+  const spec = ACCOUNTS[id];
+  const patch = spec.configPatch;
+  return {
+    id,
+    label: spec.label,
+    shortLabel: spec.shortLabel,
+    capitalRupees: patch.capitalRupees ?? DEFAULT_CONFIG.capitalRupees,
+    stopPct: patch.exits?.stopPct ?? DEFAULT_CONFIG.exits.stopPct,
+    targetPct: patch.exits?.targetPct ?? DEFAULT_CONFIG.exits.targetPct,
+  };
+});
+
+/** The account's form entry; unknown ids fall back to main. */
+export function backtestAccount(id: string | undefined): BacktestAccount {
+  return BACKTEST_ACCOUNTS.find((a) => a.id === id) ?? BACKTEST_ACCOUNTS.find((a) => a.id === "main") ?? BACKTEST_ACCOUNTS[0];
+}
+
+export function defaultBacktestParams(todayIst: string, account?: string): BacktestParams {
   const to = addDays(todayIst, -1);
-  return { from: addDays(to, -90), to, index: "BOTH", thresholdDelta: 0, stopPct: -30, targetPct: 50, noEvents: false };
+  const a = backtestAccount(account);
+  return {
+    from: addDays(to, -90),
+    to,
+    index: "BOTH",
+    thresholdDelta: 0,
+    stopPct: a.stopPct,
+    targetPct: a.targetPct,
+    noEvents: false,
+    ...(a.id !== "main" ? { account: a.id } : {}),
+  };
 }
 
 type Query = Record<string, string | string[] | undefined>;
@@ -16,9 +58,10 @@ function num(v: string | undefined, lo: number, hi: number, def: number): number
   return Number.isFinite(n) && n >= lo && n <= hi ? n : def;
 }
 
-/** Lenient: anything invalid falls back to the default for that field. */
+/** Lenient: anything invalid falls back to the default for that field (an unknown account means main). */
 export function paramsFromQuery(q: Query, todayIst: string): BacktestParams {
-  const d = defaultBacktestParams(todayIst);
+  const account = parseAccountId(first(q.account)) ?? "main";
+  const d = defaultBacktestParams(todayIst, account);
   const from = first(q.from);
   const to = first(q.to);
   const index = first(q.index);
@@ -30,7 +73,7 @@ export function paramsFromQuery(q: Query, todayIst: string): BacktestParams {
     stopPct: num(first(q.stopPct), -90, -5, d.stopPct),
     targetPct: num(first(q.targetPct), 5, 300, d.targetPct),
     noEvents: first(q.noEvents) === "1" || first(q.noEvents) === "true",
-    ...(first(q.account) === "small10k" ? { account: "small10k" } : {}),
+    ...(account !== "main" ? { account } : {}),
   };
 }
 

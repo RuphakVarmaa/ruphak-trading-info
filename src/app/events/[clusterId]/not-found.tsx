@@ -6,7 +6,7 @@ export default function EventNotFound() {
   return (
     <div style={{ minHeight: "100vh", background: C.bg, color: C.text, display: "flex", alignItems: "center", justifyContent: "center", padding: 30 }}>
       <div style={{ maxWidth: 520, textAlign: "center", display: "flex", flexDirection: "column", gap: 14 }}>
-        <div style={{ fontSize: 13, color: C.gold, fontWeight: 600 }}>404 · Event not found</div>
+        <div style={{ fontSize: 13, color: C.gold, fontWeight: 600 }}>Event not found</div>
         <h1 style={{ margin: 0, fontSize: "clamp(28px, 4vw, 38px)", fontWeight: 500, fontFamily: SERIF, letterSpacing: "-0.02em", color: C.textStrong }}>
           This event cluster does not exist
         </h1>
