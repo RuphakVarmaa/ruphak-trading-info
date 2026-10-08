@@ -87,7 +87,7 @@
     "MAX_TRADES_PER_DAY": "8",
     // Paper accounts to run, comma-separated; main is always on. "small10k" adds the ₹10,000 account
     // that follows main's signals with one cheaper out-of-the-money lot (src/engine/accounts.ts).
-    "ACCOUNTS": "main"
+    "ACCOUNTS": "main,small10k"
   },
   "env": {
     "preview": {

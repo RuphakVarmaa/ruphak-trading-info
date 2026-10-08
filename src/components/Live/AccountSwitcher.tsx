@@ -31,7 +31,7 @@ export default function AccountSwitcher() {
               borderLeft: a.id === accounts[0].id ? "none" : `1px solid ${C.border}`,
             }}
           >
-            {a.shortLabel} · {fmtCapital(a.capitalRupees)}
+            {a.shortLabel === fmtCapital(a.capitalRupees) ? a.shortLabel : `${a.shortLabel} · ${fmtCapital(a.capitalRupees)}`}
           </Link>
         );
       })}
