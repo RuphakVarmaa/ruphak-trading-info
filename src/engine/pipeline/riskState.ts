@@ -53,21 +53,25 @@ export async function loadDayLedger(repo: Repository, cfg: EngineConfig, nowMs: 
 
 export async function loadRiskState(repo: Repository, cfg: EngineConfig, settings: EngineSettings, nowMs: number, mode: TradingMode): Promise<RiskState> {
   const date = istDate(nowMs);
-  const day = await loadDayLedger(repo, cfg, nowMs, mode);
-  const week = await repo.ledger.range(istWeekStart(nowMs), date, mode);
+  // Independent reads, sent together (each is a D1 round trip in the Worker).
+  const [day, week, openPositions, orders, closedToday, openOrders] = await Promise.all([
+    loadDayLedger(repo, cfg, nowMs, mode),
+    repo.ledger.range(istWeekStart(nowMs), date, mode),
+    repo.positions.open(mode),
+    repo.orders.between(istMidnight(date), nowMs, mode),
+    repo.positions.closedBetween(istMidnight(date), nowMs, mode),
+    repo.orders.open(mode),
+  ]);
   const weekRealized = week.filter((l) => l.date !== date).reduce((s, l) => s + l.realized - l.charges, 0) + (day.realized - day.charges);
-  const openPositions = await repo.positions.open(mode);
   day.unrealized = openPositions.reduce((s, p) => s + p.unrealized, 0);
-  const orders = await repo.orders.between(istMidnight(date), nowMs, mode);
   const entriesToday: Record<IndexId, number> = { NIFTY: 0, SENSEX: 0 };
   for (const o of orders) if (o.reason === "ENTRY" && o.filledQty > 0) entriesToday[o.contract.index]++;
-  const closedToday = await repo.positions.closedBetween(istMidnight(date), nowMs, mode);
   const lastStopOutMs: Partial<Record<IndexId, number>> = {};
   for (const p of closedToday) {
     if (p.exitReason === "STOP" && p.exitMs !== undefined && (lastStopOutMs[p.index] ?? 0) < p.exitMs) lastStopOutMs[p.index] = p.exitMs;
   }
   // Entries still working without a fill: a partly filled one already has its position.
-  const pendingEntries = (await repo.orders.open(mode)).filter(isPendingEntry).map(pendingEntry);
+  const pendingEntries = openOrders.filter(isPendingEntry).map(pendingEntry);
   const state: RiskState = {
     nowMs,
     settings,

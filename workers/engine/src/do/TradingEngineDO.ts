@@ -31,6 +31,7 @@ import type { EngineConfig } from "../../../../src/engine/config";
 import { computeFeatures } from "../../../../src/engine/market/features";
 import { YahooMarketDataSource } from "../../../../src/engine/market/yahooMarketData";
 import { runFollowerEntries } from "../../../../src/engine/pipeline/accountCycle";
+import { mainExitsFirst } from "../../../../src/engine/pipeline/tickOrder";
 import { runEndOfDay } from "../../../../src/engine/pipeline/dayLifecycle";
 import { applyExitFills, persistResult } from "../../../../src/engine/pipeline/execution";
 import { recordSourceHealth } from "../../../../src/engine/pipeline/ingestCycle";
@@ -414,10 +415,6 @@ export class TradingEngineDO extends DurableObject<Env> {
     }
     if (report.halted) await this.alerts.send(`⏸ Entries halted: ${report.halted}`, { key: `halt:${istDate(now)}:${report.halted.slice(0, 40)}`, minIntervalMs: 6 * 60 * MINUTE_MS });
 
-    // Follower accounts act on the same signals; only main being degraded stops their entries
-    // (relay health is a LIVE concern and they are paper-only).
-    for (const f of this.followers) await this.followerEntries(f, report, cal, degraded ? "engine DEGRADED after repeated errors: exits only" : null);
-
     // Exits for every book with exposure (PAPER always; LIVE whenever it holds anything).
     let counts = await this.openCounts();
     const books = (): BookMode[] => {
@@ -427,8 +424,17 @@ export class TradingEngineDO extends DurableObject<Env> {
       return out;
     };
     const followersOpen = async () => (await Promise.all(this.followers.map((f) => this.followerOpen(f)))).reduce((a, b) => a + b, 0);
-    for (const book of books()) await this.positionCycle(book, report);
-    for (const f of this.followers) await this.followerPositions(f, report, cal);
+    // Main's exit check first; then the follower accounts act on the same signals (only main being
+    // degraded stops their entries: relay health is a LIVE concern and they are paper-only).
+    await mainExitsFirst({
+      mainExits: async () => {
+        for (const book of books()) await this.positionCycle(book, report);
+      },
+      followers: this.followers.map((f) => ({
+        entries: () => this.followerEntries(f, report, cal, degraded ? "engine DEGRADED after repeated errors: exits only" : null),
+        exits: () => this.followerPositions(f, report, cal),
+      })),
+    });
     counts = await this.openCounts();
     for (const wait of EXIT_POLLS_MS) {
       if (books().length === 0 && (await followersOpen()) === 0) break;

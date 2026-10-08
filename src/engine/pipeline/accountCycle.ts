@@ -49,7 +49,7 @@ export async function runFollowerEntries(deps: EngineDeps, signals: CycleReport,
     if (!features || !conviction) continue;
     try {
       const pressure = signals.pressure[index] ?? null;
-      const decision = await planEntry({ index, t: now, features, pressure, conviction, risk, perf }, { ...deps, calendar });
+      const decision = await planEntry({ index, t: now, features, pressure, conviction, risk, perf }, { ...deps, calendar, accountChecksFirst: true });
       report.decisions.push(decision);
       if (await shouldPersistDecision(deps, decision, opts.decisionEveryMs ?? 5 * MINUTE_MS)) await repo.decisions.append(decision);
 

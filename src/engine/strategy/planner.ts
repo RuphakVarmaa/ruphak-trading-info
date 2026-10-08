@@ -38,6 +38,11 @@ export interface PlanContext {
   instruments: InstrumentProvider;
   optionQuotes: OptionQuoteSource;
   newId: IdGenerator;
+  /**
+   * Follower accounts: when an account check fails (kill switch, loss caps, loss streak, entries or
+   * positions used up, cooldown), return before the strike search, so no option quotes are fetched.
+   */
+  accountChecksFirst?: boolean;
 }
 
 export interface PlanArgs {
@@ -78,12 +83,19 @@ export async function planEntry(a: PlanArgs, ctx: PlanContext): Promise<PlanDeci
   const side = c.score >= 0 ? "BULL" : "BEAR";
   const dom = dominantSource(c);
   gates.push(eventFreshnessGate(dom, a.pressure, cfg));
-  gates.push(...riskGates(index, side, a.risk, cfg));
+  const accountChecks = riskGates(index, side, a.risk, cfg);
+  gates.push(...accountChecks);
 
   const marketOpen = ctx.calendar.sessionPhase(t) === "OPEN";
   if (!marketOpen) {
     decision.gates = gates;
     decision.noPlanReason = "market closed";
+    return decision;
+  }
+  if (ctx.accountChecksFirst && accountChecks.some((g) => g.passed === false)) {
+    decision.gates = gates;
+    const failed = gates.find((g) => g.passed === false)!;
+    decision.noPlanReason = failed.gate === "conviction" ? "conviction below threshold" : `${failed.label}: ${failed.detail}`;
     return decision;
   }
 
