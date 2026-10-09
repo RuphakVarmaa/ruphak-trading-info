@@ -43,6 +43,7 @@ import { randomId, type Broker, type EngineDeps, type OptionQuoteSource, type Re
 import { entryMode } from "../../../../src/engine/settings";
 import type { EngineMode, EnginePhase, EngineSettings, Fill, Heartbeat, IndexId, MarketFeatures, Order, Position, TradingMode } from "../../../../src/engine/types";
 import { makeRefId } from "../../../../src/engine/util/refId";
+import { runBarArchive, type BarArchiveOptions, type BarArchiveStatus } from "../barArchive";
 import { sendEntryAlert, sendExitAlert, sendTrailAlerts, type CopyAlertContext } from "../copyAlerts";
 import { CachedInstruments } from "../instruments";
 import { accountRuntime, accountViews, enabledAccounts, errorMessage, growwDataClient, makeRuntime, relayClient, type AccountRuntime, type Runtime } from "../runtime";
@@ -113,6 +114,8 @@ export class TradingEngineDO extends DurableObject<Env> {
   /** Set inside a tick when the next tick must follow immediately (kill switch engaged mid-tick). */
   private tickSoon = false;
   private readonly followers: Follower[];
+  /** The running bar-archive job, if any (concurrent callers share it). */
+  private archiving: Promise<BarArchiveStatus> | null = null;
 
   constructor(ctx: DurableObjectState, env: Env) {
     super(ctx, env);
@@ -678,6 +681,29 @@ export class TradingEngineDO extends DurableObject<Env> {
     }
     await this.alerts.send(`📊 ${istDate(now)} summary\n${lines.join("\n")}`);
     return { ok: true, message: lines.join(" | ") };
+  }
+
+  /**
+   * 16:15 IST on trading days (cron ARCHIVE, POST /ops/archive): appends the settled 5-minute bars this
+   * DO's market-data source holds to D1 bars_5m (workers/engine/src/barArchive.ts). It runs outside the
+   * alarm loop and never throws, so a failure cannot stop trading or count toward DEGRADED; the outcome
+   * is logged and kept in KV.
+   */
+  archiveBars(opts: BarArchiveOptions = {}): Promise<BarArchiveStatus> {
+    if (!this.archiving) {
+      this.archiving = (async () => {
+        let calendar = this.rt.calendar;
+        try {
+          calendar = this.calendarFor(await this.rt.repo.settings.get());
+        } catch (err) {
+          this.rt.logger.warn("bar archive: settings unavailable, using the bundled holiday calendar", { error: errorMessage(err) });
+        }
+        return runBarArchive({ db: this.env.DB, kv: this.env.KV, source: this.market, calendar, logger: this.rt.logger }, opts);
+      })().finally(() => {
+        this.archiving = null;
+      });
+    }
+    return this.archiving;
   }
 
   async setArmed(armed: boolean, actor: string): Promise<AdminResult> {

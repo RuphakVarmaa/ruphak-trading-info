@@ -23,6 +23,8 @@
       "40 2 * * MON-FRI",
       "0 3 * * MON-FRI",
       "30 10 * * MON-FRI",
+      // 16:15 IST: append the session's settled 5-minute bars to D1 bars_5m (docs/DATA.md).
+      "45 10 * * MON-FRI",
       "30 14 * * *"
     ]
   },

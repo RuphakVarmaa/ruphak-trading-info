@@ -5,6 +5,7 @@
  */
 import { istDate } from "../../../src/engine/clock";
 import { timingSafeEqual } from "../../../src/engine/util/hash";
+import { BAR_ARCHIVE_STATUS_KEY, recordBarArchiveFailure } from "./barArchive";
 import type { ScoreMessage } from "./do/IngestDO";
 import { refreshInstruments } from "./instruments";
 import { ENGINE_VERSION, errorMessage, makeRuntime } from "./runtime";
@@ -28,6 +29,8 @@ export const CRONS = {
   INSTRUMENTS: "40 2 * * MON-FRI",
   PREMARKET: "0 3 * * MON-FRI",
   POSTMARKET: "30 10 * * MON-FRI",
+  /** 16:15 IST: append the session's settled 5-minute bars to D1 bars_5m (barArchive.ts). */
+  ARCHIVE: "45 10 * * MON-FRI",
   NIGHTLY: "30 14 * * *",
   PREVIEW: "*/30 * * * *",
 } as const;
@@ -64,6 +67,17 @@ async function runCron(cron: string, env: Env): Promise<void> {
       return;
     case CRONS.POSTMARKET:
       if (tradingDay) await engine(env).endOfDay();
+      return;
+    case CRONS.ARCHIVE:
+      // The DO job never throws; this catch covers the call itself (e.g. the DO restarting).
+      if (tradingDay) {
+        try {
+          await engine(env).archiveBars();
+        } catch (err) {
+          rt.logger.error("bar archive call failed", { error: errorMessage(err) });
+          await recordBarArchiveFailure(env.KV, `engine DO call failed: ${errorMessage(err)}`, now, rt.logger);
+        }
+      }
       return;
     case CRONS.NIGHTLY: {
       const pruned = await rt.repo.prune(now);
@@ -128,6 +142,11 @@ async function handleFetch(req: Request, env: Env): Promise<Response> {
           return Response.json(await engine(env).premarket());
         case "/ops/eod":
           return Response.json(await engine(env).endOfDay());
+        case "/ops/archive":
+          // ?full=1 compares everything the source holds (fills older holes); ?force=1 runs on a non-trading day.
+          return Response.json(await engine(env).archiveBars({ full: url.searchParams.get("full") === "1", force: url.searchParams.get("force") === "1" }));
+        case "/ops/archive-status":
+          return Response.json((await env.KV.get(BAR_ARCHIVE_STATUS_KEY, "json")) ?? { ok: false, error: "no bar archive run recorded yet" });
         case "/ops/status":
           return new Response(await engine(env).statusText());
         case "/ops/telegram-test": {
