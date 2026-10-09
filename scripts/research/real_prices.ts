@@ -256,25 +256,46 @@ function entryDelta(price: number, spot: number, strike: number, t: number, r: n
 
 const tradedWith = (r: BhavRow | undefined, field: "open" | "close"): r is BhavRow => !!r && r.contracts > 0 && r[field] !== null && (r[field] as number) > 0;
 
+/**
+ * A print below 10% of its reference price while the index moved less than 3% is an erroneous
+ * trade, not a market move (e.g. SENSEX 65500 CE and PE both "opening" at 2.05 on 2023-09-04
+ * against day VWAPs of 334 and 259).
+ */
+export function badPrint(price: number, ref: number | null | undefined, indexMove: number | null): boolean {
+  return ref !== null && ref !== undefined && ref > 0 && price < 0.1 * ref && indexMove !== null && Math.abs(indexMove) < 0.03;
+}
+
+/** Legs dropped by the bad-print filter in the last buildLegs call (for the report). */
+export const droppedBadPrints: string[] = [];
+
 /** All day and night ATM legs for one index over the loaded dates (special sessions excluded). */
 export function buildLegs(data: ResearchData, idx: ResearchIndex, from: string, to: string): Leg[] {
   const { book } = data;
   const r = data.cfg.pricing.r;
   const legs: Leg[] = [];
-  for (const date of book.dates(idx.id)) {
-    if (date < from || date > to || data.special.has(date)) continue;
+  const dates = book.dates(idx.id);
+  dates.forEach((date, i) => {
+    if (date < from || date > to || data.special.has(date)) return;
     const expiry = nextExpiry(book, idx.id, date);
-    if (!expiry) continue;
+    if (!expiry) return;
     const strikes = book.strikes(idx.id, date, expiry);
     const dte = book.sessionsToExpiry(idx.id, date, expiry);
     // Day leg: buy at the open, sell at the close.
     const so = spotOpen(data, idx, date);
     const sc = spotClose(data, idx, date);
+    const prev = i > 0 ? dates[i - 1] : undefined;
+    const prevSpot = prev ? spotClose(data, idx, prev) : null;
     if (so && sc) {
       const k = nearestStrike(strikes, so);
       const c = k === null ? undefined : book.option(idx.id, date, expiry, k, "CE");
       const p = k === null ? undefined : book.option(idx.id, date, expiry, k, "PE");
-      if (k !== null && tradedWith(c, "open") && tradedWith(c, "close") && tradedWith(p, "open") && tradedWith(p, "close")) {
+      const gap = prevSpot ? so / prevSpot - 1 : null;
+      const bad =
+        k !== null &&
+        prev !== undefined &&
+        [c, p].some((x) => x?.open && badPrint(x.open, book.option(idx.id, prev, expiry, k, x.type!)?.close, gap));
+      if (bad) droppedBadPrints.push(`${idx.id} day ${date}`);
+      if (!bad && k !== null && tradedWith(c, "open") && tradedWith(c, "close") && tradedWith(p, "open") && tradedWith(p, "close")) {
         const t = tYears(data, date, "09:15", expiry);
         legs.push({
           index: idx.id,
@@ -297,16 +318,20 @@ export function buildLegs(data: ResearchData, idx: ResearchIndex, from: string, 
     }
     // Night leg: sell/buy at today's close, reverse at the next session's open (same contract).
     const next = book.nextDate(idx.id, date);
-    if (!next || next > to || data.special.has(next) || !sc) continue;
+    if (!next || next > to || data.special.has(next) || !sc) return;
     const so1 = spotOpen(data, idx, next);
-    if (!so1) continue;
+    if (!so1) return;
     const k = nearestStrike(strikes, sc);
-    if (k === null) continue;
+    if (k === null) return;
     const c0 = book.option(idx.id, date, expiry, k, "CE");
     const p0 = book.option(idx.id, date, expiry, k, "PE");
     const c1 = book.option(idx.id, next, expiry, k, "CE");
     const p1 = book.option(idx.id, next, expiry, k, "PE");
-    if (!tradedWith(c0, "close") || !tradedWith(p0, "close") || !tradedWith(c1, "open") || !tradedWith(p1, "open")) continue;
+    if (!tradedWith(c0, "close") || !tradedWith(p0, "close") || !tradedWith(c1, "open") || !tradedWith(p1, "open")) return;
+    if (badPrint(c1.open!, c0.close, so1 / sc - 1) || badPrint(p1.open!, p0.close, so1 / sc - 1)) {
+      droppedBadPrints.push(`${idx.id} night ${date}`);
+      return;
+    }
     const t = tYears(data, date, "15:15", expiry);
     legs.push({
       index: idx.id,
@@ -325,7 +350,7 @@ export function buildLegs(data: ResearchData, idx: ResearchIndex, from: string, 
       sEntry: sc,
       sExit: so1,
     });
-  }
+  });
   return legs;
 }
 
@@ -739,17 +764,25 @@ function calibrate(data: ResearchData, fitFrom: string, fitTo: string, reportTo:
     out.push(`\nBy year:\n\n${md(yr)}`);
     // Skew.
     const sk = skewObservations(data, idx, fit.filter((o) => o.dte <= 6));
-    const fitted = fitSkew(sk);
-    result.skew[idx.id] = { ...fitted, a: Math.round(fitted.a * 10_000) / 10_000, b: Math.round(fitted.b * 10_000) / 10_000 };
-    const skRows: (string | number)[][] = [["strikes from ATM", "n", "IV / ATM IV (median)", "median z", "fitted 1 + a z + b z^2"]];
+    // Each wing separately: puts (z < 0) and calls (z > 0).
+    const put = fitSkew(sk, -4, 0);
+    const call = fitSkew(sk, 0, 3);
+    const r4 = (x: number) => Math.round(x * 10_000) / 10_000;
+    result.skew[`${idx.id}.put`] = { ...put, a: r4(put.a), b: r4(put.b) };
+    result.skew[`${idx.id}.call`] = { ...call, a: r4(call.a), b: r4(call.b) };
+    const wing = (z: number) => (z < 0 ? 1 + put.a * z + put.b * z * z : 1 + call.a * z + call.b * z * z);
+    const skRows: (string | number)[][] = [["strikes from ATM", "n", "IV / ATM IV (median)", "median z", "fitted wing"]];
     for (let s = -8; s <= 8; s++) {
       if (s === 0) continue;
       const xs = sk.filter((o) => o.steps === s);
       if (xs.length < 20) continue;
       const z = median(xs.map((o) => o.z));
-      skRows.push([s, xs.length, fx(median(xs.map((o) => o.ratio)), 3), fx(z, 2), fx(1 + fitted.a * z + fitted.b * z * z, 3)]);
+      skRows.push([s, xs.length, fx(median(xs.map((o) => o.ratio)), 3), fx(z, 2), fx(wing(z), 3)]);
     }
-    out.push(`\nSmile at the close (OTM puts below the forward, OTM calls above; sessions to expiry 1-6): fit a = ${fx(fitted.a, 4)}, b = ${fx(fitted.b, 4)} on ${fitted.n} points (z in [${fitted.zMin}, ${fitted.zMax}])\n\n${md(skRows)}`);
+    out.push(
+      `\nSmile at the close (OTM puts below the forward, OTM calls above; sessions to expiry 1-6), IV/ATM IV = 1 + a z + b z^2 per wing: ` +
+        `puts a = ${fx(put.a, 4)}, b = ${fx(put.b, 4)} (${put.n} points), calls a = ${fx(call.a, 4)}, b = ${fx(call.b, 4)} (${call.n} points)\n\n${md(skRows)}`,
+    );
     // Out-of-sample check of the multiplier (close obs): straddle pricing error, engine default vs calibrated.
     if (oos.length > 0) {
       const errs = (useCal: boolean) =>
@@ -954,7 +987,9 @@ async function main(): Promise<void> {
     }
     const nseSet = new Set(data.loaded.NSE);
     const bseSet = new Set(data.loaded.BSE);
-    const bseFrom = data.loaded.BSE[0] ?? "9999";
+    // Continuous BSE coverage starts at the first file followed by another within five days
+    // (isolated special-session files before the May 2023 SENSEX relaunch do not count).
+    const bseFrom = data.loaded.BSE.find((d, i, a) => a[i + 1] !== undefined && daysBetween(d, a[i + 1]) <= 5) ?? "9999";
     const bseGaps = data.loaded.NSE.filter((d) => d >= bseFrom && !bseSet.has(d));
     const nseGaps = data.loaded.BSE.filter((d) => !nseSet.has(d));
     let text = `### Coverage\n\n${md(rows)}\n\nNSE sessions without a BSE file (BSE archive gaps, from ${bseFrom}): ${bseGaps.length} (${bseGaps.join(", ")})\n\nBSE sessions without an NSE file: ${nseGaps.length} (${nseGaps.join(", ")})\n`;
@@ -994,7 +1029,7 @@ async function main(): Promise<void> {
     const legs = RESEARCH_INDICES.flatMap((idx) => buildLegs(data, idx, from, to));
     const { markdown, json } = replicationTables(legs);
     const diag = RESEARCH_INDICES.map((idx) => measurementDiagnostics(data, idx, from, to));
-    const text = `${markdown}\n${diag.map((d) => d.markdown).join("\n")}\n`;
+    const text = `${markdown}\n${diag.map((d) => d.markdown).join("\n")}\n\nLegs dropped as bad prints (price < 10% of its reference while the index moved < 3%): ${droppedBadPrints.length} (${droppedBadPrints.join(", ")}).\n`;
     console.log(text);
     save(outDir, "replication.md", text);
     save(outDir, "replication.json", JSON.stringify({ ...json, diagnostics: Object.fromEntries(RESEARCH_INDICES.map((idx, i) => [idx.id, diag[i].json])) }, null, 1));

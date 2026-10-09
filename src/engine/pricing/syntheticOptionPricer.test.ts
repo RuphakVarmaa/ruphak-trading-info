@@ -99,3 +99,45 @@ describe("syntheticQuote", () => {
     expect(q).toEqual(syntheticQuote(atmCall, { t, spot: 22603.05, vix: 13.65 }, cal, cfg));
   });
 });
+
+describe("calibrated implied vol (pricing.ivSource)", () => {
+  const calibrated = makeConfig({ pricing: { ivSource: "calibrated" } });
+  // 2026-10-07 11:00 to the 2026-10-13 expiry: 4 whole sessions left after today (8, 9, 12, 13 Oct).
+  const tYears = yearsToExpiry(t, "2026-10-13", cal, cfg);
+  const atTheForward = (spot: number, years: number) => spot * Math.exp(0.065 * years);
+
+  it("defaults to the India VIX source and ignores the contract context", () => {
+    expect(DEFAULT_CONFIG.pricing.ivSource).toBe("vix");
+    expect(syntheticVol("NIFTY", 14, cfg, { spot: 22603.05, strike: 22000, tYears })).toBeCloseTo(0.14, 12);
+    expect(syntheticVol("SENSEX", 14, cfg, { spot: 73000, strike: 74000, tYears })).toBeCloseTo(0.147, 12);
+  });
+
+  it("uses the per-index multiplier for the sessions left to expiry at the money", () => {
+    expect(syntheticVol("NIFTY", 14, calibrated, { spot: 22600, strike: atTheForward(22600, tYears), tYears })).toBeCloseTo(0.14 * 0.908, 9);
+    // One session left after today, and beyond the table (8 sessions) the last entry.
+    expect(syntheticVol("SENSEX", 14, calibrated, { spot: 73000, strike: atTheForward(73000, 1.6 / 252), tYears: 1.6 / 252 })).toBeCloseTo(0.14 * 0.908, 9);
+    expect(syntheticVol("SENSEX", 14, calibrated, { spot: 73000, strike: atTheForward(73000, 8.5 / 252), tYears: 8.5 / 252 })).toBeCloseTo(0.14 * 0.926, 9);
+    // Without a contract: the 3-session multiplier.
+    expect(syntheticVol("NIFTY", 14, calibrated)).toBeCloseTo(0.14 * 0.895, 12);
+    expect(syntheticVol("NIFTY", 0, calibrated)).toBe(0);
+  });
+
+  it("adds the smile: OTM puts dearer than ATM, near OTM calls cheaper", () => {
+    const atm = syntheticVol("NIFTY", 14, calibrated, { spot: 22600, strike: 22600, tYears });
+    expect(syntheticVol("NIFTY", 14, calibrated, { spot: 22600, strike: 22200, tYears })).toBeGreaterThan(atm);
+    expect(syntheticVol("NIFTY", 14, calibrated, { spot: 22600, strike: 22800, tYears })).toBeLessThan(atm);
+  });
+
+  it("makes ATM weekly quotes cheaper than the default model, as real premiums are", () => {
+    const ctx = { t, spot: 22603.05, vix: 13.65 };
+    const real = syntheticQuote(atmCall, ctx, cal, calibrated);
+    const dflt = syntheticQuote(atmCall, ctx, cal, cfg);
+    expect(real.ask).toBeLessThan(dflt.ask);
+    expect(real.iv).toBeCloseTo(syntheticVol("NIFTY", 13.65, calibrated, { spot: 22603.05, strike: 22600, tYears }) * 100, 9);
+    expect(dflt).toEqual(syntheticQuote(atmCall, ctx, cal, makeConfig({ pricing: { ivSource: "vix" } })));
+  });
+
+  it("rejects an unknown source", () => {
+    expect(() => makeConfig({ pricing: { ivSource: "groww" as "vix" } })).toThrow(/ivSource/);
+  });
+});
