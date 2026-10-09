@@ -93,8 +93,12 @@ async function main() {
 
 const ARCHIVE_DIR = ".cache/history";
 const ARCHIVE = `${ARCHIVE_DIR}/yahoo-5m-archive.json`;
-/** A bar is archived once it closed this long before the fetch, so a still-forming bar is never frozen in. */
-const SETTLE_MS = 10 * MINUTE_MS;
+/**
+ * A bar is archived once it closed this long before the fetch, so a still-forming or provisional bar is
+ * never frozen in. Some of Yahoo's feeds run 10-15 minutes late (Hong Kong, Shanghai): their last bars
+ * were still revised 15 minutes after the close. Newer bars are simply taken by the next run.
+ */
+const SETTLE_MS = 30 * MINUTE_MS;
 /** A cross-asset series whose archive is fresher than this gets the 5-day window instead of 60 days. */
 const CROSS_FRESH_MS = 3 * DAY_MS;
 
@@ -185,11 +189,17 @@ async function saveYahooArchive(args: Args): Promise<void> {
   // 2) Append the settled new bars to the archive; never rewrite an archived bar.
   const added: Record<string, number> = {};
   let revisions = 0;
+  let priceRevisions = 0;
   for (const [symbol, bars] of Object.entries(intraday.data)) {
     const r = appendCandles(archive.candles[symbol] ?? [], bars, fetchedAtMs - SETTLE_MS);
     archive.candles[symbol] = r.candles;
     added[symbol] = r.added;
-    for (const rev of r.revisions) archive.archive.revisions.push({ symbol, t: rev.fetched.t, bar: formatIst(rev.fetched.t), archived: rev.archived, fetched: rev.fetched, file });
+    for (const rev of r.revisions) {
+      archive.archive.revisions.push({ symbol, t: rev.fetched.t, bar: formatIst(rev.fetched.t), archived: rev.archived, fetched: rev.fetched, file });
+      const a = rev.archived;
+      const f = rev.fetched;
+      if (a.o !== f.o || a.h !== f.h || a.l !== f.l || a.c !== f.c) priceRevisions++;
+    }
     revisions += r.revisions.length;
   }
   // Daily bars stay downloadable for years; they are refreshed (not archived) so the file replays as a snapshot.
@@ -204,7 +214,10 @@ async function saveYahooArchive(args: Args): Promise<void> {
     const last = bars.at(-1);
     console.log(`  ${symbol.padEnd(10)} +${String(added[symbol] ?? 0).padStart(5)} new, ${String(bars.length).padStart(6)} archived${first && last ? `, ${formatIst(first.t).slice(0, 16)} .. ${formatIst(last.t).slice(0, 16)}` : ""}`);
   }
-  console.log(`Archive: ${archivePath} (${archive.archive.captures.length} capture(s); ${revisions} revised bar(s) recorded this run, archived values kept).`);
+  console.log(
+    `Archive: ${archivePath} (${archive.archive.captures.length} capture(s); ${revisions} revised bar(s) recorded this run, ` +
+      `${priceRevisions} with a different price and ${revisions - priceRevisions} volume only; archived values kept).`,
+  );
 }
 
 main().catch((err) => {

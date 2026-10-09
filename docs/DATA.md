@@ -62,7 +62,7 @@ Yahoo keeps only about 60 days of 5-minute bars, so every day that is not saved 
 1. **Fetches the window.** It takes the 5-minute window of the four Indian series (60 days) and the 12 cross assets. Cross assets get 60 days when the archive is more than 3 days behind, else 5 days, because each 24-hour series is about 1 MB per 60 days.
 2. **Saves it unchanged.** The fetched window goes to `.cache/history/yahoo-5m-YYYYMMDD.json`, named by IST date. A second run on the same day gets a `-HHMM` suffix.
 3. **Appends new bars** to `.cache/history/yahoo-5m-archive.json`:
-   - A bar is added only once it has closed at least 10 minutes before the fetch, so a forming bar is never frozen in.
+   - A bar is added only once it has closed at least 30 minutes before the fetch. Some Yahoo feeds run 10–15 minutes late: Hong Kong's and Shanghai's last bars were still revised 15 minutes after the close. A newer bar is simply taken by the next run.
    - An archived bar is never changed or removed. If Yahoo later serves it differently, the revision is recorded in `archive.revisions` and the dated capture keeps what was served.
    - The archive also carries the latest 2-year daily bars. These are refreshed on each run, not archived; daily history stays downloadable.
 

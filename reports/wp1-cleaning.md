@@ -71,7 +71,7 @@ Entries end at 14:30 and positions are squared off at 15:05, so these bars only 
 | `src/engine/market/features.ts` | `prepare()` drops NIFTY/SENSEX/BANKNIFTY bars that open at or after the cutoff, today's included. The previous close stays the official close (a separate session-close map keeps gap and daily vol unchanged); spot/LTP and India VIX are untouched. `bodyClip()` flattens a NIFTY/SENSEX bar to its open when \|body\| > 0.6% while the other index's same-time bar moved < 0.1%. Every clip is reported once per process: `console.warn` by default (Workers Logs live, with observability at 100%), or a listener via `setBodyClipListener`. The series cache key includes the rules. |
 | `src/engine/market/features.test.ts` + fixture `src/engine/__fixtures__/market/snapshot-5m-2026-09-09_11.json` | 15 new tests on the **real 9–11 Sep 2026 bars** of NIFTY, SENSEX, BANKNIFTY and VIX, copied unchanged from the snapshot. They cover: `clipWicks` missing the 15:20 print; the body clip flagging exactly that bar and nothing else in three sessions; previous-day high/low/close with each flag; the cutoff holding for today's bars after 15:15; logging, including a throwing listener; inert flags; cache separation; config validation. |
 | `src/engine/market/candles.ts` (+ `candles.test.ts`) | `appendCandles()`: the append-only merge for the archive (settled bars only, archived bars never rewritten, revisions returned). |
-| `scripts/fetch-history.ts` | `--save`: the Yahoo 5-minute archive (§7). The Groww path is unchanged. |
+| `scripts/fetch-history.ts` | `--save`: the Yahoo 5-minute archive (§7). It writes the dated capture, appends bars settled 30 minutes before the fetch, records revisions (price or volume-only) and refreshes the 2-year daily bars. The Groww path is unchanged. |
 | `scripts/backtest.ts` (delimited WP1 block) | `--indicator-cutoff HH:MM` and `--body-clip`. A `dataCleaning` field is written only when a switch is on, so default reports stay byte-identical. |
 | `scripts/wp1-compare.ts` (new) | Replays baseline and variants in-process with the CLI's exact config. It reads every persisted decision back, lists every differing trade with the decision in both runs, the signals and the features that changed, classifies the cause, and logs each replay to `reports/trials.jsonl`. A sampled self-check confirms recomputed features equal the engine's own decisions: 0 mismatches. |
 | `docs/DATA.md` | Data notes, the flags, archive usage, the nightly cron note and GitHub Actions caveats (no workflow added). |
@@ -174,14 +174,18 @@ Rejecting a correctness fix because the in-sample number got worse would itself 
 
 ## 7. The 5-minute archive
 
-`npm run fetch-history -- --save` was run at 09:19:56 IST today (`docs/DATA.md` has the details):
+`npm run fetch-history -- --save` was first run at 09:19:56 IST today (`docs/DATA.md` has the details):
 
 - **Capture:** `.cache/history/yahoo-5m-20261009.json` (13.0 MB, exactly as served).
 - **Archive:** `.cache/history/yahoo-5m-archive.json` (13.8 MB). It holds NIFTY 4,371 bars (16 Jul 09:15 – 8 Oct 15:25), SENSEX 4,375, BANKNIFTY 4,370 and VIX 4,377, plus the 12 cross assets at 2,892–13,691 bars each (about 60 days).
-- Today's forming bars were held back by the 10-minute settle rule.
+- Today's forming bars were held back by the settle rule.
+- **Second capture at 15:25 IST to test the merge:** `yahoo-5m-20261009-1525.json` (2.7 MB; cross assets took the 5-day window).
+  - Each Indian index gained exactly its 72 settled bars of today (09:15–15:10). NIFTY went 4,371 → 4,443, and there are no duplicate timestamps in any series.
+  - 17 revised bars were recorded, with the archived values kept. 15 are volume-only (Yahoo zeroes volumes at a range window's start and on Shanghai). 2 changed price: the Hang Seng and Shanghai 09:00 IST bars, the newest bars of the first capture, archived 15 minutes after their close on feeds that run late.
+  - So the settle window is now 30 minutes, not 10; newer bars are taken by the next run. That change was made after both captures, which ran with 10.
 - `.cache/` is gitignored and these files sit in this worktree. Copy them to wherever the nightly job runs, e.g. the main checkout's `.cache/history/`.
 
-**Archive replay check.** `npm run backtest -- --history .cache/history/yahoo-5m-archive.json` with the same settings gives 48 trades and −₹14,516.24. The Indian 5-minute bars are identical to the snapshot: 0 value differences on all shared bars, and the archive lacks only the 8 Oct 15:30 tick, which is outside the session.
+**Archive replay check.** Replaying the archive as it stood after the first capture (`npm run backtest -- --history .cache/history/yahoo-5m-archive.json`, same settings) gives 48 trades and −₹14,516.24. The Indian 5-minute bars are identical to the snapshot: 0 value differences on all shared bars, and the archive lacks only the 8 Oct 15:30 tick, which is outside the session.
 
 The difference is cross-asset coverage. The reference snapshot holds 5-minute cross-asset bars only from about 2–5 Oct, because `loadYahooHistory` fetches them with `range=5d`. Before that, the baseline's GAP/GLOBAL_BETA inputs come from daily-bar fallbacks, unlike live trading, where 5-minute cross-asset data is always present. Every WP comparing against 51 / −₹9,595.92 inherits this (§8).
 
