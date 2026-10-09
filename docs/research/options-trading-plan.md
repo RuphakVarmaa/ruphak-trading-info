@@ -52,8 +52,8 @@ Each rule removes trades; none adds trades. Each is tested on our data before it
 | **N5. No overnight or weekend holds.** | A 4-day ATM option bought Friday is worth about half by Monday's close if the index doesn't move (model); overnight is where sellers earn the premium. | R2, R1 |
 | **N6. No far out-of-the-money strikes because they are cheap.** | Worst returns per rupee; two-thirds expire worthless if held. | R1, R2 |
 | **N7. No new entry on an index's own expiry day after 14:00**, and never the contract expiring that day. | Expiry-day gamma and settlement games. (Already in the engine.) | R1 |
-| **N8. No buying puts the morning after a big fall "because FIIs sold".** | FII selling is published after the close and describes the same day; FIIs follow prices more than they lead them. After NIFTY days below −1.5%, the next day was up 64% of the time (64 cases, 2020–2026). | R3 |
-| **N9. Don't trade the gap itself.** | The opening gap is known by 09:10 and is in the 09:15 price; after big gap-ups NIFTY drifted down from the open on average. | R4 |
+| **N8. No buying puts the morning after a big fall "because FIIs sold".** | FII selling is published after the close and describes the same day. Our data, 2019–2026: FPI flow vs the next day's open→close has correlation 0.00 (1,877 days); after the 102 days of FPI selling worse than −₹5,000 crore, the next day favoured puts only 44% of the time; after a >1% NIFTY fall with heavy selling, the next open→close averaged +0.22% (42 days). After NIFTY days below −1.5%, the next day was up 64% of the time (2020–2026). | R3, Q2 |
+| **N9. Don't trade the gap itself.** | The opening gap is known by 09:10 and is in the 09:15 price. Our data, 2011–2026: gap-up days closed above their open 48% of the time (1,639 days), gap-down days 48% (783); a "follow or fade" rule chosen on 2011–18 scored 49.5–51.4% on 2019–26. | R4, Q2 |
 
 ---
 
@@ -93,13 +93,13 @@ Each rule removes trades; none adds trades. Each is tested on our data before it
 
 | Signal | What it actually predicts | Use |
 |---|---|---|
-| India VIX level | **Size** of moves over 1–4 weeks (r ≈ 0.74 with next-21-day realized vol), not direction | Premium/expected-move gate |
+| India VIX level | **Size** of moves, not direction: predicts tomorrow's high–low range with out-of-sample R² 0.31 (2 years) to 0.41 (2011–2026); ADX adds nothing once VIX is known (+0.00–0.03) | Premium/expected-move gate; strike, stop and target distances |
 | Big move yesterday (≥1.5%) | Mild next-day **reversal** in 2020–2026 (64% up after −1.5% days; 74% after −2% days) | "No chasing" rule N8 |
-| FII/DII cash flows | **Same-day** relation; FIIs chase prices; FII buys underperform their sells over 1 day–1 year; our 29-session check: next-day correlation −0.09 (not significant) | Context only, zero weight for direction |
+| FII/DII cash flows | **Same-day** relation (correlation 0.32 with that day's NIFTY return); **none for the next day** (0.00 for the next open→close, 1,877 days, 2019–2026); 5- and 20-day flows follow past returns (0.51–0.61) and don't predict the next 5–20 days. FPIs sold ₹1.28 lakh crore in 2024 and ₹2.39 lakh crore in 2025 while NIFTY rose 8.8% and 10.5%. | Context only, zero weight for direction |
 | FII index-futures long/short (participant OI) | Untested multi-week positioning claims (FIIs net short a record 333+ sessions) | Context; candidate for a long-horizon test |
 | Put–call ratio | Only at ≥12-day horizons (2001–2013 data); sign not reported | Not intraday |
 | Max pain, OI "build-up" labels | Nothing (one 19-expiry check: worse than "no change") | Drop |
-| ADX, moving averages, Supertrend, RSI, EMA crossovers | No predictive test passes on NIFTY; 50/200-day crossover returned 4.0% a year vs 9.9% buy-and-hold (2010–2022); no next-day difference between golden- and death-cross states (2022–2026) | Describe the state; never the entry trigger |
+| ADX, moving averages, Supertrend, RSI, EMA crossovers | Our data: price vs 20/50/200-day averages, EMA 9/21, +DI/−DI, ADX > 25, RSI > 50 called the next day's direction 41–52% out of sample — none beat "always down" (52%). Only RSI extremes (> 70 or < 30) had a small contrarian tilt (55.8% out of sample, 260 days, worth ~5–15 points — less than option costs). Literature: 50/200-day crossover 4.0%/yr vs 9.9% buy-and-hold (2010–2022). | Describe the state; never the entry trigger |
 | Opening-range breakout | The only costed NIFTY-options intraday test: buying won ≈48% with a 45% drawdown; selling the same break was much smoother | Tested as published (WP4) |
 | Advance–decline breadth | Explains the same period's move, not the next | Confirmation only |
 
@@ -113,7 +113,9 @@ The 8 Oct example: FIIs sold ₹12,943.58 crore (NSE provisional; the depository
 
 - **GIFT Nifty** trades from 06:30 IST; NSE IX publishes it live (no key). Read it at 09:05–09:12 and adjust for the futures basis: implied open = GIFT price − (NSE NIFTY futures close − spot close). The naïve "GIFT minus spot close" overstates the gap by the basis (today ≈ 60 points). [R4]
 - **NSE pre-open auction (09:00–09:12)** publishes an indicative NIFTY open that is, by construction, the opening price after the 09:08–09:10 random close. [R4]
-- **But the gap is already priced at 09:15.** After ≥1% gap-ups NIFTY averaged −0.25% from open to close and 29% filled; after ≥1% gap-downs 53% of days closed above the open (2016–2026). [R4] Can the gap be predicted from US/Asian markets before GIFT? See Q2 (§10).
+- **From global markets alone, at 09:00:** a four-input model (S&P futures since 15:30 IST, Asian mornings, the rupee, crude) called the gap's direction right on **71%** of days walk-forward (457 days); when it called a gap beyond ±0.3% (37% of days) it was right **87%**; typical miss ≈ 72 points. Rule of thumb: **NIFTY gap ≈ 0.4 × the S&P-futures % move since 15:30 IST.** Over 15 years the US session's direction matched NIFTY's gap 68–70% of the time, 82–89% when the S&P moved more than 1%. [Q2]
+- **But the gap is already priced at 09:15.** Gap direction gave no edge for the rest of the day (48% of 1,639 gap-up days closed above the open, 2011–2026). Gaps of 0.5% or more pulled back in the first hour on 61% of days, by only ≈ 25 points (weaker since Aug 2025); big gaps (≥ 1%) rarely fill (7–26%). [Q2, R4]
+- **Today's check:** at 09:00 the model said +0.09%; GIFT Nifty said +0.3 to +0.5%; NIFTY opened at 22,316.80, **+0.38%**. GIFT was the better guide, as expected for a contract that trades from 06:30.
 - **What to do with it:** use the pre-open to decide *whether* to trade (small implied gap and no news → no early trade; big gap → expect fade or stabilisation, wait for 09:30), then let the first 15-minute candle decide direction (E2).
 
 ---
@@ -122,7 +124,16 @@ The 8 Oct example: FIIs sold ₹12,943.58 crore (NSE provisional; the depository
 
 _[Q1 — premium timing, variance risk premium, hold-to-expiry grid on our data: pending]_
 
-_[Q2 — gap prediction from global markets, gap behaviour, ADX/moving-average tests, FII flows on our data: pending]_
+**Q2 — gaps, trend indicators and FII flows** (Yahoo daily 2007–2026, hourly 2 years, 5-minute 60 days; NSDL FPI flows 2019–2026; every rule fitted on an earlier period and scored on a later one) [notes/q2-gaps-trend-flows.md]:
+
+| Question | Answer from our data |
+|---|---|
+| Can the gap be known before 09:15? | Direction right 71% at 09:00 from global markets (87% on clear calls); exactly at 09:08 from the pre-open auction |
+| Does the gap say CE or PE for the day? | No: 48–50% |
+| Do ADX, moving averages, EMA crosses or RSI call tomorrow's direction? | No: 41–52% out of sample; RSI extremes a 55.8% contrarian tilt worth less than costs |
+| What predicts tomorrow's *range* (what a buyer needs)? | India VIX (R² 0.31–0.41); ADX adds nothing |
+| Does heavy FII selling predict the next day? | No: correlation 0.00 with the next open→close; after big sell days puts won 44%, and after a >1% fall with heavy selling the next day bounced +0.22% on average |
+| Engine bug found | The built-in gap model (`features.gapBetas`) overstates the gap ≈ 2.1× (actual = 0.48 × predicted; the fitting routine is never called), biasing the GAP and GLOBAL_BETA signals; re-fitted weights ≈ ES 0.40, USDINR −0.9, Nikkei 0.06, Hang Seng 0.07 |
 
 ---
 
@@ -152,7 +163,7 @@ Work in progress (each in its own branch, flags off by default, live engine unch
 | WP2 + WP5 | Honest expected-move gate; HAR-RV "options are cheap" gate |
 | WP3 + WP4 | Two published strategies exactly as published: noise-area intraday momentum; 5-minute opening-range breakout |
 | WP6 + WP7 | Real option prices from NSE/BSE daily files (3+ years, no keys) to replace model prices in tests; overnight option-selling study for the ₹5 lakh paper account only |
-| Next | The rules from §4 and §6 that are not yet covered (N2–N4, N8, E2 first-candle) as switchable rules, tested the same way |
+| Next | The rules from §4 and §6 that are not yet covered (N2–N4, N8, E2 first-candle) as switchable rules, tested the same way; re-fit the gap model's weights (a demonstrated bug: gaps overstated ≈ 2.1×) |
 
 **A rule or strategy goes live on a paper account only if, on data it was not fitted to,** it has ≥ 180 trades, beats random entry by at least 2 standard errors, has a bootstrap 95% confidence interval above zero per trade and per day, profit factor ≥ 1.3, survives ±20% parameter changes, includes the cost of copying by hand a few minutes late, and passes an independent review for look-ahead bias. Every variant tried is logged and the bar rises with the number tried.
 
@@ -182,4 +193,5 @@ Until a variant clears §12, **copying trades with real money has negative expec
 - [R3 — trend, flow and options-market signals: evidence vs folklore](notes/r3-signals-evidence.md)
 - [R4 — GIFT Nifty, pre-open auction, gaps, data sources](notes/r4-preopen-gaps.md)
 - [PLAN — diagnosis of our engine, published strategies, acceptance criteria, work packages](notes/strategy-plan.md)
-- Q1, Q2 — our-data studies (added when complete)
+- [Q2 — gaps, trend indicators and FII flows on our data](notes/q2-gaps-trend-flows.md)
+- Q1 — premium timing on our data (added when complete)
