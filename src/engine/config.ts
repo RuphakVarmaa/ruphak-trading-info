@@ -280,6 +280,15 @@ export interface EngineConfig {
     spreadModel: { minTicks: number; pctOfPremium: number };
     tradingMinutesPerDay: number;
     tradingDaysPerYear: number;
+    // --- WP6 (real option prices): synthetic IV source (begin) ---
+    /**
+     * Implied vol of synthetic quotes. "vix" (default): India VIX x vixMultiplier, flat across strikes.
+     * "calibrated": India VIX x a per-index multiplier by sessions to expiry with an OTM smile, fitted
+     * to exchange bhavcopy premiums (CALIBRATED_IV in pricing/syntheticOptionPricer.ts). Research flag:
+     * it changes premiums, gates and sizing, so it stays off until a variant passes the evaluation protocol.
+     */
+    ivSource: "vix" | "calibrated";
+    // --- WP6 (end) ---
   };
   decay: {
     windowTrades: number;
@@ -551,6 +560,9 @@ export const DEFAULT_CONFIG: EngineConfig = {
     spreadModel: { minTicks: 1, pctOfPremium: 0.4 },
     tradingMinutesPerDay: 375,
     tradingDaysPerYear: 252,
+    // --- WP6 (begin) ---
+    ivSource: "vix",
+    // --- WP6 (end) ---
   },
   decay: {
     windowTrades: 30,
@@ -726,6 +738,10 @@ export function validateConfig(cfg: EngineConfig): string[] {
   pos("risk.dailyLossCapPct", cfg.risk.dailyLossCapPct);
   pos("pricing.tradingMinutesPerDay", cfg.pricing.tradingMinutesPerDay);
   if (!(cfg.pricing.r >= 0 && cfg.pricing.r < 0.5)) p.push("pricing.r must be an annual decimal rate");
+  // --- WP6 (begin) ---
+  const ivSource = cfg.pricing.ivSource ?? "vix";
+  if (ivSource !== "vix" && ivSource !== "calibrated") p.push('pricing.ivSource must be "vix" or "calibrated"');
+  // --- WP6 (end) ---
   if (!(cfg.llm.batchSize >= 1 && cfg.llm.batchSize <= 25)) p.push("llm.batchSize must be within 1-25");
   // --- WP3/WP4 published strategies: begin ---
   p.push(...strategyProblems(cfg));
