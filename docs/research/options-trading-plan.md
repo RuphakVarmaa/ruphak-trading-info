@@ -4,6 +4,23 @@ Prepared Friday 9 October 2026 (IST) from four web-research notes, two studies o
 
 ---
 
+## 0. Your plan on one page (updated Fri 9 Oct, night)
+
+Each answer below comes from the tests in this document (sections in brackets). Rupee figures are per lot.
+
+| You asked | The answer from the data | What to do |
+|---|---|---|
+| **Where is the edge?** | Not in buying. Our engine, two published intraday rules, the plan's no-entry rules, a volatility filter and in-the-money strikes all failed against random entries (§15). The only steady premium in real exchange prices goes to **sellers, during the session**: an at-the-money straddle buyer lost 3.1% (NIFTY) and 5.5% (SENSEX) of premium a day open→close, while overnight was about flat (§3). | Buying stays paused. The seller's side is being measured on real prices with its tail risk (WP10, running); if it clears the bar it gets a defined-risk paper test on the ₹5 lakh account only. |
+| **When should I NOT enter?** | The session before a scheduled event and ±30 min around it; after India VIX jumps >10% in 5 sessions or >8% in a day, or with VIX in the top third of its year; after a 2% run; 11:15–14:15; a contract with one session or less left; far out-of-the-money "cheap" strikes; the morning after a big fall "because FIIs sold" (§4). | Treat these as hard no-trade rules. They cut losses; they don't create profit. |
+| **When is the premium highest?** | The first hour (India VIX made the day's high there on 61% of 719 sessions), before scheduled events, right after volatility jumps, and on expiry day and the day before (19% and 10.6% of the premium lost per same-day trade vs 4.6% with 2–5 sessions left) (§5). | A buyer avoids those moments; a seller is paid most in them, but carries the most risk. |
+| **Which option, and should I hold till expiry?** | Holding to expiry roughly doubled the loss on real prices: an ATM NIFTY weekly lost ₹547 sold the same day vs ₹1,153 held to expiry; half expired worthless (§7). If buying: at the money or 1 strike in the money, at least 4 days to expiry (Mondays NIFTY and Wednesdays SENSEX: next week's contract), out the same morning. | Don't buy to hold to expiry. Whether *selling* and holding to expiry pays after the bad weeks (e.g. March 2020, 4 June 2024) is part of WP10. |
+| **Do ADX, moving averages and "selling pressure" call the trend?** | No: they called the next day's direction 41–52% out of sample, never better than "always down". India VIX predicts the **size** of the move (R² 0.31–0.41), not its direction (§8). | Use VIX for strike, stop and size; don't use indicators to pick CE vs PE. |
+| **FIIs sold ₹12,988 crore, so puts pay?** | FII data comes out after the close. It matches that same day's move (correlation 0.32) but says nothing about the next day (0.00 over 1,877 days). On 8 Oct NIFTY opened flat; the puts paid because of an intraday fall no pre-open number showed (§8). | Read FII flows as context, never as a signal. |
+| **Can NIFTY's open be known before 09:15?** | **Yes.** ~08:55: GIFT Nifty minus the futures basis (on 9 Oct, 6–11 points off the open). 09:00: the global-markets model calls the gap's direction right 71% of the time (87% when it calls a gap beyond ±0.3%); its typical error is now 0.26% with the re-fitted weights. 09:08–09:10: NSE's pre-open auction gives the exact open (§9). **But the gap doesn't tell the day:** gap-up days closed above their open 48% of the time. | Use the pre-open to decide *whether* to trade: a small gap and no news means no early trade; a big gap means wait for 09:30. Never trade the gap itself. |
+| **Real money?** | 9 in 10 retail F&O traders lost in FY26 and nothing here has passed the bar (§13). | No real money until a rule passes §12 on paper. |
+
+---
+
 ## 1. The short answer
 
 1. **Most people lose because buying options is the losing side of a game that is zero-sum before costs.** SEBI's August 2026 studies: 87.7% of individual F&O traders lost money in FY26 (₹91,685 crore); 92% of the losses came from options; 97% of individuals are mostly option *buyers*; the median option-only buyer lost 114% of the capital they used in the year. The other side is algorithmic prop desks and foreign funds: 99% of their profit came from entities that trade by algorithm, mostly as market makers and net option sellers. [R1]
