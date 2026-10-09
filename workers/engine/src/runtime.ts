@@ -14,7 +14,7 @@ import { accountRepository } from "../../../src/engine/repo/accountRepo";
 import { GrowwDataClient, GrowwHttp, RelayClient, type GrowwTransport, type TokenSource } from "../../../src/engine/broker/groww";
 import { D1Repository } from "./db/d1Repository";
 
-export const ENGINE_VERSION = "2026.10.09-3";
+export const ENGINE_VERSION = "2026.10.09-4";
 
 export interface Runtime {
   env: Env;
