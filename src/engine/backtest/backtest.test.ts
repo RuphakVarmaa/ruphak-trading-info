@@ -1,11 +1,31 @@
 import { describe, expect, it } from "vitest";
+import { TradingCalendar } from "../calendar/calendar";
 import { istAt, MINUTE_MS } from "../clock";
 import { DEFAULT_CONFIG, makeConfig, withOverrides } from "../config";
 import { toNumeric } from "../events/taxonomy";
+import { atmStrike } from "../instruments/instrumentMaster";
+import { ReplayMarketDataSource, YAHOO_LAG_MS } from "../market/replayMarketData";
+import type { Broker } from "../ports";
+import { SyntheticOptionQuotes, syntheticQuote } from "../pricing/syntheticOptionPricer";
 import { loadMarketFixtures } from "../testing/fixtures";
-import type { DayLedger, ScoredEvent, TradeRecord } from "../types";
+import type { DayLedger, OptionContract, Order, OrderRequest, Quote, ScoredEvent, TradeRecord } from "../types";
 import { attribution, equityPath, maxDrawdown, profitFactor, summarize } from "./metrics";
-import { BacktestRun, configForParams, followerConfigForParams, runBacktest, runBacktestAccounts, seededRandom, shuffleEventTimes, toBacktestResult } from "./runBacktest";
+import { regimeLookup } from "./placebo";
+import {
+  BacktestRun,
+  ClosedBars,
+  configForParams,
+  CopierBroker,
+  copyDelayOf,
+  CopyDelayQuotes,
+  followerConfigForParams,
+  runBacktest,
+  runBacktestAccounts,
+  seededRandom,
+  shuffleEventTimes,
+  toBacktestResult,
+  widenQuote,
+} from "./runBacktest";
 import { defaultGrid, makeFolds } from "./walkForward";
 
 const fixtures = loadMarketFixtures();
@@ -251,4 +271,98 @@ describe("backtest with the ₹5k account following main", () => {
     expect(s.summary.netPnl).toBeCloseTo(s.trades.reduce((sum, t) => sum + t.pnl, 0), 1);
     expect(s.notes.some((n) => n.includes("small5k"))).toBe(true);
   }, 120_000);
+});
+
+describe("copy-delay penalty", () => {
+  const input = { cfg: permissive, from: "2026-10-05", to: "2026-10-07", candles: fixtures.candles, daily: fixtures.daily, noEvents: true };
+  const key = (t: TradeRecord) => `${t.entryMs}|${t.tradingSymbol}`;
+
+  it("changes nothing unless asked", async () => {
+    expect(copyDelayOf({})).toBeNull();
+    expect(copyDelayOf({ fillDelayBars: 0, extraTicks: 0 })).toBeNull();
+    expect(copyDelayOf({ fillDelayBars: 1.7, extraTicks: -2 })).toEqual({ fillDelayBars: 1, extraTicks: 0 });
+    const a = await runBacktest(input);
+    const b = await runBacktest({ ...input, fillDelayBars: 0, extraTicks: 0 });
+    expect(b.trades).toEqual(a.trades);
+    expect(b.ledgers).toEqual(a.ledgers);
+    expect(b.notes).toEqual(a.notes);
+    expect(a.signals).toBeUndefined();
+  }, 60_000);
+
+  it("fills the copier at market, the given ticks worse on both sides", async () => {
+    const plain = await runBacktest(input);
+    const ticks = await runBacktest({ ...input, extraTicks: 2 });
+    expect(ticks.notes.join(" ")).toMatch(/2 extra tick\(s\) per side, at market/);
+    const byKey = new Map(ticks.trades.map((t) => [key(t), t]));
+    let matched = 0;
+    for (const t of plain.trades) {
+      const u = byKey.get(key(t));
+      if (!u) continue;
+      matched++;
+      // The engine's entry fills at the ask; the copier pays two ticks more.
+      expect(u.entryPremium).toBeCloseTo(t.entryPremium + 0.1, 6);
+      if (u.exitMs === t.exitMs) expect(u.exitPremium).toBeCloseTo(t.exitPremium - 0.1, 6);
+    }
+    expect(matched).toBeGreaterThan(0);
+  }, 60_000);
+
+  it("prices delayed fills off the bar published fillDelayBars later", async () => {
+    const calendar = new TradingCalendar();
+    const bars = new ClosedBars(fixtures.candles, YAHOO_LAG_MS);
+    const t = istAt("2026-10-06", "10:00") + YAHOO_LAG_MS;
+    const t1 = t + 5 * MINUTE_MS;
+    // ClosedBars is the replay source's point-in-time view.
+    const snap = new ReplayMarketDataSource({ candles: fixtures.candles }, { lagMs: YAHOO_LAG_MS }).snapshotSync(t1);
+    expect(bars.closeAt("^NSEI", t1)).toBe(snap.ltp.NIFTY);
+    expect(bars.closeAt("^NSEI", t1)).not.toBe(bars.closeAt("^NSEI", t));
+    expect(bars.closeAt("^NSEI", istAt("2026-10-06", "09:16"), true)).toBeNull();
+    const spot1 = bars.closeAt("^NSEI", t1, true)!;
+    const contract: OptionContract = { index: "NIFTY", exchange: "NSE", tradingSymbol: "T", growwSymbol: "", exchangeToken: "", expiry: "2026-10-13", strike: atmStrike(spot1, 50), type: "CE", lotSize: 65, tickSize: 0.05 };
+    const quotes = new CopyDelayQuotes(new SyntheticOptionQuotes(calendar, DEFAULT_CONFIG), bars, { fillDelayBars: 1, extraTicks: 2 });
+    const q = await quotes.quote(contract, { t, spot: bars.closeAt("^NSEI", t)!, vix: bars.closeAt("^INDIAVIX", t)! });
+    const ref = syntheticQuote(contract, { t: t1, spot: spot1, vix: bars.closeAt("^INDIAVIX", t1)! }, calendar, DEFAULT_CONFIG);
+    expect(q.t).toBe(t1);
+    expect(q.ask).toBeCloseTo(ref.ask + 0.1, 6);
+    expect(q.bid).toBeCloseTo(ref.bid - 0.1, 6);
+    const delayed = await runBacktest({ ...input, fillDelayBars: 1, extraTicks: 2 });
+    expect(delayed.notes.join(" ")).toMatch(/next closed 5-minute bar/);
+    expect(delayed.trades.length).toBeGreaterThan(0);
+  }, 60_000);
+
+  it("widens quotes against the trader but never below one tick", () => {
+    const q: Quote = { symbol: "X", t: 0, ltp: 1, bid: 0.1, ask: 0.2, bidQty: 65, askQty: 65, depth: { buy: [{ price: 0.1, qty: 65 }], sell: [{ price: 0.2, qty: 65 }] }, source: "synthetic" };
+    const w = widenQuote(q, 2, 0.05);
+    expect([w.bid, w.ask, w.depth!.buy[0].price, w.depth!.sell[0].price]).toEqual([0.05, 0.3, 0.05, 0.3]);
+    expect(widenQuote(q, 0, 0.05)).toBe(q);
+  });
+
+  it("sends every copied order at market", async () => {
+    const seen: OrderRequest[] = [];
+    const inner: Broker = {
+      mode: "BACKTEST",
+      placeOrder: async (req) => {
+        seen.push(req);
+        return { order: { ...req, id: "o", status: "NEW", filledQty: 0, createdMs: 0, updatedMs: 0, mode: "BACKTEST" } as Order, fills: [] };
+      },
+      refreshOrder: async (order) => ({ order, fills: [] }),
+      cancelOrder: async (order) => ({ order, fills: [] }),
+      positions: async () => [],
+      health: async () => ({ ok: true, detail: "fake" }),
+    };
+    const contract: OptionContract = { index: "NIFTY", exchange: "NSE", tradingSymbol: "T", growwSymbol: "", exchangeToken: "", expiry: "2026-10-13", strike: 25000, type: "CE", lotSize: 65, tickSize: 0.05 };
+    const broker = new CopierBroker(inner);
+    expect(broker.mode).toBe("BACKTEST");
+    await broker.placeOrder({ refId: "r1", contract, side: "BUY", qty: 65, type: "LIMIT", limitPrice: 101.5, product: "MIS", reason: "ENTRY" });
+    expect(seen[0]).toMatchObject({ type: "MARKET", limitPrice: undefined, side: "BUY", qty: 65 });
+  });
+
+  it("records the regime each index had at every decision when asked", async () => {
+    const out = await runBacktest({ ...input, from: "2026-10-07", to: "2026-10-07", recordSignals: true });
+    const tape = out.signals!;
+    // Decisions at 09:16:30 .. 15:26:30 every 5 minutes (the 15:31:30 tick is after the close), both indices.
+    expect(tape).toHaveLength(75 * 2);
+    expect(new Set(tape.map((s) => s.index))).toEqual(new Set(["NIFTY", "SENSEX"]));
+    const s = tape[40];
+    expect(regimeLookup(tape)(s.index, s.t)).toBe(s.regime);
+  }, 60_000);
 });

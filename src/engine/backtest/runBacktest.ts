@@ -7,16 +7,21 @@
 import { SIGNAL_SOURCE_LABELS, type BacktestParams, type BacktestResult, type BacktestTrade } from "../api-types";
 import { TradingCalendar } from "../calendar/calendar";
 import { accountConfig, type AccountId } from "../accounts";
+import { PaperBroker } from "../broker/paperBroker";
 import { MINUTE_MS, addDays, istAt, istDate, istIso } from "../clock";
 import { makeConfig, withOverrides, type EngineConfig } from "../config";
+import { BAR_5M_MS, lastIndexAtOrBefore, normalizeCandles } from "../market/candles";
 import { YAHOO_LAG_MS } from "../market/replayMarketData";
 import { runFollowerEntries } from "../pipeline/accountCycle";
 import { runEndOfDay } from "../pipeline/dayLifecycle";
 import { runPositionCycle } from "../pipeline/positionCycle";
 import { runTradingCycle } from "../pipeline/tradingCycle";
+import type { Broker, OptionQuoteSource } from "../ports";
 import { createFollowerDeps, createReplayDeps, type ReplayDeps } from "../testing/replayHarness";
-import { MARKET_SYMBOLS, REGIMES, type Candle, type DayLedger, type IndexId, type Regime, type ScoredEvent, type TradeRecord } from "../types";
-import { attribution, equityPath, summarize, type SourceStats, type Summary } from "./metrics";
+import { MARKET_SYMBOLS, REGIMES, type Candle, type DayLedger, type IndexId, type OptionContract, type Order, type OrderRequest, type Quote, type Regime, type ScoredEvent, type TradeRecord } from "../types";
+import { attribution, equityPath, seededRandom, summarize, type SourceStats, type Summary } from "./metrics";
+
+export { seededRandom };
 
 export interface BacktestInput {
   cfg: EngineConfig;
@@ -40,6 +45,26 @@ export interface BacktestInput {
   calendar?: TradingCalendar;
   /** Accounts that follow main's signals with their own config and book (e.g. the ₹10k account). */
   followers?: { account: AccountId; cfg: EngineConfig }[];
+  /**
+   * Copy-delay penalty (acceptance protocol §5.4): price every fill off the index and VIX closes
+   * published this many 5-minute bars after the decision (1 = the next closed bar, about +5 min).
+   * With either copy setting above 0, every order is filled at market, as a human copier does.
+   * Default 0: the engine's own fills, unchanged.
+   */
+  fillDelayBars?: number;
+  /** Copy-delay penalty: ticks paid beyond the quote on each side of every fill (default 0). */
+  extraTicks?: number;
+  /** Keep the regime and conviction each index had at every decision (for the random-entry placebo). */
+  recordSignals?: boolean;
+}
+
+/** What the engine saw for one index at one decision time. */
+export interface SignalTapeEntry {
+  t: number;
+  index: IndexId;
+  regime: Regime;
+  score: number;
+  threshold: number;
 }
 
 export interface BacktestOutput {
@@ -54,18 +79,143 @@ export interface BacktestOutput {
   equityCurve: { t: number; equity: number }[];
   decisions: number;
   notes: string[];
+  /** Per-decision regimes and scores, when the input asked for recordSignals. */
+  signals?: SignalTapeEntry[];
 }
 
-/** Small seeded PRNG (mulberry32) for reproducible placebo shuffles. */
-export function seededRandom(seed: number): () => number {
-  let a = seed >>> 0;
-  return () => {
-    a = (a + 0x6d2b79f5) >>> 0;
-    let t = a;
-    t = Math.imul(t ^ (t >>> 15), t | 1);
-    t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
-    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+// ---------------------------------------------------------------------------
+// Copy-delay model: how a human copying the engine's orders is filled
+// ---------------------------------------------------------------------------
+
+/** The copier's execution: fills priced `fillDelayBars` closed bars late, `extraTicks` worse per side, at market. */
+export interface CopyDelay {
+  fillDelayBars: number;
+  extraTicks: number;
+}
+
+/** The copy-delay settings of an input, or null when there is none (the engine's own fills). */
+export function copyDelayOf(o: { fillDelayBars?: number; extraTicks?: number }): CopyDelay | null {
+  const fillDelayBars = Math.max(0, Math.floor(o.fillDelayBars ?? 0));
+  const extraTicks = Math.max(0, Math.floor(o.extraTicks ?? 0));
+  return fillDelayBars > 0 || extraTicks > 0 ? { fillDelayBars, extraTicks } : null;
+}
+
+export function describeCopyDelay(c: CopyDelay | null): string {
+  if (!c) return "none (the engine's own fills)";
+  const bars = c.fillDelayBars === 1 ? "the next closed 5-minute bar" : `${c.fillDelayBars} closed 5-minute bars later`;
+  return `fills priced off ${c.fillDelayBars > 0 ? bars : "the decision's bar"}, ${c.extraTicks} extra tick(s) per side, at market`;
+}
+
+/**
+ * Point-in-time 5-minute closes, by the same rule as ReplayMarketDataSource: at time t a bar is
+ * published iff bar.t + 5 min <= t - lag.
+ */
+export class ClosedBars {
+  private readonly bars: Record<string, Candle[]> = {};
+
+  constructor(
+    candles: Record<string, Candle[]>,
+    private readonly lagMs: number,
+  ) {
+    for (const [sym, arr] of Object.entries(candles)) this.bars[sym] = normalizeCandles(arr ?? []);
+  }
+
+  /** Close of the last bar of `symbol` published by `t`; with `sameDay`, only a bar from t's IST date. */
+  closeAt(symbol: string, t: number, sameDay = false): number | null {
+    const arr = this.bars[symbol];
+    if (!arr || arr.length === 0) return null;
+    const i = lastIndexAtOrBefore(arr, t - this.lagMs - BAR_5M_MS);
+    if (i < 0) return null;
+    if (sameDay && istDate(arr[i].t) !== istDate(t)) return null;
+    const c = arr[i].c;
+    return Number.isFinite(c) && c > 0 ? c : null;
+  }
+}
+
+/** The quote moved `ticks` ticks against the trader on both sides (bid and bids down, ask and asks up; never below one tick). */
+export function widenQuote(q: Quote, ticks: number, tick: number): Quote {
+  if (!(ticks > 0)) return q;
+  const d = ticks * tick;
+  const down = (p: number) => Math.max(tick, Math.round((p - d) * 100) / 100);
+  const up = (p: number) => Math.round((p + d) * 100) / 100;
+  return {
+    ...q,
+    bid: q.bid > 0 ? down(q.bid) : q.bid,
+    ask: q.ask > 0 ? up(q.ask) : q.ask,
+    depth: q.depth ? { buy: q.depth.buy.map((l) => ({ ...l, price: down(l.price) })), sell: q.depth.sell.map((l) => ({ ...l, price: up(l.price) })) } : undefined,
   };
+}
+
+/**
+ * Quotes the copier is filled at: the option priced off the index and VIX closes published
+ * `fillDelayBars` bars after the decision time (the human acts on a later bar than the engine saw),
+ * then widened by `extraTicks` on each side.
+ */
+export class CopyDelayQuotes implements OptionQuoteSource {
+  readonly kind: OptionQuoteSource["kind"];
+
+  constructor(
+    private readonly inner: OptionQuoteSource,
+    private readonly bars: ClosedBars,
+    private readonly delay: CopyDelay,
+  ) {
+    this.kind = inner.kind;
+  }
+
+  async quote(contract: OptionContract, ctx: { t: number; spot: number; vix: number }): Promise<Quote> {
+    let { t, spot, vix } = ctx;
+    if (this.delay.fillDelayBars > 0) {
+      t += this.delay.fillDelayBars * BAR_5M_MS;
+      spot = this.bars.closeAt(MARKET_SYMBOLS[contract.index], t, true) ?? spot;
+      vix = this.bars.closeAt(MARKET_SYMBOLS.INDIAVIX, t) ?? vix;
+    }
+    return widenQuote(await this.inner.quote(contract, { t, spot, vix }), this.delay.extraTicks, contract.tickSize);
+  }
+}
+
+/** The human copier's broker: every order goes in at market (the engine's limit prices are not copied). */
+export class CopierBroker implements Broker {
+  readonly mode: Broker["mode"];
+
+  constructor(private readonly inner: Broker) {
+    this.mode = inner.mode;
+  }
+
+  placeOrder(req: OrderRequest) {
+    return this.inner.placeOrder({ ...req, type: "MARKET", limitPrice: undefined });
+  }
+
+  refreshOrder(order: Order) {
+    return this.inner.refreshOrder(order);
+  }
+
+  cancelOrder(order: Order) {
+    return this.inner.cancelOrder(order);
+  }
+
+  positions() {
+    return this.inner.positions();
+  }
+
+  health() {
+    return this.inner.health();
+  }
+}
+
+/** Replay deps whose broker fills like the human copier; decisions, marks and exits still use the engine's own quotes. */
+export function withCopyDelay(deps: ReplayDeps, copy: CopyDelay, bars: ClosedBars): ReplayDeps {
+  const quotes = new CopyDelayQuotes(deps.optionQuotes, bars, copy);
+  const paper = new PaperBroker({
+    cfg: deps.cfg,
+    clock: deps.clock,
+    repo: deps.repo,
+    quotes,
+    marketContext: (index) => deps.marketContext.get(index),
+    newId: deps.newId,
+    mode: "BACKTEST",
+    latencyMs: 0,
+  });
+  return { ...deps, broker: new CopierBroker(paper) };
 }
 
 /** Placebo: keeps every event but permutes when each was first seen. */
@@ -110,6 +260,8 @@ export class BacktestRun {
   private next = 0;
   private decisionCount = 0;
   private readonly followerDeps = new Map<AccountId, ReplayDeps>();
+  private readonly copy: CopyDelay | null;
+  private readonly signals: SignalTapeEntry[] | null;
 
   constructor(private readonly input: BacktestInput) {
     this.calendar = input.calendar ?? new TradingCalendar();
@@ -128,15 +280,24 @@ export class BacktestRun {
     let events = input.noEvents ? [] : [...(input.events ?? [])];
     if (input.shuffleSeed !== undefined && input.shuffleSeed !== null && events.length > 1) events = shuffleEventTimes(events, input.shuffleSeed);
     this.events = events.sort((a, b) => a.firstSeenMs - b.firstSeenMs);
-    this.deps = createReplayDeps({
+    const lagMs = input.lagMs ?? YAHOO_LAG_MS;
+    this.copy = copyDelayOf(input);
+    this.signals = input.recordSignals ? [] : null;
+    const deps = createReplayDeps({
       cfg: input.cfg,
       startMs: istAt(days[0] ?? input.from, "09:00"),
       candles: input.candles,
       daily: input.daily,
       calendar: this.calendar,
-      lagMs: input.lagMs ?? YAHOO_LAG_MS,
+      lagMs,
     });
-    for (const f of input.followers ?? []) this.followerDeps.set(f.account, createFollowerDeps(this.deps, f.cfg, f.account));
+    // Copy delay swaps only the brokers; without it the deps are exactly the engine's.
+    const bars = this.copy ? new ClosedBars(input.candles, lagMs) : null;
+    this.deps = this.copy && bars ? withCopyDelay(deps, this.copy, bars) : deps;
+    for (const f of input.followers ?? []) {
+      const fd = createFollowerDeps(this.deps, f.cfg, f.account);
+      this.followerDeps.set(f.account, this.copy && bars ? withCopyDelay(fd, this.copy, bars) : fd);
+    }
   }
 
   get done(): boolean {
@@ -171,6 +332,9 @@ export class BacktestRun {
       const events = this.visible(t);
       const r = await runTradingCycle(deps, { events, noEvents: this.input.noEvents, decisionEveryMs: this.stepMs, snapshotEveryMs: 30 * MINUTE_MS });
       this.decisionCount += r.decisions.length;
+      if (this.signals) {
+        for (const [index, c] of Object.entries(r.convictions)) if (c) this.signals.push({ t, index: index as IndexId, regime: c.regime, score: c.score, threshold: c.threshold });
+      }
       for (const f of this.followerDeps.values()) await runFollowerEntries(f, r, { decisionEveryMs: this.stepMs });
       await runPositionCycle(deps, { convictions: r.convictions, events });
       for (const f of this.followerDeps.values()) await runPositionCycle(f, { convictions: r.convictions, events });
@@ -210,7 +374,8 @@ export class BacktestRun {
     else notes.push(`${this.events.length} scored events, each usable ${Math.round(this.delayMs / MINUTE_MS)} min after first seen.`);
     if (input.shuffleSeed !== undefined && input.shuffleSeed !== null) notes.push(`Placebo: event times shuffled (seed ${input.shuffleSeed}); a real edge should vanish here.`);
     if (this.skippedDays.length) notes.push(`Skipped ${this.skippedDays.length} trading day(s) without candles: ${this.skippedDays.slice(0, 5).join(", ")}${this.skippedDays.length > 5 ? "…" : ""}.`);
-    return {
+    if (this.copy) notes.push(`Copy delay: ${describeCopyDelay(this.copy)}; decisions, marks and exit triggers still use the engine's own (undelayed) view.`);
+    const out: BacktestOutput = {
       from: input.from,
       to: input.to,
       days: this.days.slice(0, this.next),
@@ -223,6 +388,8 @@ export class BacktestRun {
       decisions: this.decisionCount,
       notes,
     };
+    if (this.signals) out.signals = this.signals;
+    return out;
   }
 }
 
