@@ -216,7 +216,7 @@ npx vitest run src/engine/market                                # the 10 Sep fix
 
 ## 10. Trials ledger
 
-`reports/trials.jsonl` has 21 lines. The distinct runs are:
+`reports/trials.jsonl` has 23 lines. The last two are the cutoff and body clip re-run on the final commit `c51a587`, with identical trade lists. The distinct runs are:
 
 - 4 cleaning configurations on the snapshot: off, cutoff, body clip, both;
 - 1 attribution diagnostic (genuine bars removed);
