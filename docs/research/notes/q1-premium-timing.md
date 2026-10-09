@@ -1,951 +1,594 @@
-# Q1 — premium timing, volatility premium and holding period (our data, real NSE/BSE option prices)
+# Q1: When are NIFTY/SENSEX option premiums richest, when has buying paid, and does holding to expiry ever win?
 
-Interim note assembled 9 Oct 2026 ~09:25 IST from the study's finished analyses (tables as computed; 90% confidence intervals in brackets). The study's narrative report replaces this file when it completes. Real option prices: NSE F&O and BSE derivatives daily files (bhavcopy), 2024-01 to 2026-10; intraday hours use a model calibrated to those prices. Scripts: scratchpad/research/q1/scripts/.
+Prepared Fri 9 Oct 2026 for the owner's trading plan. Analysis only: no repo files edited, nothing committed, pushed or deployed.
 
----
+The owner asked two things. First, "when is the premium at its highest, so we can avoid entering?" Second, "which option has the edge to enter now and hold till expiry for the most benefit?"
 
-## (a) Intraday India VIX profile
+**About the prices:**
 
-### 5-minute India VIX, 2026-07-16 to 2026-10-08 (58 full sessions)
-
-Base = VIX at 09:20 (close of the 09:15-09:20 bar). Values are VIX at the end of each slot relative to base, % of VIX (mean with 90% bootstrap CI, median, share of days below base).
-
-| time (IST) | mean % vs 09:20 | median % | % of days below 09:20 level |
-|---|---|---|---|
-| 09:15 first print | -0.12 [-0.80, 0.54] | -0.17 | 55% [44, 65] (32/58) |
-| 09:20 | 0.00 [0.00, 0.00] | 0.00 | 0% [0, 4] (0/58) |
-| 09:30 | 0.55 [0.25, 0.84] | 0.22 | 36% [27, 47] (21/58) |
-| 09:45 | 0.53 [0.14, 0.90] | 0.46 | 45% [35, 56] (26/58) |
-| 10:00 | 0.57 [0.19, 0.97] | 0.46 | 38% [28, 49] (22/58) |
-| 10:30 | 0.32 [-0.16, 0.79] | 0.17 | 43% [33, 54] (25/58) |
-| 11:00 | 0.43 [-0.06, 0.92] | 0.19 | 48% [38, 59] (28/58) |
-| 11:30 | 0.48 [-0.07, 1.03] | 0.04 | 48% [38, 59] (28/58) |
-| 12:00 | 0.39 [-0.16, 0.95] | 0.19 | 48% [38, 59] (28/58) |
-| 12:30 | 0.43 [-0.16, 1.03] | -0.01 | 50% [39, 61] (29/58) |
-| 13:00 | 0.63 [-0.07, 1.33] | 0.35 | 45% [35, 56] (26/58) |
-| 13:30 | 0.73 [0.02, 1.44] | 0.40 | 40% [30, 50] (23/58) |
-| 14:00 | 1.00 [0.17, 1.87] | 0.48 | 41% [31, 52] (24/58) |
-| 14:30 | 0.80 [-0.04, 1.67] | 0.34 | 47% [36, 57] (27/58) |
-| 15:00 | 0.44 [-0.37, 1.27] | -0.19 | 52% [41, 62] (30/58) |
-| 15:15 | 0.25 [-0.56, 1.07] | 0.07 | 50% [39, 61] (29/58) |
-| 15:30 | -0.08 [-0.92, 0.75] | nan | 53% [43, 64] (31/58) |
-
-Where the day's VIX extreme sits (5-minute bars; 'uniform' = share expected if the extreme were equally likely in any bar).
-
-| window | day's HIGH (bar highs) | day's HIGH (bar closes) | day's LOW (bar closes) | uniform |
-|---|---|---|---|---|
-| 09:15-09:45 | 52% [41, 62] (30/58) | 34% [25, 45] (20/58) | 36% [27, 47] (21/58) | 8% |
-| 09:45-11:00 | 5% [2, 12] (3/58) | 12% [7, 21] (7/58) | 5% [2, 12] (3/58) | 20% |
-| 11:00-13:00 | 16% [9, 25] (9/58) | 17% [11, 27] (10/58) | 12% [7, 21] (7/58) | 32% |
-| 13:00-14:30 | 16% [9, 25] (9/58) | 22% [15, 33] (13/58) | 9% [4, 17] (5/58) | 24% |
-| 14:30-15:30 | 12% [7, 21] (7/58) | 14% [8, 23] (8/58) | 38% [28, 49] (22/58) | 16% |
-
-Distribution of VIX changes (% of VIX).
-
-| change | n | mean [90% CI] | median | p10 | p90 | % of days negative |
-|---|---|---|---|---|---|---|
-| first print 09:15 -> close | 57 | 0.11 [-1.00, 1.29] | -0.14 | -5.48 | 6.01 | 54% [44, 65] (31/57) |
-| 09:20 -> close | 57 | -0.08 [-0.92, 0.75] | -0.51 | -4.45 | 4.59 | 54% [44, 65] (31/57) |
-| prev close -> first print (overnight) | 56 | 0.29 [0.18, 0.42] | 0.23 | -0.32 | 0.92 | 25% [17, 36] (14/56) |
-| prev close -> 09:20 | 56 | 0.59 [-0.11, 1.30] | 0.50 | -3.60 | 5.08 | 39% [29, 50] (22/56) |
-
-09:20 -> close VIX change by day type (5-minute sample; small n, descriptive only).
-
-| day type | n | mean % [90% CI] | median % | % days VIX fell | % days high in first 30 min (closes) |
-|---|---|---|---|---|---|
-| Monday | 11 | -0.78 [-3.08, 1.58] | -0.86 | 55% [32, 76] (6/11) | 27% [11, 52] (3/11) |
-| Tuesday | 12 | -1.08 [-2.68, 0.88] | -1.44 | 75% [51, 90] (9/12) | 42% [22, 64] (5/12) |
-| Wednesday | 12 | -0.20 [-1.31, 0.88] | -0.44 | 50% [29, 71] (6/12) | 33% [16, 57] (4/12) |
-| Thursday | 13 | 2.64 [0.75, 4.71] | 1.26 | 15% [5, 37] (2/13) | 23% [10, 46] (3/13) |
-| Friday | 10 | -1.57 [-2.79, -0.44] | -1.45 | 80% [54, 93] (8/10) | 50% [27, 73] (5/10) |
-| NIFTY expiry day | 12 | -1.08 [-2.68, 0.88] | -1.44 | 75% [51, 90] (9/12) | 42% [22, 64] (5/12) |
-| SENSEX expiry day | 13 | 2.64 [0.75, 4.71] | 1.26 | 15% [5, 37] (2/13) | 23% [10, 46] (3/13) |
-| day before NIFTY expiry | 12 | -0.81 [-2.87, 1.28] | -1.13 | 58% [36, 78] (7/12) | 33% [16, 57] (4/12) |
-| all | 58 | -0.08 [-0.92, 0.75] | -0.51 | 53% [43, 64] (31/58) | 34% [25, 45] (20/58) |
-
-### Hourly India VIX, 2023-10-31 to 2026-10-08 (719 sessions) - 3-year check
-
-Level at each time = open of the hourly bar starting then (close = 15:30 close). Relative to VIX at 10:15 (the 09:15 first print is shown separately because it is often a stale/spiky print).
-
-| time (IST) | mean % vs 10:15 [90% CI] | median % | % days below 10:15 level |
-|---|---|---|---|
-| 09:15 first print | -0.53 [-0.82, -0.25] | -0.45 | 57% [54, 60] (412/719) |
-| 11:15 | -0.10 [-0.21, 0.02] | -0.24 | 57% [54, 60] (409/719) |
-| 12:15 | -0.14 [-0.26, 0.01] | -0.35 | 58% [55, 61] (420/719) |
-| 13:15 | -0.09 [-0.23, 0.07] | -0.39 | 58% [55, 61] (418/719) |
-| 14:15 | -0.14 [-0.31, 0.04] | -0.57 | 61% [58, 64] (437/719) |
-| 15:15 | -0.56 [-0.75, -0.36] | -0.96 | 65% [62, 68] (465/719) |
-| 15:30 close | -0.65 [-0.85, -0.44] | -0.99 | 65% [62, 68] (468/719) |
-
-Which hourly bar contains the day's VIX high, and at which sampled time (10:15 ... 15:30, first print excluded) the VIX was highest / lowest.
-
-| hour | contains day's high (bar highs) | highest sampled level | lowest sampled level |
-|---|---|---|---|
-| 09:15-10:15 | 61% [58, 64] (437/719) | - | - |
-| 10:15-11:15 | 7% [6, 9] (52/719) | 35% [33, 38] (255/719) | 18% [16, 20] (128/719) |
-| 11:15-12:15 | 5% [4, 7] (39/719) | 14% [12, 17] (103/719) | 9% [8, 11] (67/719) |
-| 12:15-13:15 | 6% [4, 7] (40/719) | 12% [10, 14] (85/719) | 8% [6, 9] (55/719) |
-| 13:15-14:15 | 7% [6, 9] (52/719) | 10% [8, 12] (71/719) | 7% [6, 9] (51/719) |
-| 14:15-15:15 | 10% [8, 12] (73/719) | 12% [10, 14] (86/719) | 9% [8, 11] (68/719) |
-| 15:15-15:30 | 4% [3, 5] (26/719) | 8% [7, 10] (61/719) | 19% [17, 22] (138/719) |
-| 15:30 close | - | 8% [7, 10] (58/719) | 29% [27, 32] (212/719) |
-
-| change (hourly sample) | n | mean % [90% CI] | median % | % negative |
-|---|---|---|---|---|
-| 10:15 -> 15:30 close | 719 | -0.65 [-0.85, -0.44] | -0.99 | 65% [62, 68] (468/719) |
-| prev close -> 09:15 first print | 718 | 0.12 [0.07, 0.17] | 0.10 | 43% [40, 46] (307/718) |
-| prev close -> 10:15 | 718 | 0.85 [0.57, 1.16] | 0.63 | 41% [38, 44] (297/718) |
-| 09:15 first print -> close | 719 | 0.10 [-0.27, 0.49] | -0.44 | 55% [51, 58] (392/719) |
-
-By day type (hourly sample; H1 = 2024-01-01 to 2025-05-20, H2 = 2025-05-21 to 2026-10-08). '10:15->close' is the intraday change; 'overnight' is prev close -> 10:15.
-
-| day type | n | 10:15->close mean % [90% CI] | % days VIX fell | H1 mean | H2 mean | overnight mean % [90% CI] |
-|---|---|---|---|---|---|---|
-| Monday | 135 | -0.44 [-0.87, 0.01] | 60% [53, 67] (81/135) | 0.04 | -0.90 | 3.82 [2.88, 4.81] |
-| Tuesday | 140 | -1.08 [-1.58, -0.57] | 72% [66, 78] (101/140) | -0.46 | -1.74 | 0.02 [-0.56, 0.59] |
-| Wednesday | 135 | -0.49 [-0.91, -0.03] | 62% [55, 69] (84/135) | -0.64 | -0.35 | -0.46 [-1.09, 0.13] |
-| Thursday | 136 | -0.80 [-1.32, -0.27] | 68% [61, 74] (92/136) | -1.23 | -0.37 | 0.03 [-0.45, 0.51] |
-| Friday | 131 | -0.23 [-0.66, 0.22] | 61% [54, 68] (80/131) | -0.47 | 0.01 | 0.68 [0.22, 1.15] |
-| NIFTY expiry day | 144 | -1.31 [-1.79, -0.81] | 73% [66, 79] (105/144) | -1.14 | -1.49 | 0.24 [-0.23, 0.74] |
-| SENSEX expiry day | 145 | -0.61 [-1.03, -0.17] | 67% [60, 73] (97/145) | -0.58 | -0.65 | 0.09 [-0.41, 0.60] |
-| day before NIFTY expiry | 144 | -0.58 [-0.94, -0.21] | 63% [56, 70] (91/144) | -0.46 | -0.70 | 0.89 [0.27, 1.51] |
-| day after NIFTY expiry | 144 | -0.45 [-0.86, -0.04] | 63% [56, 70] (91/144) | -0.61 | -0.30 | 0.28 [-0.31, 0.86] |
-| all | 678 | -0.63 [-0.84, -0.42] | 65% [62, 68] (439/678) | -0.59 | -0.67 | 0.81 [0.51, 1.11] |
+- Most results below use **real option prices** from the NSE and BSE daily files ("bhavcopies"). These are public and need no keys. They cover 684 NSE days and 679 BSE days, from January 2024 to 8 October 2026.
+- Results for entries at 10:15 or 11:15 use **model prices**. The model is the repo's Black-Scholes pricer, run on India VIX. Each one is labelled. The repo's model makes weekly options about 10% too expensive (see §3), so I also show a **calibrated model** that uses 0.9× the repo's volatility.
 
 ---
 
-## (a2) Intraday realized-variance clock vs the theta clock
+## 0. The answers in plain language
 
+### "When is the premium at its highest?"
 
-**NIFTY, hourly bars (2023-10-31 to 2026-10-08, 719 sessions).** Share of the open-to-close variance realized in each block vs that block's share of session minutes (= share of theta under the repo's trading-time clock). 'Value' = variance share / time share: above 1 means the block moves more than the theta it costs.
+1. **Inside the day, implied volatility is highest in the first hour and lowest near the close.**
+   - On 65% [62, 68] of 678 days (2024–26), India VIX closed below its 10:15 level. The average fall was 0.6%.
+   - On 34% [25, 45] of the 58 five-minute sessions, the day's highest VIX close came in the first 30 minutes. If the high were equally likely at any time, that share would be 8%.
+   - The first hour is also when the index moves most. It holds 30% of the day's movement (variance) in 16% of the session time, about 1.9× its share.
+   - The worst stretch to *hold* a long option is **11:15–14:15**. In those hours the index moves only about 0.7× as much as the time decay you pay for. This held in both halves of the sample and for both indices.
+   - Waiting for the morning premium to cool does not help. With the calibrated model, buying at 09:15, 10:15 or 11:15 and selling at 15:15 lost about the same: ₹642, ₹705 and ₹627 per NIFTY lot.
+   - Ignore the 09:15 VIX print. It is stale (it is roughly yesterday's close). The real opening level forms around 09:20 and can be 4–5% away from that print.
+2. **Across the week, VIX is highest on Monday morning, but that is a quirk of how VIX is calculated.**
+   - VIX rises +3.8% on average from Friday's close to Monday 10:15, and rose on 68–74% of Mondays.
+   - The cause is that India VIX counts weekends and nights as time passing, while real option prices barely decay over a weekend.
+   - Buying an ATM straddle on a Monday was no worse than on other days: −₹1,108 per straddle, against −₹1,104 on average.
+3. **Across the expiry cycle, the premium is richest on expiry day and the day before.**
+   - Buying ATM at the open and selling at the close (or holding to settlement on expiry day) lost this share of the premium:
 
-| block (IST) | variance share [90% CI] | time share | value (variance/time) | value H1 / H2 (split at 2025-04-21) | mean abs move, % |
-|---|---|---|---|---|---|
-| 09:15-10:15 | 30.2% [26.7, 34.3] | 16.0% | 1.89 | 1.64 / 2.23 | 0.267 |
-| 10:15-11:15 | 17.1% [13.3, 21.4] | 16.0% | 1.07 | 1.35 / 0.70 | 0.175 |
-| 11:15-12:15 | 11.8% [9.8, 13.9] | 16.0% | 0.74 | 0.86 / 0.57 | 0.147 |
-| 12:15-13:15 | 11.6% [9.9, 13.3] | 16.0% | 0.72 | 0.73 / 0.71 | 0.144 |
-| 13:15-14:15 | 11.3% [9.4, 13.3] | 16.0% | 0.70 | 0.65 / 0.77 | 0.148 |
-| 14:15-15:15 | 15.0% [12.6, 17.7] | 16.0% | 0.94 | 0.89 / 1.00 | 0.175 |
-| 15:15-15:30 | 3.0% [2.4, 3.7] | 4.0% | 0.75 | 0.52 / 1.05 | 0.078 |
+     | sessions left to expiry | NIFTY | SENSEX |
+     |---|---|---|
+     | 0 (expiry day) | 19% | 17.5% |
+     | 1 | 10.6% | 10.6% |
+     | 2–5 | 4.6% | 7.0% |
 
-**SENSEX, hourly bars (2023-10-31 to 2026-10-08, 719 sessions).** Share of the open-to-close variance realized in each block vs that block's share of session minutes (= share of theta under the repo's trading-time clock). 'Value' = variance share / time share: above 1 means the block moves more than the theta it costs.
+   - The order is the same in both halves of the sample.
+   - Real expiry-morning options are not expensive by implied volatility (0.84× VIX). The trouble is that the index rarely moves enough in one session to pay for them.
+4. **Across market regimes, the premium is richest straight after volatility has jumped.** These patterns held in both halves and for both indices:
 
-| block (IST) | variance share [90% CI] | time share | value (variance/time) | value H1 / H2 (split at 2025-04-21) | mean abs move, % |
-|---|---|---|---|---|---|
-| 09:15-10:15 | 33.0% [29.4, 37.1] | 16.0% | 2.06 | 1.76 / 2.44 | 0.276 |
-| 10:15-11:15 | 16.8% [13.1, 21.0] | 16.0% | 1.05 | 1.36 / 0.67 | 0.174 |
-| 11:15-12:15 | 11.4% [9.6, 13.2] | 16.0% | 0.71 | 0.83 / 0.57 | 0.146 |
-| 12:15-13:15 | 11.7% [9.9, 13.8] | 16.0% | 0.73 | 0.76 / 0.71 | 0.144 |
-| 13:15-14:15 | 11.2% [9.3, 13.3] | 16.0% | 0.70 | 0.65 / 0.76 | 0.148 |
-| 14:15-15:15 | 14.8% [12.5, 17.4] | 16.0% | 0.93 | 0.87 / 0.99 | 0.174 |
-| 15:15-15:30 | 1.0% [0.8, 1.3] | 4.0% | 0.25 | 0.14 / 0.39 | 0.040 |
+   | condition (known before entry) | NIFTY straddle | SENSEX straddle |
+   |---|---|---|
+   | all days (for comparison) | −₹1,104 | −₹1,582 |
+   | India VIX up more than 10% over the last 5 sessions | −₹2,269 | −₹2,427 |
+   | VIX in the top third of its past year | −₹1,526 | −₹1,997 |
+   | index moved more than 2% over the last 5 days | −₹1,637 | −₹2,152 |
 
-**NIFTY, 5-minute bars (2026-07-16 to 2026-10-08, 58 sessions), 15-minute blocks.** Note: from 3 Aug 2026 the NSE closing auction makes the last 15 minutes of Yahoo index bars unreliable (flat 15:15/15:20 bars, the auction lands in 15:25).
+   - A straddle here is one ATM call plus one ATM put, bought at the open and sold at the close (two lots).
+   - When VIX is 18 or higher, most of the index's movement happens in overnight gaps, which an intraday buyer cannot capture. On those days, movement during the session was only 0.36× what VIX implied.
+5. **Before scheduled events, the premium builds up and then collapses.**
+   - Union Budget days (3 of them): VIX rose 3% over the run-up and fell 13% on the day. The index moved only 0.12× what VIX implied. An ATM straddle bought the evening before lost 41–80% (0 of 3 made money).
+   - RBI policy days (16) were roughly fairly priced. The straddle lost 2% on average and made money on 7 of 16.
+   - The 2024 election result (one event) was the exception: the straddle made +126%.
 
-| block | variance share | value (variance share / time share) |
+### "Which option has the edge to enter now and hold till expiry?"
+
+**None.** Every strike, expiry and entry time tested lost money on average over 2024–26.
+
+- Holding to expiry roughly **doubled the loss** compared with selling the same option at that day's close:
+
+  | ATM, 1–5 sessions to expiry, per lot | sell at the close | hold to expiry |
+  |---|---|---|
+  | NIFTY | −₹547 (−5.5% of premium) | −₹1,153 (−11.6%) |
+  | SENSEX | −₹783 (−7.5%) | −₹1,419 (−13.6%) |
+
+- The same holds in both halves for both indices. Holding beat selling on only 32–33% of trades.
+- Holding a trade that was already in profit at the close added nothing on average: NIFTY −₹369 [−1,582, +914], SENSEX +₹228 [−1,140, +1,643].
+- Holding a trade that was losing at the close made it worse: NIFTY −₹739 [−1,367, −60], SENSEX −₹1,140 [−1,722, −514].
+- Out-of-the-money options held to expiry lost the most as a share of premium:
+
+  | held to expiry | share of premium lost | expired worthless |
+  |---|---|---|
+  | NIFTY 2 strikes OTM | −16% | 62% |
+  | NIFTY 2 strikes OTM, bought on expiry day | −30% | 76% |
+
+- The 2-week contract held to expiry was not better: about −9% (NIFTY) and −10% (SENSEX) of premium.
+- **Holding to expiry only beats selling the same day if your direction calls are right more than about 54–59% of the time.** The break-even hit rate for buying at all is 56–62%.
+- With perfect knowledge of direction, holding to expiry would have paid 2–3× more than selling at the close. For example, NIFTY ATM with 2–3 sessions left: +₹7,360 per lot to expiry against +₹3,130 at the close.
+- Two simple direction rules were tested. The 20-day trend rule was right 43–52% of the time, and the opening-gap rule 44–52%. Both lost money.
+
+### Rules for the plan
+
+**When to avoid buying.** Each rule held in both halves; the two exceptions are noted. None of them makes buying profitable; they only cut losses.
+
+- Avoid buying on expiry day (0DTE) or with one session left. The share of premium lost was worst there in both halves. The one exception: in SENSEX's first half, the expiry-day and one-day losses were about equal.
+- Avoid buying after VIX has jumped more than 10% in five sessions.
+- Avoid buying when VIX is in the top third of its 1-year range. The effect was small in the first half.
+- Avoid buying after a 2%-plus 5-day move.
+- Avoid buying the evening before a Budget or a similar scheduled event (only 3 cases).
+- Do not hold a long option through 11:15–14:15.
+
+**Least-bad choices, if buying at all:**
+
+- ATM or 1 strike in the money.
+- 2–5 sessions to expiry.
+- Entry in the first hour.
+- Sold the same day by 15:15. This lost about 3.5–7.6% of premium per trade.
+- The small accounts' cheap OTM band, sold the same day, lost less. Their puts came out about break-even in this sample (see §5.4), but only because of a handful of crash days. Without the best 5–10 trades out of about 640, they lose.
+
+**Hold to expiry:** no, by default. It is only worth considering for a trade that rests on a directional view proven to be right more than 57% of the time. Nothing in this study provides such a view.
+
+**What the losses are made of:**
+
+- Brokerage, charges and the spread are only about ₹106 of NIFTY's ₹547 average loss per lot.
+- The rest is time decay that the index's actual movement did not pay back.
+- Option sellers are the ones who collect it. Realized NIFTY variance was 0.82× what VIX implied over 2 years [0.71, 0.95], and 0.86× over 10 years.
+
+---
+
+## 1. Data and method
+
+| data | coverage | use |
 |---|---|---|
-| 09:15 | 18.1% | 4.52 |
-| 09:30 | 5.3% | 1.33 |
-| 09:45 | 3.6% | 0.90 |
-| 10:00 | 2.9% | 0.74 |
-| 10:15 | 3.2% | 0.80 |
-| 10:30 | 3.2% | 0.80 |
-| 10:45 | 2.2% | 0.55 |
-| 11:00 | 3.2% | 0.80 |
-| 11:15 | 2.8% | 0.71 |
-| 11:30 | 1.8% | 0.44 |
-| 11:45 | 2.0% | 0.50 |
-| 12:00 | 2.3% | 0.57 |
-| 12:15 | 2.1% | 0.53 |
-| 12:30 | 2.4% | 0.59 |
-| 12:45 | 2.1% | 0.51 |
-| 13:00 | 2.7% | 0.67 |
-| 13:15 | 2.5% | 0.62 |
-| 13:30 | 3.2% | 0.81 |
-| 13:45 | 2.8% | 0.69 |
-| 14:00 | 4.6% | 1.15 |
-| 14:15 | 2.4% | 0.59 |
-| 14:30 | 2.7% | 0.68 |
-| 14:45 | 3.1% | 0.77 |
-| 15:00 | 3.4% | 0.85 |
-| 15:15 | 15.5% | 3.88 |
+| Yahoo 5-minute bars, NIFTY / SENSEX / India VIX (`scratchpad/why/hist.json`) | 16 Jul – 8 Oct 2026, 58 full sessions | Intraday VIX profile (a) |
+| Yahoo hourly bars, same symbols (`research/q1/data/{NSEI,BSESN,INDIAVIX}.json`, copied from `scratchpad/dl/y1h`) | 31 Oct 2023 – 8 Oct 2026, 719 sessions | Hourly VIX profile; intraday movement by hour; model entries at 10:15 and 11:15 |
+| Yahoo daily bars (fetched today, 10 years) | Oct 2016 – Oct 2026 | Day-of-week; variance risk premium (c); events. India VIX daily has 5 gaps since 2024, filled from the hourly 15:15 bar (e.g. Saturday 1 Feb 2025). |
+| **NSE F&O bhavcopy** (`nsearchives.nseindia.com/content/fo/BhavCopy_NSE_FO_0_0_0_YYYYMMDD_F_0000.csv.zip`) | 1 Jan 2024 – 8 Oct 2026, 684 days; 232k NIFTY option rows within ±7% of spot and 16 days of expiry | Real open, close and settlement prices; actual expiry dates (146 weekly NIFTY expiries, including holiday-shifted ones) |
+| **BSE derivative bhavcopy** (`bseindia.com/download/Bhavcopy/Derivative/bhavcopyDD-MM-YY.zip`) | 2 Jan 2024 – 8 Oct 2026, 679 days (5 dates unavailable); 196k SENSEX rows | Same, for SENSEX (146 weekly expiries: Friday in 2024, Tuesday Jan–Aug 2025, Thursday since Sep 2025) |
+
+**How the real trades are priced:**
+
+- **Entry:** buy at the day's first traded price (bhavcopy *open*), plus the repo's spread model: spread = max(1 tick, 0.4% of price), buy at the ask.
+- **Strike:** ATM is set from the index's official open, which is known at 09:15. "OTM k" means k strikes further from ATM, in 50-point steps for NIFTY and 100-point steps for SENSEX.
+- **Expiry:** the nearest weekly expiry that does not expire today, which is the engine's own rule. Expiry-day (0DTE) purchases are reported separately.
+- **Exit at the close:** sell at the bid around the bhavcopy *close*. On NSE that close is computed from roughly the last 30 minutes of trades; on BSE it is the last trade. Using NSE's "last price" instead changes NIFTY ATM from −₹547 to −₹592.
+- **Exit at expiry:** cash settlement at intrinsic value, using the official close on expiry day.
+
+**Charges** follow `src/engine/broker/charges.ts`:
+
+- ₹20 per order plus GST.
+- STT on sales: 0.1%, rising to 0.15% from 1 Apr 2026.
+- Exchange fee, SEBI fee and stamp duty as in that file.
+- For options held in the money to expiry: STT on exercise at 0.125% (0.15% from April 2026), plus ₹20 and GST.
+- An option that expires worthless has no exit charges.
+
+**Lots** are NIFTY 65 and SENSEX 20 on every date, so rupee figures are comparable across the sample.
+
+**Model trades** use the repo's pricer (`src/engine/pricing/syntheticOptionPricer.ts`):
+
+- Black-Scholes with India VIX × 1.00 for NIFTY and × 1.05 for SENSEX, r = 6.5%.
+- A trading-time clock: 375 minutes a day, 252 days a year, with time running only during market hours.
+- The same spread model.
+- Entries at 09:15 (using the first VIX print), 10:15 and 11:15 from hourly bars. Exit at 15:15, or held to expiry and settled at the real price.
+
+**No look-ahead.** Every condition uses data up to the previous close, plus the 09:15 open where stated. The 20-day average, realized volatility (RV5, RV20) and VIX percentile are all lagged by a day.
+
+**Statistics:**
+
+- 90% bootstrap confidence intervals in [brackets].
+- For trades held to expiry, the bootstrap resamples whole **expiry weeks**, because overlapping holds share one settlement. For same-day exits it resamples days.
+- Rates come with 90% Wilson intervals.
+- Each sample is split at its midpoint (about May 2025) into H1 and H2.
 
 ---
 
-## (a3) One-hour holds by time of day (CALIBRATED model, ATM, DTE 1-5, CE+PE pooled)
+## 2. (a) Intraday India VIX: when is implied volatility highest during the day?
 
-Mean P&L per lot for holding one hour; 'gross at mid' excludes spread and charges. 09:15 row uses the stale VIX first print (biased in favour of the buyer by roughly the overnight VIX change).
+### 2.1 Five-minute VIX, 16 Jul – 8 Oct 2026 (58 sessions; NIFTY fell 8% over this period)
 
-| index | window | n | mean P&L / lot, Rs [90% CI] | gross at mid, Rs | % profitable | H1 / H2 mean |
-|---|---|---|---|---|---|---|
-| NIFTY | 09:15-10:15 (stale VIX) | 1354 | -60 [-104, -16] | 47 | 45% | -32 / -88 |
-| NIFTY | 10:15-11:15 | 1354 | -207 [-241, -165] | -101 | 41% | -159 / -254 |
-| NIFTY | 11:15-12:15 | 1354 | -250 [-268, -230] | -146 | 38% | -234 / -265 |
-| NIFTY | 12:15-13:15 | 1354 | -244 [-260, -227] | -141 | 38% | -233 / -255 |
-| NIFTY | 13:15-14:15 | 1354 | -254 [-273, -234] | -153 | 37% | -256 / -253 |
-| NIFTY | 14:15-15:15 | 1354 | -261 [-280, -240] | -161 | 39% | -259 / -262 |
-| SENSEX | 09:15-10:15 (stale VIX) | 1334 | -34 [-88, 26] | 75 | 44% | -33 / -34 |
-| SENSEX | 10:15-11:15 | 1334 | -221 [-253, -184] | -114 | 41% | -177 / -265 |
-| SENSEX | 11:15-12:15 | 1334 | -262 [-279, -243] | -156 | 38% | -248 / -276 |
-| SENSEX | 12:15-13:15 | 1334 | -255 [-272, -237] | -151 | 37% | -250 / -260 |
-| SENSEX | 13:15-14:15 | 1334 | -269 [-290, -245] | -166 | 37% | -271 / -266 |
-| SENSEX | 14:15-15:15 | 1334 | -274 [-293, -252] | -173 | 38% | -278 / -269 |
+**The 09:15 print is stale.** It is close to the previous close: the move from the previous close to that print averaged +0.29%, with 80% of days between −0.32% and +0.92%. The real opening level forms by 09:20, where the move from the previous close ranged from −3.6% to +5.1% (10th to 90th percentile).
+
+**VIX at each time of day, relative to its 09:20 level:**
+
+| IST | mean % vs 09:20 [90% CI] | median | days below the 09:20 level |
+|---|---|---|---|
+| 09:30 | +0.55 [0.25, 0.84] | +0.22 | 36% |
+| 10:00 | +0.57 [0.19, 0.97] | +0.46 | 38% |
+| 11:00 | +0.43 [−0.06, 0.92] | +0.19 | 48% |
+| 12:30 | +0.43 [−0.16, 1.03] | −0.01 | 50% |
+| 14:00 | +1.00 [0.17, 1.87] | +0.48 | 41% |
+| 15:00 | +0.44 [−0.37, 1.27] | −0.19 | 52% |
+| 15:30 close | −0.08 [−0.92, 0.75] | −0.51 | 53% |
+
+**Where the day's VIX extreme fell (5-minute closes):**
+
+| window | day's VIX high | day's VIX low | share if equally likely |
+|---|---|---|---|
+| 09:15–09:45 | **34% [25, 45]** | 36% [27, 47] | 8% |
+| 09:45–11:00 | 12% | 5% | 20% |
+| 11:00–13:00 | 17% | 12% | 32% |
+| 13:00–14:30 | 22% | 9% | 24% |
+| 14:30–15:30 | 14% | **38% [28, 49]** | 16% |
+
+Measured with 5-minute bar *highs* instead of closes, 52% of highs fall in the first 30 minutes. That figure is inflated: when VIX gaps down, the stale 09:15 print becomes the day's high. The extremes cluster at the two ends of the day.
+
+The day's VIX change from 09:20 to the close had a median of −0.51%, with 10% of days below −4.45% and 10% above +4.59%. VIX fell on 54% of days. In this falling-market sample the average was flat (−0.08%).
+
+By weekday the samples are tiny (10–13 days each). VIX fell intraday on 75% of Tuesdays (NIFTY expiry) and 80% of Fridays, and rose on Thursdays (+2.6%). The 3-year hourly data does not support a Thursday rise (see §2.2).
+
+### 2.2 Hourly VIX, Oct 2023 – Oct 2026 (719 sessions; patterns by day type use Jan 2024 – Oct 2026)
+
+**VIX at each hour, relative to its 10:15 level:**
+
+| time | mean % vs 10:15 [90% CI] | median | days below the 10:15 level |
+|---|---|---|---|
+| 09:15 first print (stale) | −0.53 [−0.82, −0.25] | −0.45 | 57% |
+| 11:15 | −0.10 [−0.21, 0.02] | −0.24 | 57% |
+| 13:15 | −0.09 [−0.23, 0.07] | −0.39 | 58% |
+| 14:15 | −0.14 [−0.31, 0.04] | −0.57 | 61% |
+| 15:15 | −0.56 [−0.75, −0.36] | −0.96 | 65% |
+| 15:30 close | **−0.65 [−0.85, −0.44]** | −0.99 | **65% [62, 68]** |
+
+- **Which hourly reading was the day's highest** (10:15 to the close, excluding the stale first print): 10:15 on 35% [33, 38] of days, against 14% if equally likely.
+- **Which reading was the day's lowest:** the close on 29% and 15:15 on 19% of days.
+- **Overnight:** VIX rose from the previous close to the next day's 10:15 by +0.81% on average [0.51, 1.11]. The rise was **+3.8% on Mondays** [2.9, 4.8], +0.7% on Fridays, and about 0 on Tuesday to Thursday.
+
+**Intraday change from 10:15 to the close, by type of day** (H1 / H2 is the average in each half of the sample):
+
+| day type | change from 10:15 to close [90% CI] | VIX fell | H1 / H2 |
+|---|---|---|---|
+| NIFTY expiry day | −1.31% [−1.79, −0.81] | 73% | −1.14 / −1.49 |
+| SENSEX expiry day | −0.61% [−1.03, −0.17] | 67% | −0.58 / −0.65 |
+| day before NIFTY expiry | −0.58% [−0.94, −0.21] | 63% | −0.46 / −0.70 |
+| Monday | −0.44% [−0.87, 0.01] | 60% | +0.04 / −0.90 |
+| Friday | −0.23% [−0.66, 0.22] | 61% | −0.47 / +0.01 |
+| all | −0.63% [−0.84, −0.42] | 65% | −0.59 / −0.67 |
+
+### 2.3 How much the index moves in each hour, against the time decay paid for that hour
+
+Under the repo's trading-time clock, an option holder pays the same time decay for every minute of the session. The index does not move evenly through the day, so some hours give more movement per rupee of decay than others.
+
+**NIFTY hourly bars (719 sessions).** "Value" is the share of the day's movement (variance) in that hour divided by the hour's share of session time. Above 1, the hour moves more than the decay it costs.
+
+| hour | share of day's movement [90% CI] | value | H1 / H2 |
+|---|---|---|---|
+| 09:15–10:15 | 30.2% [26.7, 34.3] | **1.89** | 1.64 / 2.23 |
+| 10:15–11:15 | 17.1% | 1.07 | 1.35 / 0.70 |
+| 11:15–12:15 | 11.8% | **0.74** | 0.86 / 0.57 |
+| 12:15–13:15 | 11.6% | **0.72** | 0.73 / 0.71 |
+| 13:15–14:15 | 11.3% | **0.70** | 0.65 / 0.77 |
+| 14:15–15:15 | 15.0% | 0.94 | 0.89 / 1.00 |
+
+SENSEX looks the same: 2.06 in the first hour and 0.70–0.73 at midday. On the 5-minute data, the first 15 minutes alone carry 18% of the day's movement.
+
+**One-hour holds of an ATM option (1–5 sessions to expiry), calibrated model, P&L per lot after costs:**
+
+| hour held | NIFTY | SENSEX |
+|---|---|---|
+| 09:15–10:15 | −₹60 (see note) | −₹34 |
+| 10:15–11:15 | −₹207 | −₹221 |
+| each hour from 11:15 to 15:15 | −₹244 to −₹261 | −₹255 to −₹274 |
+
+The 09:15–10:15 figure is flattered by the stale first VIX print, by roughly ₹70.
+
+**What this means:**
+
+- Measured by VIX, options are "richest" in the first hour.
+- The first hour is also when the index moves most. Per hour held, it is the least-bad time to own an option.
+- Midday holds are the worst value: about ₹250 per ATM lot per hour, or roughly 2.5% of the premium.
+- Comparing real weekly options at the open and at the close of the same day, their implied volatility is *lower* at the open: −0.50 volatility points [−0.66, −0.34] for NIFTY and −0.07 [−0.24, 0.10] for SENSEX. Real premiums are not over-inflated at the open; the price at the close also covers the overnight gap.
 
 ---
 
-## (b) Daily India VIX patterns
+## 3. (b) Daily VIX: day of week, days to expiry, real weekly premiums, events
 
+**Day of week (close-to-close VIX change):**
 
-2-year sample (2024-10-08 to 2026-10-08): close-to-close VIX change and VIX vs its trailing 20-day mean, by weekday.
-
-| weekday | n | VIX change % mean [90% CI] | % days VIX rose | VIX vs 20d mean, % [90% CI] |
+| weekday | 2 years: mean [90% CI] | VIX rose | 10 years: mean | VIX rose |
 |---|---|---|---|---|
-| Mon | 100 | 2.95 [1.68, 4.48] | 68% [60, 75] (68/100) | 1.96 [-0.10, 4.28] |
-| Tue | 102 | -1.51 [-2.26, -0.79] | 34% [27, 42] (35/102) | 0.42 [-1.27, 2.15] |
-| Wed | 98 | -0.79 [-1.69, 0.15] | 32% [24, 40] (31/98) | -0.02 [-2.05, 2.15] |
-| Thu | 97 | -0.17 [-1.01, 0.70] | 42% [34, 51] (41/97) | -0.77 [-2.44, 0.90] |
-| Fri | 96 | 0.38 [-0.34, 1.11] | 50% [42, 58] (48/96) | -0.20 [-2.14, 1.82] |
+| Mon | **+2.95% [1.68, 4.48]** | 68% | **+3.19%** | 74% |
+| Tue | −1.51% [−2.26, −0.79] | 34% | −0.66% | 42% |
+| Wed | −0.79% | 32% | −0.36% | 43% |
+| Thu | −0.17% | 42% | −1.07% | 32% |
+| Fri | +0.38% | 50% | −0.33% | 40% |
 
-10-year check (2016-10-10 to 2026-10-08): close-to-close VIX change and VIX vs its trailing 20-day mean, by weekday.
+Most of the Monday jump is the weekend counted in VIX's calendar-time maths. VIX falls most on the main weekly-expiry weekday. Over 10 years that is Thursday, NIFTY's old expiry day. Over the last 2 years it is Tuesday, which was SENSEX's expiry from January to August 2025 and has been NIFTY's since September 2025.
 
-| weekday | n | VIX change % mean [90% CI] | % days VIX rose | VIX vs 20d mean, % [90% CI] |
+**Sessions to the NIFTY weekly expiry:**
+
+- On expiry day VIX changed −0.95% [−1.64, −0.28] and rose on only 36% of days. This held in both halves (−0.99 / −0.92).
+- No other day of the expiry cycle showed a pattern that held in both halves.
+
+**Real weekly ATM straddle against the repo model** (2024–26, about 140 days per row). A straddle is one ATM call plus one ATM put. "Trading-time IV / VIX" is the real option's implied volatility, measured on the repo's clock (session minutes only) and divided by VIX; 1.0 would mean the repo prices it correctly.
+
+| snapshot | sessions left | NIFTY trading-time IV / VIX (median) | NIFTY real vs model price | SENSEX trading-time IV / (VIX × 1.05) | SENSEX real vs model price |
+|---|---|---|---|---|---|
+| open (first trade) | 0 (expiry day) | 0.84 | −12.2% [−15.6, −8.5] | 0.85 | −11.5% |
+| open | 1 | 0.86 | −12.4% | 0.87 | −8.9% |
+| open | 3 | 0.90 | −9.4% | 0.89 | −9.8% |
+| close | 1 | 0.91 | −5.9% [−8.5, −3.2] | 0.89 | −8.3% |
+| close | 3 | 0.91 | −7.5% | 0.89 | −10.3% |
+| close | 5 | 0.89 | −9.6% | 0.86 | −13.0% |
+
+**Calibration finding (for the engine owner; no repo change made):**
+
+- Real weekly ATM options trade at an implied volatility of about **0.88–0.91 × VIX for NIFTY** and **0.92–0.93 × VIX for SENSEX**, measured on the repo's trading-time clock.
+- The repo's multipliers are 1.00 for NIFTY and 1.05 for SENSEX, so the model overprices weekly options by 10–12%.
+- Matched trade by trade at 09:15, model premiums were 1.10× (NIFTY) and 1.11× (SENSEX) the real ones.
+- As a result, model-based backtests overstate what buyers lose: for NIFTY held to expiry, −₹2,041 per lot in the model against −₹1,064 in real prices.
+
+**Scheduled events** (dates checked against the RBI's MPC schedule press releases for 2024-25, 2025-26 and 2026-27, and news of each decision):
+
+| event | n | VIX from 5 days before to the day before | VIX on the day | VIX the next day | NIFTY's move / VIX-implied move | ATM straddle from the evening before to the day's close |
+|---|---|---|---|---|---|---|
+| RBI policy | 16 | +2.1% | −2.2% [−4.7, −0.2] | +0.2% | 0.70 | −1.8% [−13.1, +9.6] (7 of 16 made money) |
+| Union Budget | 3 | +3.4% | −13.4% | −1.6% | 0.12 | **−55.6%** (0 of 3; −80%, −46%, −41%) |
+| Election results, 4 Jun 2024 | 1 | −13.5% | +27.7% | −29.4% | 4.63 | +125.6% |
+
+- RBI dates: 8 Feb, 5 Apr, 7 Jun, 8 Aug, 9 Oct, 6 Dec 2024; 7 Feb, 9 Apr, 6 Jun, 6 Aug, 1 Oct, 5 Dec 2025; 6 Feb, 8 Apr, 5 Jun, 5 Aug 2026.
+- 7 Oct 2026 is excluded because it is too recent.
+- The Sunday 1 Feb 2026 Budget session is missing from the Yahoo data.
+
+---
+
+## 4. (c) Variance risk premium: is VIX more or less than what the index actually does?
+
+The implied 1-day move for day t is VIX at the previous close ÷ √252, as a percentage of spot (× 1.05 for SENSEX). Ratios below 1 mean options priced at VIX were expensive compared with what followed.
+
+**NIFTY, 8 Oct 2024 – 8 Oct 2026, 496 days:**
+
+- Realized close-to-close variance was 0.82× the implied [0.71, 0.95]: H1 0.78, H2 0.86. Over 10 years it was 0.86× [0.74, 1.00]. For SENSEX it was 0.75× [0.65, 0.86].
+- The day's move was bigger than the implied 1-day move on **23% [20, 27]** of days. If VIX were a fair, normally distributed forecast, that share would be 32%.
+- **Open-to-close variance was only 0.49× the implied 1-day variance** [0.43, 0.56], and overnight gaps carried 55% of the daily variance (42% over 10 years). Someone who buys at the open and sells at the close pays for the whole day's implied move but only gets the session's half of it.
+
+**By condition known the evening before (NIFTY, 2 years):**
+
+| condition | n days | realized / implied variance, close-to-close | open-to-close variance / implied | days with a move bigger than implied |
 |---|---|---|---|---|
-| Mon | 485 | 3.19 [2.72, 3.67] | 74% [71, 78] (360/484) | 1.88 [0.85, 2.98] |
-| Tue | 494 | -0.66 [-1.03, -0.31] | 42% [39, 46] (208/494) | 0.70 [-0.23, 1.69] |
-| Wed | 492 | -0.36 [-0.69, -0.04] | 43% [40, 47] (213/492) | 0.41 [-0.51, 1.37] |
-| Thu | 495 | -1.07 [-1.42, -0.70] | 32% [29, 36] (160/495) | -0.74 [-1.66, 0.23] |
-| Fri | 484 | -0.33 [-0.69, 0.05] | 40% [36, 43] (192/484) | -0.87 [-1.83, 0.13] |
+| VIX < 11 | 59 | 0.70 [0.51, 0.93] | 0.49 | 22% |
+| VIX 11–13 | 148 | **0.65** [0.52, 0.81] | 0.49 | 18% |
+| VIX 13–15 | 147 | 0.86 [0.67, 1.09] | **0.65** | 27% |
+| VIX 15–18 | 80 | 0.64 [0.49, 0.82] | 0.44 | 24% |
+| VIX ≥ 18 | 62 | **1.09** [0.77, 1.45] | **0.36** | 27% |
+| VIX in bottom third of its year | 182 | 0.65 | 0.47 | 19% |
+| VIX in top third of its year | 171 | 0.91 | 0.43 | 27% |
+| RV5/VIX ≥ 1.1 (last 5 days moved more than implied) | 65 | 1.05 [0.76, 1.35] | 0.48 | 32% |
+| RV5/VIX 0.5–0.8 | 205 | 0.66 | 0.46 | 20% |
+| Monday (includes the weekend gap) | 100 | 1.11 [0.77, 1.45] | 0.52 | 29% |
+| Wednesday | 99 | 0.69 | **0.29** | 17% |
 
-By trading days to the NIFTY weekly expiry (0 = expiry day), 2024-01-01 to 2026-10-08; H1/H2 split at 2025-05-23.
+**When options are cheap or expensive:**
 
-| days to NIFTY expiry | n | VIX change % mean [90% CI] | H1 / H2 | % days VIX rose | VIX vs 20d mean % [90% CI] |
-|---|---|---|---|---|---|
-| 0 | 145 | -1.06 [-1.70, -0.36] | -1.04 / -1.08 | 35% [29, 42] (51/145) | -0.28 [-1.90, 1.44] |
-| 1 | 145 | 0.40 [-0.33, 1.13] | -0.96 / 1.77 | 51% [44, 58] (74/145) | 0.93 [-0.77, 2.74] |
-| 2 | 145 | 0.42 [-0.55, 1.51] | 0.85 / -0.01 | 47% [40, 54] (68/145) | 0.79 [-1.01, 2.68] |
-| 3 | 143 | 1.13 [0.22, 2.14] | 2.53 / -0.28 | 55% [48, 61] (78/143) | 0.49 [-1.24, 2.28] |
-| 4 | 105 | 0.07 [-0.73, 0.90] | -0.04 / 0.17 | 42% [34, 50] (44/105) | -0.97 [-2.88, 1.06] |
-
-### Real weekly-option premium by days to expiry (bhavcopy)
-
-
-**NIFTY: real ATM weekly straddle IV vs India VIX** (bhavcopy prices, 2024-01-01 to 2026-10-08). 'trading-time IV' uses the repo's clock (only session minutes count, 375 min/day, 252 days/yr) so 'IV/VIX = 1' means the repo model prices the straddle correctly; 'calendar IV' is the market convention. 'real vs model' = real straddle price / repo-model price - 1.
-
-| snapshot | trading days to expiry | n | trading-time IV / VIX, median | calendar IV / VIX, median | real vs model price, mean % [90% CI] | H1 / H2 mean % |
-|---|---|---|---|---|---|---|
-| open (09:15 first trade) | 0 (+ today's session) | 144 | 0.83 | 1.97 | -12.9 [-16.1, -9.5] | -12.6 / -13.2 |
-| open (09:15 first trade) | 1 (+ today's session) | 143 | 0.86 | 1.25 | -12.7 [-15.0, -10.4] | -14.7 / -10.6 |
-| open (09:15 first trade) | 2 (+ today's session) | 144 | 0.88 | 1.05 | -9.8 [-12.2, -7.1] | -11.1 / -8.4 |
-| open (09:15 first trade) | 3 (+ today's session) | 143 | 0.90 | 1.04 | -9.3 [-11.1, -7.6] | -10.5 / -8.1 |
-| open (09:15 first trade) | 4 (+ today's session) | 103 | 0.89 | 0.96 | -9.2 [-11.4, -6.9] | -7.5 / -10.8 |
-| close (bhavcopy close) | 1 | 145 | 0.91 | 1.05 | -6.2 [-8.7, -3.5] | -7.0 / -5.3 |
-| close (bhavcopy close) | 2 | 145 | 0.92 | 0.92 | -7.6 [-10.0, -5.1] | -10.8 / -4.4 |
-| close (bhavcopy close) | 3 | 146 | 0.91 | 0.92 | -7.7 [-9.7, -5.7] | -8.8 / -6.7 |
-| close (bhavcopy close) | 4 | 142 | 0.92 | 0.89 | -6.5 [-8.2, -4.8] | -6.8 / -6.2 |
-| close (bhavcopy close) | 5 | 105 | 0.89 | 0.90 | -9.7 [-11.3, -7.9] | -9.2 / -10.0 |
-
-**SENSEX: real ATM weekly straddle IV vs India VIX x1.05** (bhavcopy prices, 2024-01-02 to 2026-10-08). 'trading-time IV' uses the repo's clock (only session minutes count, 375 min/day, 252 days/yr) so 'IV/VIX = 1' means the repo model prices the straddle correctly; 'calendar IV' is the market convention. 'real vs model' = real straddle price / repo-model price - 1.
-
-| snapshot | trading days to expiry | n | trading-time IV / VIX, median | calendar IV / VIX, median | real vs model price, mean % [90% CI] | H1 / H2 mean % |
-|---|---|---|---|---|---|---|
-| open (09:15 first trade) | 0 (+ today's session) | 143 | 0.85 | 2.02 | -11.5 [-14.0, -8.9] | -9.4 / -13.5 |
-| open (09:15 first trade) | 1 (+ today's session) | 141 | 0.87 | 1.30 | -8.9 [-11.8, -5.8] | -3.5 / -14.4 |
-| open (09:15 first trade) | 2 (+ today's session) | 142 | 0.88 | 1.13 | -9.6 [-11.9, -7.1] | -9.3 / -9.9 |
-| open (09:15 first trade) | 3 (+ today's session) | 139 | 0.89 | 1.10 | -9.8 [-11.8, -7.8] | -9.1 / -10.6 |
-| open (09:15 first trade) | 4 (+ today's session) | 104 | 0.88 | 1.00 | -10.5 [-12.5, -8.4] | -9.9 / -11.1 |
-| close (bhavcopy close) | 1 | 143 | 0.89 | 1.06 | -8.3 [-10.5, -5.9] | -6.3 / -10.2 |
-| close (bhavcopy close) | 2 | 143 | 0.89 | 0.99 | -8.8 [-10.7, -6.9] | -6.5 / -11.3 |
-| close (bhavcopy close) | 3 | 143 | 0.89 | 0.96 | -10.3 [-12.1, -8.6] | -9.9 / -10.8 |
-| close (bhavcopy close) | 4 | 140 | 0.88 | 0.87 | -9.9 [-11.7, -8.1] | -10.0 / -9.8 |
-| close (bhavcopy close) | 5 | 104 | 0.86 | 0.87 | -13.1 [-14.7, -11.3] | -11.8 / -14.1 |
-
-Same contract, same day: trading-time IV at the open (first trade) vs at the close (nearest expiry not expiring today).
-
-| index | n days | IV(open) - IV(close), vol pts, mean [90% CI] | % days open IV > close IV |
-|---|---|---|---|
-| NIFTY | 534 | -0.48 [-0.65, -0.32] | 42% [38, 45] (224/534) |
-| SENSEX | 527 | -0.08 [-0.24, 0.09] | 48% [44, 51] (251/527) |
-
-### Scheduled events (verified dates): India VIX path and the T-1-close -> T-close long ATM NIFTY straddle (real prices)
-
-RBI decisions: 8 Feb, 5 Apr, 7 Jun, 8 Aug, 9 Oct, 6 Dec 2024; 7 Feb, 9 Apr, 6 Jun, 6 Aug, 1 Oct, 5 Dec 2025; 6 Feb, 8 Apr, 5 Jun, 5 Aug, 7 Oct 2026 (RBI MPC schedule press releases). Budgets: 1 Feb 2024 (interim), 23 Jul 2024, 1 Feb 2025 (Saturday session); 1 Feb 2026 was a Sunday special session missing from Yahoo, so it is excluded. Lok Sabha results: 4 Jun 2024.
-
-| event | n | VIX T-5 -> T-1, % mean | VIX T-1 -> T, % mean [90% CI] | VIX T -> T+1, % mean | VIX T -> T+3, % mean | NIFTY abs move on T / VIX-implied 1-day move, mean | straddle T-1 close -> T close, % of premium, mean [90% CI] | straddle up? |
-|---|---|---|---|---|---|---|---|---|
-| RBI policy | 16 | 2.1 | -2.2 [-4.7, -0.2] | 0.2 | -3.1 | 0.70 | -1.8 [-13.1, 9.6] | 7/16 |
-| Union Budget | 3 | 3.4 | -13.4 [-15.9, -10.9] | -1.6 | 1.5 | 0.12 | -55.6 [-68.4, -42.7] | 0/3 |
-| Election results | 1 | -13.5 | 27.7 | -29.4 | -36.9 | 4.63 | 125.6 | 1/1 |
-
-Per-event detail:
-
-| date | event | VIX T-5 | VIX T-1 | VIX T | VIX T+1 | NIFTY abs move % | implied 1-day % | straddle % |
-|---|---|---|---|---|---|---|---|---|
-| 2024-02-08 | RBI policy | 14.46 | 15.51 | 15.83 | 15.45 | 0.97 | 0.98 | 50.4 |
-| 2024-04-05 | RBI policy | 12.83 | 11.22 | 11.34 | 11.61 | 0.00 | 0.71 | -8.4 |
-| 2024-06-07 | RBI policy | 24.60 | 16.80 | 16.88 | 16.40 | 2.03 | 1.06 | 39.3 |
-| 2024-08-08 | RBI policy | 12.93 | 16.17 | 16.60 | 15.34 | 0.75 | 1.02 | 3.5 |
-| 2024-10-09 | RBI policy | 11.99 | 14.59 | 14.12 | 13.50 | 0.12 | 0.92 | -32.1 |
-| 2024-12-06 | RBI policy | 14.43 | 14.53 | 14.14 | 14.11 | 0.12 | 0.92 | -16.6 |
-| 2025-02-07 | RBI policy | 14.18 | 14.18 | 13.69 | 14.45 | 0.18 | 0.89 | -20.6 |
-| 2025-04-09 | RBI policy | 13.72 | 20.44 | 21.43 | 20.11 | 0.61 | 1.29 | -55.9 |
-| 2025-06-06 | RBI policy | 16.08 | 15.08 | 14.63 | 14.69 | 1.01 | 0.95 | 11.4 |
-| 2025-08-06 | RBI policy | 11.21 | 11.71 | 11.96 | 11.69 | 0.31 | 0.74 | -15.8 |
-| 2025-10-01 | RBI policy | 10.52 | 11.07 | 10.29 | 10.06 | 0.91 | 0.70 | 16.4 |
-| 2025-12-05 | RBI policy | 11.62 | 10.82 | 10.32 | 11.13 | 0.58 | 0.68 | 2.0 |
-| 2026-02-06 | RBI policy | 13.63 | 12.17 | 11.94 | 12.19 | 0.20 | 0.77 | -23.7 |
-| 2026-04-08 | RBI policy | 27.89 | 24.70 | 19.70 | 20.43 | 3.71 | 1.56 | 43.4 |
-| 2026-06-05 | RBI policy | 16.19 | 15.89 | 15.79 | 17.03 | 0.21 | 1.00 | -13.9 |
-| 2026-08-05 | RBI policy | 12.01 | 12.19 | 12.06 | 12.16 | 0.04 | 0.77 | -7.8 |
-| 2024-02-01 | Union Budget | 14.38 | 16.05 | 14.46 | 14.70 | 0.13 | 1.01 | -79.5 |
-| 2024-07-23 | Union Budget | 14.19 | 15.44 | 12.75 | 11.76 | 0.12 | 0.97 | -46.2 |
-| 2025-02-01 | Union Budget | 18.13 | 16.25 | 14.18 | 14.35 | 0.11 | 1.02 | -40.9 |
-| 2024-06-04 | Election results | 24.20 | 20.94 | 26.75 | 18.89 | 6.11 | 1.32 | 125.6 |
+- No bucket has a ratio reliably above 1.
+- The nearest to fair, for someone holding overnight, are high VIX (18 or more), the week after a burst of realized movement, and Mondays.
+- Exactly those regimes are the *worst* for intraday holders, because their movement comes as overnight gaps (open-to-close variance 0.36× implied when VIX ≥ 18).
+- Quiet regimes are consistently expensive: VIX 11–13, the bottom third of its year, and RV5/VIX of 0.5–0.8 all sit around 0.65.
+- **Whether a big day is coming cannot be told in advance.** After a day that moved more than implied, the next day beat its implied move on 22% [16, 29] of occasions. After "RV20/VIX ≥ 1" it was 20%, against 23% unconditionally.
+- Over 10 years, "RV5/VIX ≥ 1.0" gives 1.21× [0.86, 1.66]. That is driven by fat tails, not frequency: only 25% of those days beat the implied move.
 
 ---
 
-## (c) Variance risk premium: implied (VIX) vs realized moves
+## 5. (d) Long-option results by strike and days to expiry
 
+### 5.1 Real prices, buy at the open. All P&L is per lot (NIFTY 65, SENSEX 20), with CE and PE pooled (a coin-flip direction)
 
-### NIFTY: 2-year sample (2024-10-08 to 2026-10-08)
+**NIFTY:**
 
-Ratios below 1 mean options (priced at VIX) were expensive relative to what the index then did; above 1 = cheap. Brackets are 90% bootstrap CIs (days resampled); rates have 90% Wilson CIs.
-
-| sample / bucket | n days | mean implied 1-day move | realized/implied VARIANCE, close-close | mean abs close-close move / implied mean abs move | open-close variance / implied | Parkinson (high-low) variance / implied | days abs close-close move > implied 1-sigma (normal: 32%) | days abs open-close move > implied 1-sigma |
-|---|---|---|---|---|---|---|---|---|
-| all | 496 | 0.89% | 0.82 [0.71, 0.95] | 0.86 [0.81, 0.92] | 0.49 [0.43, 0.56] | 0.48 [0.44, 0.51] | 23% [20, 27] (116/496) | 15% [12, 18] (74/496) |
-| first half (to 2025-10-06) | 248 | 0.89% | 0.78 [0.63, 0.96] | 0.84 [0.76, 0.92] | 0.53 [0.44, 0.62] | 0.51 [0.46, 0.56] | 25% [21, 30] (62/248) | 19% [15, 23] (46/248) |
-| second half | 248 | 0.88% | 0.86 [0.70, 1.04] | 0.89 [0.81, 0.96] | 0.45 [0.37, 0.53] | 0.45 [0.41, 0.49] | 22% [18, 26] (54/248) | 11% [8, 15] (28/248) |
-| prev-close VIX < 11 | 59 | 0.65% | 0.70 [0.51, 0.93] | 0.86 [0.73, 0.99] | 0.49 [0.38, 0.60] | 0.44 [0.38, 0.51] | 22% [14, 32] (13/59) | 20% [13, 30] (12/59) |
-| prev-close VIX 11-13 | 148 | 0.75% | 0.65 [0.52, 0.81] | 0.79 [0.70, 0.87] | 0.49 [0.37, 0.62] | 0.44 [0.39, 0.50] | 18% [14, 24] (27/148) | 12% [8, 17] (18/148) |
-| prev-close VIX 13-15 | 147 | 0.88% | 0.86 [0.67, 1.09] | 0.88 [0.79, 0.99] | 0.65 [0.52, 0.79] | 0.61 [0.53, 0.69] | 27% [22, 34] (40/147) | 20% [15, 26] (30/147) |
-| prev-close VIX 15-18 | 80 | 1.03% | 0.64 [0.49, 0.82] | 0.79 [0.68, 0.91] | 0.44 [0.31, 0.59] | 0.45 [0.37, 0.53] | 24% [17, 32] (19/80) | 14% [9, 21] (11/80) |
-| prev-close VIX >= 18 | 62 | 1.29% | 1.09 [0.77, 1.45] | 1.02 [0.86, 1.19] | 0.36 [0.28, 0.46] | 0.40 [0.35, 0.46] | 27% [19, 38] (17/62) | 5% [2, 12] (3/62) |
-| VIX in bottom third of its past year | 182 | 0.72% | 0.65 [0.53, 0.77] | 0.81 [0.74, 0.88] | 0.47 [0.39, 0.55] | 0.46 [0.41, 0.52] | 19% [15, 24] (35/182) | 14% [11, 19] (26/182) |
-| middle third | 143 | 0.84% | 0.81 [0.61, 1.05] | 0.84 [0.74, 0.95] | 0.64 [0.50, 0.79] | 0.56 [0.48, 0.63] | 24% [19, 31] (35/143) | 20% [15, 26] (29/143) |
-| top third | 171 | 1.10% | 0.91 [0.72, 1.11] | 0.92 [0.83, 1.01] | 0.43 [0.35, 0.51] | 0.45 [0.40, 0.50] | 27% [22, 33] (46/171) | 11% [8, 16] (19/171) |
-| RV20/VIX < 0.6 | 26 | 0.80% | 0.66 [0.45, 0.87] | 0.89 [0.73, 1.04] | 0.74 [0.37, 1.20] | 0.53 [0.37, 0.71] | 15% [7, 30] (4/26) | 19% [10, 35] (5/26) |
-| RV20/VIX 0.6-0.8 | 199 | 0.85% | 0.85 [0.67, 1.06] | 0.88 [0.79, 0.97] | 0.54 [0.43, 0.65] | 0.50 [0.45, 0.56] | 27% [22, 32] (53/199) | 17% [13, 21] (33/199) |
-| RV20/VIX 0.8-1.0 | 170 | 0.88% | 0.92 [0.71, 1.15] | 0.89 [0.80, 0.99] | 0.46 [0.37, 0.55] | 0.45 [0.40, 0.50] | 23% [18, 29] (39/170) | 14% [10, 19] (24/170) |
-| RV20/VIX >= 1.0 | 101 | 1.01% | 0.67 [0.48, 0.91] | 0.79 [0.69, 0.91] | 0.43 [0.33, 0.54] | 0.47 [0.40, 0.56] | 20% [14, 27] (20/101) | 12% [8, 18] (12/101) |
-| RV5/VIX < 0.5 | 71 | 0.84% | 0.89 [0.51, 1.36] | 0.84 [0.69, 1.01] | 0.56 [0.37, 0.74] | 0.44 [0.34, 0.54] | 25% [18, 35] (18/71) | 14% [9, 22] (10/71) |
-| RV5/VIX 0.5-0.8 | 205 | 0.85% | 0.66 [0.54, 0.80] | 0.80 [0.73, 0.88] | 0.46 [0.37, 0.56] | 0.46 [0.41, 0.51] | 20% [16, 25] (41/205) | 16% [12, 21] (33/205) |
-| RV5/VIX 0.8-1.1 | 155 | 0.89% | 0.85 [0.64, 1.10] | 0.89 [0.80, 0.99] | 0.51 [0.41, 0.61] | 0.52 [0.46, 0.57] | 23% [18, 29] (36/155) | 16% [12, 22] (25/155) |
-| RV5/VIX >= 1.1 | 65 | 1.05% | 1.05 [0.76, 1.35] | 0.98 [0.83, 1.14] | 0.48 [0.35, 0.62] | 0.49 [0.40, 0.58] | 32% [24, 42] (21/65) | 9% [5, 17] (6/65) |
-| Mon | 100 | 0.88% | 1.11 [0.77, 1.45] | 1.02 [0.89, 1.15] | 0.52 [0.39, 0.65] | 0.51 [0.44, 0.58] | 29% [22, 37] (29/100) | 13% [8, 20] (13/100) |
-| Tue | 102 | 0.90% | 0.71 [0.54, 0.90] | 0.81 [0.70, 0.92] | 0.54 [0.39, 0.71] | 0.49 [0.42, 0.57] | 21% [15, 28] (21/102) | 17% [11, 24] (17/102) |
-| Wed | 99 | 0.90% | 0.69 [0.46, 0.98] | 0.76 [0.66, 0.88] | 0.29 [0.21, 0.38] | 0.37 [0.32, 0.42] | 17% [12, 24] (17/99) | 8% [5, 14] (8/99) |
-| Thu | 98 | 0.88% | 0.74 [0.50, 1.02] | 0.79 [0.67, 0.92] | 0.53 [0.40, 0.67] | 0.52 [0.44, 0.61] | 21% [15, 29] (21/98) | 17% [12, 24] (17/98) |
-| Fri | 96 | 0.87% | 0.88 [0.69, 1.08] | 0.95 [0.84, 1.06] | 0.59 [0.47, 0.74] | 0.52 [0.44, 0.61] | 29% [22, 37] (28/96) | 20% [14, 27] (19/96) |
-
-Overnight gap share of close-to-close variance: 55%. Median RV20/VIX = 0.82; median RV5/VIX = 0.76.
-
-NIFTY 2y: share of days whose realized close-to-close variance beat the implied, by information known the evening before.
-
-| known before the open | n | % days r^2 > implied var | realized/implied variance |
-|---|---|---|---|
-| RV20/VIX >= 1.0 | 101 | 20% [14, 27] (20/101) | 0.67 [0.48, 0.91] |
-| RV20/VIX < 0.7 | 86 | 22% [16, 30] (19/86) | 0.76 [0.57, 1.02] |
-| RV5/VIX >= 1.0 | 105 | 31% [25, 39] (33/105) | 1.01 [0.76, 1.28] |
-| RV5/VIX < 0.6 | 136 | 24% [18, 30] (32/136) | 0.80 [0.57, 1.09] |
-| yesterday's abs move > implied | 115 | 22% [16, 29] (25/115) | 0.82 [0.62, 1.06] |
-| yesterday's abs move < 0.5x implied | 226 | 24% [20, 29] (55/226) | 0.77 [0.62, 0.93] |
-| VIX rose > 5% yesterday | 60 | 20% [13, 30] (12/60) | 0.73 [0.57, 0.89] |
-| VIX fell > 5% yesterday | 48 | 31% [21, 43] (15/48) | 0.98 [0.63, 1.44] |
-| all days | 496 | 23% [20, 27] (116/496) | 0.82 [0.71, 0.95] |
-
-### SENSEX (implied = VIX x 1.05): 2-year sample (2024-10-08 to 2026-10-08)
-
-Ratios below 1 mean options (priced at VIX) were expensive relative to what the index then did; above 1 = cheap. Brackets are 90% bootstrap CIs (days resampled); rates have 90% Wilson CIs.
-
-| sample / bucket | n days | mean implied 1-day move | realized/implied VARIANCE, close-close | mean abs close-close move / implied mean abs move | open-close variance / implied | Parkinson (high-low) variance / implied | days abs close-close move > implied 1-sigma (normal: 32%) | days abs open-close move > implied 1-sigma |
-|---|---|---|---|---|---|---|---|---|
-| all | 495 | 0.93% | 0.75 [0.65, 0.86] | 0.83 [0.78, 0.88] | 0.47 [0.42, 0.54] | 0.45 [0.42, 0.48] | 21% [18, 24] (103/495) | 15% [12, 18] (73/495) |
-| first half (to 2025-10-06) | 247 | 0.94% | 0.70 [0.56, 0.84] | 0.79 [0.72, 0.86] | 0.50 [0.41, 0.59] | 0.46 [0.41, 0.51] | 21% [17, 26] (53/247) | 17% [14, 22] (43/247) |
-| second half | 248 | 0.93% | 0.80 [0.65, 0.97] | 0.86 [0.79, 0.94] | 0.45 [0.38, 0.53] | 0.44 [0.40, 0.48] | 20% [16, 25] (50/248) | 12% [9, 16] (30/248) |
-| prev-close VIX < 11 | 35 | 0.66% | 0.66 [0.40, 1.00] | 0.81 [0.66, 0.98] | 0.38 [0.27, 0.50] | 0.35 [0.29, 0.41] | 23% [13, 36] (8/35) | 6% [2, 16] (2/35) |
-| prev-close VIX 11-13 | 144 | 0.76% | 0.56 [0.45, 0.70] | 0.75 [0.68, 0.83] | 0.49 [0.38, 0.62] | 0.42 [0.37, 0.48] | 15% [11, 21] (22/144) | 14% [10, 19] (20/144) |
-| prev-close VIX 13-15 | 128 | 0.89% | 0.77 [0.58, 0.99] | 0.83 [0.73, 0.93] | 0.63 [0.49, 0.79] | 0.56 [0.47, 0.65] | 23% [18, 30] (30/128) | 23% [18, 30] (30/128) |
-| prev-close VIX 15-18 | 109 | 1.02% | 0.64 [0.49, 0.81] | 0.77 [0.67, 0.87] | 0.48 [0.35, 0.61] | 0.46 [0.40, 0.54] | 20% [15, 27] (22/109) | 14% [9, 20] (15/109) |
-| prev-close VIX >= 18 | 79 | 1.31% | 0.95 [0.70, 1.24] | 0.98 [0.85, 1.11] | 0.36 [0.28, 0.44] | 0.38 [0.34, 0.43] | 27% [19, 35] (21/79) | 8% [4, 14] (6/79) |
-| VIX in bottom third of its past year | 182 | 0.76% | 0.60 [0.50, 0.73] | 0.78 [0.71, 0.85] | 0.43 [0.36, 0.50] | 0.42 [0.37, 0.48] | 18% [14, 23] (33/182) | 13% [9, 17] (23/182) |
-| middle third | 140 | 0.88% | 0.70 [0.54, 0.89] | 0.79 [0.69, 0.89] | 0.63 [0.50, 0.78] | 0.52 [0.45, 0.59] | 21% [16, 27] (29/140) | 21% [16, 27] (29/140) |
-| top third | 173 | 1.15% | 0.84 [0.67, 1.02] | 0.88 [0.80, 0.97] | 0.42 [0.34, 0.51] | 0.43 [0.38, 0.48] | 24% [19, 29] (41/173) | 12% [9, 17] (21/173) |
-| RV20/VIX < 0.6 | 41 | 0.86% | 0.59 [0.47, 0.72] | 0.88 [0.78, 0.99] | 0.53 [0.34, 0.77] | 0.43 [0.34, 0.52] | 17% [10, 29] (7/41) | 17% [10, 29] (7/41) |
-| RV20/VIX 0.6-0.8 | 238 | 0.87% | 0.72 [0.57, 0.88] | 0.79 [0.72, 0.86] | 0.46 [0.37, 0.55] | 0.45 [0.40, 0.49] | 20% [16, 24] (47/238) | 14% [11, 18] (33/238) |
-| RV20/VIX 0.8-1.0 | 139 | 0.99% | 0.86 [0.68, 1.07] | 0.89 [0.79, 1.00] | 0.53 [0.42, 0.64] | 0.46 [0.41, 0.52] | 24% [18, 30] (33/139) | 17% [13, 23] (24/139) |
-| RV20/VIX >= 1.0 | 77 | 1.04% | 0.68 [0.45, 0.99] | 0.79 [0.68, 0.92] | 0.41 [0.28, 0.56] | 0.44 [0.35, 0.55] | 21% [14, 29] (16/77) | 12% [7, 19] (9/77) |
-| RV5/VIX < 0.5 | 83 | 0.88% | 0.75 [0.46, 1.10] | 0.79 [0.66, 0.92] | 0.48 [0.34, 0.64] | 0.42 [0.34, 0.52] | 23% [16, 31] (19/83) | 13% [8, 21] (11/83) |
-| RV5/VIX 0.5-0.8 | 225 | 0.90% | 0.61 [0.51, 0.73] | 0.77 [0.71, 0.84] | 0.42 [0.35, 0.51] | 0.41 [0.37, 0.46] | 16% [13, 21] (37/225) | 12% [9, 16] (27/225) |
-| RV5/VIX 0.8-1.1 | 129 | 0.94% | 0.83 [0.61, 1.09] | 0.87 [0.77, 0.98] | 0.59 [0.46, 0.74] | 0.53 [0.46, 0.60] | 23% [18, 30] (30/129) | 21% [16, 27] (27/129) |
-| RV5/VIX >= 1.1 | 58 | 1.12% | 0.96 [0.69, 1.26] | 0.96 [0.80, 1.12] | 0.42 [0.31, 0.54] | 0.43 [0.36, 0.51] | 29% [21, 40] (17/58) | 14% [8, 23] (8/58) |
-| Mon | 100 | 0.93% | 0.95 [0.67, 1.24] | 0.95 [0.83, 1.07] | 0.54 [0.39, 0.71] | 0.48 [0.41, 0.57] | 24% [18, 32] (24/100) | 11% [7, 17] (11/100) |
-| Tue | 102 | 0.94% | 0.67 [0.51, 0.85] | 0.79 [0.68, 0.89] | 0.49 [0.36, 0.62] | 0.46 [0.39, 0.53] | 19% [13, 26] (19/102) | 18% [12, 25] (18/102) |
-| Wed | 99 | 0.94% | 0.64 [0.42, 0.93] | 0.73 [0.63, 0.84] | 0.29 [0.21, 0.38] | 0.34 [0.30, 0.39] | 17% [12, 24] (17/99) | 8% [5, 14] (8/99) |
-| Thu | 98 | 0.92% | 0.68 [0.47, 0.94] | 0.77 [0.65, 0.89] | 0.50 [0.38, 0.63] | 0.49 [0.42, 0.57] | 18% [13, 26] (18/98) | 17% [12, 24] (17/98) |
-| Fri | 96 | 0.92% | 0.82 [0.63, 1.02] | 0.91 [0.80, 1.02] | 0.57 [0.44, 0.71] | 0.47 [0.40, 0.55] | 26% [19, 34] (25/96) | 20% [14, 27] (19/96) |
-
-Overnight gap share of close-to-close variance: 59%. Median RV20/VIX = 0.78; median RV5/VIX = 0.71.
-
-### NIFTY: 10-year check (2016-10-13 to 2026-10-08)
-
-Ratios below 1 mean options (priced at VIX) were expensive relative to what the index then did; above 1 = cheap. Brackets are 90% bootstrap CIs (days resampled); rates have 90% Wilson CIs.
-
-| sample / bucket | n days | mean implied 1-day move | realized/implied VARIANCE, close-close | mean abs close-close move / implied mean abs move | open-close variance / implied | Parkinson (high-low) variance / implied | days abs close-close move > implied 1-sigma (normal: 32%) | days abs open-close move > implied 1-sigma |
-|---|---|---|---|---|---|---|---|---|
-| all | 2464 | 1.03% | 0.86 [0.74, 1.00] | 0.83 [0.81, 0.86] | 0.55 [0.49, 0.62] | 0.52 [0.47, 0.60] | 21% [19, 22] (512/2464) | 14% [12, 15] (335/2464) |
-| first half (to 2021-10-12) | 1232 | 1.12% | 0.89 [0.72, 1.11] | 0.82 [0.78, 0.86] | 0.59 [0.50, 0.69] | 0.55 [0.47, 0.66] | 19% [18, 21] (240/1232) | 13% [11, 15] (159/1232) |
-| second half | 1232 | 0.95% | 0.80 [0.72, 0.89] | 0.85 [0.81, 0.88] | 0.50 [0.44, 0.56] | 0.49 [0.45, 0.53] | 22% [20, 24] (272/1232) | 14% [13, 16] (176/1232) |
-| prev-close VIX < 11 | 123 | 0.66% | 0.72 [0.58, 0.86] | 0.86 [0.77, 0.96] | 0.47 [0.38, 0.56] | 0.47 [0.41, 0.52] | 27% [21, 34] (33/123) | 17% [12, 23] (21/123) |
-| prev-close VIX 11-13 | 564 | 0.75% | 0.63 [0.56, 0.70] | 0.77 [0.73, 0.81] | 0.41 [0.36, 0.46] | 0.41 [0.38, 0.43] | 19% [16, 21] (105/564) | 10% [8, 12] (57/564) |
-| prev-close VIX 13-15 | 590 | 0.88% | 0.67 [0.59, 0.75] | 0.78 [0.74, 0.83] | 0.54 [0.49, 0.61] | 0.51 [0.47, 0.55] | 19% [17, 22] (115/590) | 15% [13, 18] (90/590) |
-| prev-close VIX 15-18 | 525 | 1.03% | 0.76 [0.66, 0.89] | 0.84 [0.79, 0.89] | 0.57 [0.47, 0.68] | 0.52 [0.46, 0.59] | 22% [19, 25] (117/525) | 16% [13, 18] (82/525) |
-| prev-close VIX >= 18 | 662 | 1.49% | 0.99 [0.78, 1.22] | 0.88 [0.82, 0.94] | 0.58 [0.48, 0.70] | 0.56 [0.46, 0.69] | 21% [19, 24] (142/662) | 13% [11, 15] (85/662) |
-| VIX in bottom third of its past year | 858 | 0.82% | 0.69 [0.60, 0.80] | 0.79 [0.75, 0.83] | 0.50 [0.43, 0.58] | 0.48 [0.44, 0.54] | 19% [17, 22] (167/858) | 12% [11, 14] (106/858) |
-| middle third | 742 | 1.03% | 0.67 [0.60, 0.73] | 0.80 [0.76, 0.84] | 0.47 [0.42, 0.52] | 0.44 [0.41, 0.47] | 21% [19, 24] (156/742) | 14% [12, 17] (107/742) |
-| top third | 745 | 1.30% | 1.04 [0.81, 1.30] | 0.90 [0.84, 0.96] | 0.62 [0.51, 0.75] | 0.59 [0.49, 0.72] | 22% [20, 25] (166/745) | 15% [13, 17] (109/745) |
-| RV20/VIX < 0.6 | 259 | 1.02% | 0.60 [0.48, 0.73] | 0.76 [0.69, 0.83] | 0.43 [0.36, 0.51] | 0.37 [0.32, 0.43] | 17% [13, 21] (43/259) | 14% [10, 17] (35/259) |
-| RV20/VIX 0.6-0.8 | 1037 | 0.97% | 0.85 [0.69, 1.02] | 0.82 [0.78, 0.86] | 0.57 [0.47, 0.67] | 0.53 [0.47, 0.60] | 21% [19, 23] (217/1037) | 12% [11, 14] (128/1037) |
-| RV20/VIX 0.8-1.0 | 748 | 1.03% | 0.99 [0.73, 1.37] | 0.87 [0.82, 0.93] | 0.63 [0.48, 0.80] | 0.61 [0.47, 0.84] | 22% [19, 24] (163/748) | 15% [13, 17] (112/748) |
-| RV20/VIX >= 1.0 | 400 | 1.22% | 0.81 [0.64, 1.01] | 0.84 [0.78, 0.91] | 0.47 [0.40, 0.56] | 0.46 [0.41, 0.51] | 21% [18, 25] (84/400) | 14% [11, 17] (56/400) |
-| RV5/VIX < 0.5 | 533 | 1.02% | 0.63 [0.53, 0.75] | 0.75 [0.70, 0.80] | 0.44 [0.38, 0.52] | 0.39 [0.35, 0.44] | 17% [15, 20] (92/533) | 12% [10, 14] (62/533) |
-| RV5/VIX 0.5-0.8 | 978 | 0.97% | 0.68 [0.61, 0.74] | 0.80 [0.77, 0.84] | 0.48 [0.43, 0.53] | 0.44 [0.41, 0.46] | 20% [18, 23] (199/978) | 14% [12, 16] (137/978) |
-| RV5/VIX 0.8-1.1 | 641 | 1.03% | 0.91 [0.74, 1.10] | 0.88 [0.82, 0.93] | 0.56 [0.47, 0.66] | 0.51 [0.45, 0.57] | 22% [20, 25] (143/641) | 14% [12, 16] (89/641) |
-| RV5/VIX >= 1.1 | 307 | 1.26% | 1.28 [0.82, 1.84] | 0.95 [0.85, 1.05] | 0.77 [0.53, 1.07] | 0.80 [0.57, 1.14] | 25% [21, 29] (76/307) | 14% [11, 18] (44/307) |
-| Mon | 489 | 1.02% | 1.43 [0.99, 1.97] | 1.01 [0.94, 1.09] | 0.60 [0.51, 0.70] | 0.53 [0.48, 0.60] | 26% [23, 30] (128/489) | 17% [14, 20] (82/489) |
-| Tue | 495 | 1.05% | 0.71 [0.53, 0.92] | 0.76 [0.70, 0.81] | 0.48 [0.38, 0.60] | 0.47 [0.41, 0.56] | 16% [14, 19] (80/495) | 12% [10, 14] (58/495) |
-| Wed | 496 | 1.05% | 0.62 [0.51, 0.73] | 0.74 [0.70, 0.79] | 0.58 [0.43, 0.74] | 0.49 [0.42, 0.56] | 16% [14, 19] (81/496) | 10% [8, 13] (51/496) |
-| Thu | 497 | 1.04% | 0.77 [0.59, 1.01] | 0.80 [0.74, 0.86] | 0.43 [0.36, 0.51] | 0.45 [0.39, 0.53] | 20% [17, 23] (100/497) | 14% [11, 16] (68/497) |
-| Fri | 486 | 1.02% | 0.80 [0.67, 0.94] | 0.87 [0.81, 0.93] | 0.69 [0.49, 0.96] | 0.69 [0.47, 1.03] | 25% [22, 29] (123/486) | 16% [13, 19] (76/486) |
-
-Overnight gap share of close-to-close variance: 42%. Median RV20/VIX = 0.79; median RV5/VIX = 0.70.
-
-NIFTY 10y: share of days whose realized close-to-close variance beat the implied, by information known the evening before.
-
-| known before the open | n | % days r^2 > implied var | realized/implied variance |
-|---|---|---|---|
-| RV20/VIX >= 1.0 | 400 | 21% [18, 25] (84/400) | 0.81 [0.64, 1.01] |
-| RV20/VIX < 0.7 | 718 | 20% [17, 22] (141/718) | 0.65 [0.56, 0.74] |
-| RV5/VIX >= 1.0 | 464 | 25% [21, 28] (114/464) | 1.21 [0.86, 1.66] |
-| RV5/VIX < 0.6 | 853 | 19% [17, 21] (162/853) | 0.64 [0.57, 0.73] |
-| yesterday's abs move > implied | 511 | 23% [21, 27] (120/511) | 1.17 [0.81, 1.65] |
-| yesterday's abs move < 0.5x implied | 1162 | 20% [18, 22] (231/1162) | 0.71 [0.61, 0.83] |
-| VIX rose > 5% yesterday | 314 | 23% [19, 27] (72/314) | 0.98 [0.76, 1.22] |
-| VIX fell > 5% yesterday | 265 | 26% [22, 31] (70/265) | 1.37 [0.78, 2.14] |
-| all days | 2464 | 21% [19, 22] (512/2464) | 0.86 [0.74, 1.00] |
-
----
-
-## (d) Long-option expectancy grid
-
-
-### NIFTY: REAL prices (bhavcopy), buy at the open, 2024-01-01 to 2026-10-08 - lot 65
-
-CE and PE pooled (= a coin-flip direction). DTE = trading sessions left after today until expiry (0 = bought on expiry morning; for 0DTE the 'close' exit is the expiry settlement). CIs: close exit resamples days, expiry resamples expiry weeks.
-
-| slice | n trades | avg premium paid / lot (Rs) | exit same-day close: mean P&L / lot, Rs [90% CI] | median | P&L as % of premium | % trades profitable | hold to expiry: mean P&L / lot, Rs [90% CI] | median | P&L as % of premium | % trades profitable | % expired worthless |
-|---|---|---|---|---|---|---|---|---|---|---|---|
-| ATM, DTE 0 | 290 | 4,949 | -951 [-1,411, -465] | -2,859 | -19.2% | 29% [25, 34] (84/290) | -951 [-1,411, -465] | -2,859 | -19.2% | 29% [25, 34] (84/290) | 50% [45, 55] (145/290) |
-| ATM, DTE 1 | 290 | 7,072 | -751 [-997, -476] | -1,832 | -10.6% | 36% [32, 41] (105/290) | -1,135 [-1,749, -452] | -4,745 | -16.0% | 33% [28, 37] (95/290) | 50% [45, 55] (145/290) |
-| ATM, DTE 2 | 290 | 8,816 | -322 [-748, 163] | -1,363 | -3.7% | 36% [31, 41] (104/290) | -1,002 [-1,813, -146] | -5,359 | -11.4% | 33% [29, 38] (96/290) | 50% [45, 55] (145/290) |
-| ATM, DTE 3 | 292 | 10,215 | -556 [-803, -288] | -1,366 | -5.4% | 37% [32, 41] (107/292) | -1,165 [-2,232, -55] | -7,187 | -11.4% | 31% [27, 36] (91/290) | 50% [45, 55] (145/290) |
-| ATM, DTE 4 | 284 | 11,647 | -406 [-721, -85] | -1,357 | -3.5% | 40% [35, 45] (114/284) | -559 [-1,608, 584] | -7,307 | -4.8% | 35% [31, 40] (99/282) | 50% [45, 55] (141/282) |
-| ATM, DTE 5 | 210 | 12,625 | -754 [-1,035, -473] | -1,137 | -6.0% | 38% [32, 43] (79/210) | -2,177 [-3,462, -888] | -8,186 | -17.2% | 30% [25, 35] (62/208) | 50% [44, 56] (104/208) |
-| 1 strike ITM, DTE 1-5 | 1366 | 11,575 | -486 [-629, -338] | -1,302 | -4.2% | 40% [37, 42] (541/1366) | -1,089 [-1,823, -310] | -6,431 | -9.4% | 35% [33, 37] (474/1360) | 43% [41, 46] (591/1360) |
-| ATM, DTE 1-5 | 1366 | 9,919 | -547 [-697, -392] | -1,437 | -5.5% | 37% [35, 39] (509/1366) | -1,153 [-1,898, -377] | -5,905 | -11.6% | 33% [31, 35] (443/1360) | 50% [48, 52] (680/1360) |
-| 1 strike OTM, DTE 1-5 | 1366 | 8,476 | -608 [-746, -472] | -1,361 | -7.2% | 36% [33, 38] (486/1366) | -1,230 [-1,971, -461] | -5,470 | -14.5% | 30% [28, 32] (405/1360) | 57% [54, 59] (769/1360) |
-| 2 strikes OTM, DTE 1-5 | 1366 | 7,050 | -484 [-621, -346] | -1,217 | -6.9% | 35% [33, 37] (480/1366) | -1,126 [-1,834, -385] | -4,582 | -16.0% | 26% [24, 28] (352/1360) | 62% [60, 64] (847/1360) |
-| 1 strike ITM, 0DTE | 290 | 6,675 | -825 [-1,262, -374] | -2,948 | -12.4% | 36% [31, 40] (103/290) | -825 [-1,262, -374] | -2,948 | -12.4% | 36% [31, 40] (103/290) | 37% [32, 41] (106/290) |
-| ATM, 0DTE | 290 | 4,949 | -951 [-1,411, -465] | -2,859 | -19.2% | 29% [25, 34] (84/290) | -951 [-1,411, -465] | -2,859 | -19.2% | 29% [25, 34] (84/290) | 50% [45, 55] (145/290) |
-| 1 strike OTM, 0DTE | 290 | 3,560 | -949 [-1,378, -516] | -2,303 | -26.7% | 23% [19, 27] (67/290) | -949 [-1,378, -516] | -2,303 | -26.7% | 23% [19, 27] (67/290) | 63% [59, 68] (184/290) |
-| 2 strikes OTM, 0DTE | 290 | 2,336 | -696 [-1,067, -312] | -1,631 | -29.8% | 18% [15, 22] (53/290) | -696 [-1,067, -312] | -1,631 | -29.8% | 18% [15, 22] (53/290) | 76% [71, 79] (219/290) |
-| ATM CE only, DTE 1-5 | 683 | 10,538 | -830 [-1,158, -485] | -1,561 | -7.9% | 37% [34, 40] (251/683) | -2,260 [-3,752, -773] | -6,881 | -21.4% | 29% [26, 32] (196/680) | 53% [50, 57] (363/680) |
-| ATM PE only, DTE 1-5 | 683 | 9,301 | -264 [-642, 139] | -1,291 | -2.8% | 38% [35, 41] (258/683) | -46 [-1,608, 1,629] | -5,138 | -0.5% | 36% [33, 39] (247/680) | 47% [43, 50] (317/680) |
-| ATM DTE 1-5, first half (< 2025-05-23) | 682 | 9,988 | -442 [-691, -177] | -1,527 | -4.4% | 36% [33, 39] (248/682) | -698 [-1,789, 429] | -5,965 | -7.0% | 33% [30, 36] (224/682) | 50% [47, 53] (341/682) |
-| ATM DTE 1-5, second half | 684 | 9,851 | -652 [-793, -507] | -1,342 | -6.6% | 38% [35, 41] (261/684) | -1,611 [-2,593, -610] | -5,758 | -16.4% | 32% [29, 35] (219/678) | 50% [47, 53] (339/678) |
-
-### SENSEX: REAL prices (bhavcopy), buy at the open, 2024-01-02 to 2026-10-08 - lot 20
-
-CE and PE pooled (= a coin-flip direction). DTE = trading sessions left after today until expiry (0 = bought on expiry morning; for 0DTE the 'close' exit is the expiry settlement). CIs: close exit resamples days, expiry resamples expiry weeks.
-
-| slice | n trades | avg premium paid / lot (Rs) | exit same-day close: mean P&L / lot, Rs [90% CI] | median | P&L as % of premium | % trades profitable | hold to expiry: mean P&L / lot, Rs [90% CI] | median | P&L as % of premium | % trades profitable | % expired worthless |
-|---|---|---|---|---|---|---|---|---|---|---|---|
-| ATM, DTE 0 | 286 | 5,246 | -921 [-1,438, -358] | -2,994 | -17.5% | 29% [25, 34] (83/286) | -921 [-1,438, -358] | -2,994 | -17.5% | 29% [25, 34] (83/286) | 50% [45, 55] (143/286) |
-| ATM, DTE 1 | 286 | 7,592 | -802 [-1,162, -450] | -2,028 | -10.6% | 39% [34, 44] (111/286) | -1,278 [-1,919, -609] | -4,636 | -16.8% | 32% [27, 37] (91/286) | 50% [45, 55] (143/286) |
-| ATM, DTE 2 | 286 | 9,426 | -719 [-1,035, -411] | -1,587 | -7.6% | 37% [33, 42] (106/286) | -917 [-1,656, -121] | -6,038 | -9.7% | 36% [32, 41] (103/284) | 50% [45, 55] (142/284) |
-| ATM, DTE 3 | 288 | 10,873 | -775 [-1,079, -418] | -1,533 | -7.1% | 38% [33, 43] (109/288) | -1,893 [-2,888, -886] | -7,320 | -17.4% | 31% [27, 36] (90/286) | 50% [45, 55] (143/286) |
-| ATM, DTE 4 | 280 | 12,008 | -866 [-1,067, -668] | -1,642 | -7.2% | 36% [32, 41] (102/280) | -1,405 [-2,587, -223] | -8,146 | -11.7% | 34% [30, 39] (95/278) | 50% [45, 55] (139/278) |
-| ATM, DTE 5 | 207 | 12,766 | -745 [-1,072, -408] | -1,565 | -5.8% | 38% [33, 44] (79/207) | -1,669 [-3,002, -352] | -9,040 | -13.1% | 34% [29, 40] (70/205) | 50% [45, 56] (103/205) |
-| 1 strike ITM, DTE 1-5 | 1347 | 11,417 | -783 [-930, -637] | -1,623 | -6.9% | 38% [36, 40] (514/1347) | -1,406 [-2,100, -677] | -6,519 | -12.3% | 35% [33, 38] (475/1339) | 47% [44, 49] (623/1339) |
-| ATM, DTE 1-5 | 1347 | 10,396 | -783 [-923, -646] | -1,641 | -7.5% | 38% [35, 40] (507/1347) | -1,419 [-2,138, -695] | -6,229 | -13.6% | 34% [31, 36] (449/1339) | 50% [48, 52] (670/1339) |
-| 1 strike OTM, DTE 1-5 | 1348 | 9,380 | -720 [-867, -573] | -1,519 | -7.7% | 37% [34, 39] (493/1348) | -1,361 [-2,068, -618] | -5,837 | -14.5% | 31% [29, 33] (420/1340) | 54% [51, 56] (717/1340) |
-| 2 strikes OTM, DTE 1-5 | 1347 | 8,494 | -711 [-850, -576] | -1,432 | -8.4% | 36% [34, 38] (487/1347) | -1,371 [-2,073, -652] | -5,360 | -16.1% | 29% [27, 32] (394/1339) | 57% [54, 59] (758/1339) |
-| 1 strike ITM, 0DTE | 286 | 6,271 | -880 [-1,410, -320] | -2,889 | -14.0% | 32% [27, 37] (91/286) | -880 [-1,410, -320] | -2,889 | -14.0% | 32% [27, 37] (91/286) | 43% [39, 48] (124/286) |
-| ATM, 0DTE | 286 | 5,246 | -921 [-1,438, -358] | -2,994 | -17.5% | 29% [25, 34] (83/286) | -921 [-1,438, -358] | -2,994 | -17.5% | 29% [25, 34] (83/286) | 50% [45, 55] (143/286) |
-| 1 strike OTM, 0DTE | 286 | 4,310 | -912 [-1,448, -357] | -2,755 | -21.2% | 27% [23, 31] (77/286) | -912 [-1,448, -357] | -2,755 | -21.2% | 27% [23, 31] (77/286) | 57% [52, 61] (162/286) |
-| 2 strikes OTM, 0DTE | 286 | 3,529 | -903 [-1,393, -394] | -2,348 | -25.6% | 21% [17, 25] (60/286) | -903 [-1,393, -394] | -2,348 | -25.6% | 21% [17, 25] (60/286) | 66% [61, 71] (189/286) |
-| ATM CE only, DTE 1-5 | 674 | 10,942 | -971 [-1,300, -630] | -1,699 | -8.9% | 36% [34, 40] (246/674) | -2,311 [-3,776, -846] | -7,041 | -21.1% | 31% [28, 34] (210/670) | 51% [48, 54] (342/670) |
-| ATM PE only, DTE 1-5 | 673 | 9,848 | -595 [-973, -203] | -1,566 | -6.0% | 39% [36, 42] (261/673) | -526 [-2,207, 1,331] | -5,801 | -5.3% | 36% [33, 39] (239/669) | 49% [46, 52] (328/669) |
-| ATM DTE 1-5, first half (< 2025-05-27) | 671 | 10,854 | -835 [-1,060, -600] | -1,908 | -7.7% | 36% [33, 39] (242/671) | -1,138 [-2,228, -17] | -6,788 | -10.5% | 34% [31, 37] (225/671) | 50% [47, 53] (336/671) |
-| ATM DTE 1-5, second half | 676 | 9,941 | -732 [-894, -579] | -1,459 | -7.4% | 39% [36, 42] (265/676) | -1,702 [-2,628, -824] | -5,888 | -17.1% | 34% [31, 37] (224/668) | 50% [47, 53] (334/668) |
-
-### Second-nearest weekly expiry (about 6-10 sessions to expiry), REAL prices, buy at the open
-
-| slice | n trades | avg premium paid / lot (Rs) | exit same-day close: mean P&L / lot, Rs [90% CI] | median | P&L as % of premium | % trades profitable | hold to expiry: mean P&L / lot, Rs [90% CI] | median | P&L as % of premium | % trades profitable | % expired worthless |
-|---|---|---|---|---|---|---|---|---|---|---|---|
-| NIFTY 1 strike ITM, DTE 4-11 | 1368 | 17,031 | -485 [-608, -351] | -1,143 | -2.8% | 41% [39, 43] (561/1368) | -1,364 [-2,544, -163] | -10,719 | -8.0% | 36% [34, 38] (484/1354) | 47% [44, 49] (630/1354) |
-| NIFTY ATM, DTE 4-11 | 1368 | 15,389 | -516 [-631, -394] | -1,226 | -3.3% | 40% [38, 42] (546/1368) | -1,401 [-2,593, -205] | -10,595 | -9.1% | 34% [32, 36] (464/1354) | 50% [48, 52] (677/1354) |
-| NIFTY 1 strike OTM, DTE 4-11 | 1368 | 13,843 | -515 [-633, -396] | -1,194 | -3.7% | 39% [37, 41] (536/1368) | -1,418 [-2,602, -220] | -9,472 | -10.2% | 33% [31, 35] (445/1354) | 53% [51, 56] (724/1354) |
-| NIFTY 2 strikes OTM, DTE 4-11 | 1366 | 12,318 | -442 [-555, -325] | -1,112 | -3.6% | 39% [37, 41] (535/1366) | -1,327 [-2,486, -144] | -8,545 | -10.8% | 31% [29, 34] (425/1352) | 57% [55, 59] (767/1352) |
-| NIFTY ATM CE only | 684 | 16,960 | -694 [-1,033, -327] | -1,247 | -4.1% | 40% [37, 44] (277/684) | -3,525 [-6,041, -991] | -12,447 | -20.8% | 31% [28, 34] (212/677) | 53% [50, 56] (360/677) |
-| NIFTY ATM PE only | 684 | 13,818 | -337 [-696, 29] | -1,198 | -2.4% | 39% [36, 42] (269/684) | 724 [-1,737, 3,252] | -8,377 | 5.2% | 37% [34, 40] (252/677) | 47% [44, 50] (317/677) |
-| SENSEX 1 strike ITM, DTE 3-11 | 1106 | 16,098 | -697 [-832, -555] | -869 | -4.3% | 39% [37, 42] (436/1106) | -1,465 [-2,784, -103] | -10,564 | -9.1% | 35% [32, 37] (378/1087) | 49% [46, 51] (532/1087) |
-| SENSEX ATM, DTE 3-11 | 1137 | 15,218 | -708 [-875, -556] | -968 | -4.7% | 39% [37, 42] (449/1137) | -1,505 [-2,864, -192] | -10,262 | -9.9% | 33% [31, 36] (372/1118) | 51% [48, 53] (566/1118) |
-| SENSEX 1 strike OTM, DTE 3-11 | 1131 | 14,288 | -607 [-752, -456] | -942 | -4.2% | 39% [36, 41] (439/1131) | -1,493 [-2,765, -190] | -9,735 | -10.4% | 33% [31, 35] (365/1111) | 52% [49, 54] (577/1111) |
-| SENSEX 2 strikes OTM, DTE 3-11 | 1138 | 13,314 | -588 [-738, -443] | -869 | -4.4% | 39% [37, 42] (447/1138) | -1,436 [-2,732, -123] | -9,197 | -10.7% | 32% [29, 34] (353/1118) | 54% [52, 56] (604/1118) |
-| SENSEX ATM CE only | 569 | 16,742 | -952 [-1,281, -618] | -1,273 | -5.7% | 38% [35, 42] (218/569) | -4,219 [-6,723, -1,522] | -12,452 | -25.2% | 26% [23, 29] (146/560) | 55% [51, 58] (307/560) |
-| SENSEX ATM PE only | 568 | 13,692 | -463 [-811, -122] | -650 | -3.4% | 41% [37, 44] (231/568) | 1,219 [-1,666, 4,169] | -7,978 | 8.9% | 41% [37, 44] (226/558) | 46% [43, 50] (259/558) |
-
-### Where the loss comes from (REAL prices, ATM, DTE 1-5, per lot)
-
-| index | exit | gross P&L at traded prices (no spread, no charges) | spread cost (repo model) | charges | net |
-|---|---|---|---|---|---|
-| NIFTY | same-day close | -441 | 40 | 66 | -547 |
-| NIFTY | hold to expiry | -1,081 | 20 | 51 | -1,153 |
-| SENSEX | same-day close | -677 | 41 | 66 | -783 |
-| SENSEX | hold to expiry | -1,347 | 21 | 51 | -1,419 |
-
-### How accurate must the direction call be? (REAL prices, buy one ATM option at the open)
-
-E[P&L](p) = p x mean(right-side P&L) + (1-p) x mean(wrong-side P&L), assuming hit rate p is unrelated to move size. 'Hold beats sell above' = accuracy at which holding to expiry starts to out-earn selling at the close.
-
-| index | DTE | exit | p = 50% | p = 55% | p = 60% | p = 65% | break-even p | hold beats sell above |
-|---|---|---|---|---|---|---|---|---|
-| NIFTY | 1 | same-day close | -751 | -414 | -77 | 259 | 61% |  |
-| NIFTY | 1 | hold to expiry | -1,135 | -517 | 100 | 718 | 59% | 57% |
-| NIFTY | 2-3 | same-day close | -440 | -79 | 281 | 641 | 56% |  |
-| NIFTY | 2-3 | hold to expiry | -1,084 | -239 | 605 | 1,449 | 56% | 57% |
-| NIFTY | 4-5 | same-day close | -554 | -184 | 186 | 556 | 57% |  |
-| NIFTY | 4-5 | hold to expiry | -1,246 | -160 | 926 | 2,012 | 56% | 55% |
-| SENSEX | 1 | same-day close | -802 | -451 | -101 | 250 | 61% |  |
-| SENSEX | 1 | hold to expiry | -1,278 | -663 | -48 | 567 | 60% | 59% |
-| SENSEX | 2-3 | same-day close | -747 | -398 | -50 | 298 | 61% |  |
-| SENSEX | 2-3 | hold to expiry | -1,406 | -542 | 322 | 1,187 | 58% | 56% |
-| SENSEX | 4-5 | same-day close | -809 | -481 | -152 | 176 | 62% |  |
-| SENSEX | 4-5 | hold to expiry | -1,494 | -395 | 704 | 1,804 | 57% | 54% |
-
-### Candidate rules, first half vs second half (REAL prices, mean P&L per lot, CE+PE pooled, ATM unless stated)
-
-| rule (what it compares) | index | H1: rule side | H1: other side | H2: rule side | H2: other side | holds in both halves? |
-|---|---|---|---|---|---|---|
-| sell at close (rule) vs hold to expiry, DTE 1-5 | NIFTY | -442 | -698 | -652 | -1,611 | yes |
-| DTE 2-5 (rule) vs DTE 0-1 bought at open, close exit | NIFTY | -359 | -815 | -624 | -887 | yes |
-| ATM (rule) vs 2-strike OTM, 0DTE held to settlement, as % of premium | NIFTY | -17.7% | -28.8% | -20.8% | -30.8% | yes |
-| sell at close (rule) vs hold to expiry, DTE 1-5 | SENSEX | -835 | -1,138 | -732 | -1,702 | yes |
-| DTE 2-5 (rule) vs DTE 0-1 bought at open, close exit | SENSEX | -853 | -653 | -704 | -1,070 | no |
-| ATM (rule) vs 2-strike OTM, 0DTE held to settlement, as % of premium | SENSEX | -9.8% | -12.2% | -25.9% | -39.8% | yes |
-
-### Hold to expiry vs sell at the same-day close (REAL prices, same trades, DTE >= 1)
-
-'Green at close' is known at the close, so 'keep winners overnight to expiry' is a rule a trader could follow. Difference = expiry P&L - close P&L.
-
-| index | moneyness | slice | n | mean (expiry - close) Rs [90% CI, expiry clusters] | % trades where holding beat selling | mean P&L if sold at close | mean P&L if held |
-|---|---|---|---|---|---|---|---|
-| NIFTY | ATM | all | 1360 | -601 [-1,331, 155] | 32% [30, 34] (436/1360) | -552 | -1,153 |
-| NIFTY | ATM | green at close | 506 | -369 [-1,582, 914] | 42% [39, 46] (215/506) | 4,732 | 4,363 |
-| NIFTY | ATM | red at close | 854 | -739 [-1,367, -60] | 26% [23, 28] (221/854) | -3,683 | -4,421 |
-| NIFTY | ATM | DTE 1 | 290 | -384 [-966, 267] | 31% [27, 36] (90/290) | -751 | -1,135 |
-| NIFTY | ATM | DTE 2-3 | 580 | -631 [-1,509, 295] | 32% [29, 35] (184/580) | -452 | -1,084 |
-| NIFTY | ATM | DTE 4-5 | 490 | -693 [-1,659, 404] | 33% [30, 37] (162/490) | -552 | -1,246 |
-| NIFTY | ATM | green at close, DTE 1 | 105 | 709 [-1,033, 2,507] | 46% [38, 54] (48/105) | 4,360 | 5,069 |
-| NIFTY | 1 strike OTM | all | 1360 | -619 [-1,335, 133] | 29% [27, 31] (399/1360) | -612 | -1,230 |
-| NIFTY | 1 strike OTM | green at close | 484 | -669 [-1,885, 631] | 40% [36, 44] (193/484) | 4,263 | 3,593 |
-| NIFTY | 1 strike OTM | red at close | 876 | -591 [-1,194, 76] | 24% [21, 26] (206/876) | -3,305 | -3,895 |
-| NIFTY | 1 strike OTM | DTE 1 | 290 | -379 [-944, 259] | 26% [22, 31] (76/290) | -812 | -1,191 |
-| NIFTY | 1 strike OTM | DTE 2-3 | 580 | -653 [-1,527, 275] | 30% [27, 33] (172/580) | -559 | -1,212 |
-| NIFTY | 1 strike OTM | DTE 4-5 | 490 | -720 [-1,653, 372] | 31% [27, 34] (151/490) | -555 | -1,275 |
-| NIFTY | 1 strike OTM | green at close, DTE 1 | 89 | 495 [-1,290, 2,297] | 40% [32, 49] (36/89) | 3,974 | 4,469 |
-| SENSEX | ATM | all | 1339 | -626 [-1,308, 83] | 33% [31, 35] (439/1339) | -793 | -1,419 |
-| SENSEX | ATM | green at close | 503 | 228 [-1,140, 1,643] | 42% [39, 46] (213/503) | 4,533 | 4,761 |
-| SENSEX | ATM | red at close | 836 | -1,140 [-1,722, -514] | 27% [25, 30] (226/836) | -3,997 | -5,137 |
-| SENSEX | ATM | DTE 1 | 286 | -475 [-1,108, 179] | 28% [24, 33] (81/286) | -802 | -1,278 |
-| SENSEX | ATM | DTE 2-3 | 570 | -655 [-1,414, 179] | 33% [30, 37] (190/570) | -751 | -1,406 |
-| SENSEX | ATM | DTE 4-5 | 483 | -680 [-1,735, 389] | 35% [31, 38] (168/483) | -837 | -1,517 |
-| SENSEX | ATM | green at close, DTE 1 | 111 | -690 [-2,192, 890] | 38% [31, 46] (42/111) | 4,840 | 4,150 |
-| SENSEX | 1 strike OTM | all | 1340 | -636 [-1,303, 67] | 31% [29, 33] (415/1340) | -726 | -1,361 |
-| SENSEX | 1 strike OTM | green at close | 489 | -117 [-1,411, 1,365] | 41% [38, 45] (201/489) | 4,391 | 4,274 |
-| SENSEX | 1 strike OTM | red at close | 851 | -934 [-1,518, -325] | 25% [23, 28] (214/851) | -3,666 | -4,599 |
-| SENSEX | 1 strike OTM | DTE 1 | 286 | -491 [-1,113, 162] | 25% [21, 30] (72/286) | -603 | -1,094 |
-| SENSEX | 1 strike OTM | DTE 2-3 | 570 | -653 [-1,405, 168] | 32% [29, 36] (184/570) | -704 | -1,357 |
-| SENSEX | 1 strike OTM | DTE 4-5 | 484 | -701 [-1,751, 360] | 33% [29, 36] (159/484) | -824 | -1,525 |
-| SENSEX | 1 strike OTM | green at close, DTE 1 | 103 | -1,079 [-2,528, 451] | 35% [28, 43] (36/103) | 5,039 | 3,960 |
-
-### Direction benchmarks, REAL prices, entry at the open
-
-Per day, one option of the chosen side. 'Right side' = CE on days the index ends above the entry price (for expiry: settles above entry), PE otherwise (perfect foresight). 'Break-even accuracy' p* solves p*E[right] + (1-p*)E[wrong] = 0. Trend rule: CE if the previous close > its 20-day average, else PE (known before the open). Gap rule: CE if today's open > previous close, else PE.
-
-| index | moneyness | DTE | exit | n days | coin-flip mean Rs | perfect-foresight mean Rs [90% CI] | wrong-side mean Rs | break-even accuracy | trend rule: accuracy | trend rule mean Rs [90% CI] | gap rule: accuracy | gap rule mean Rs |
-|---|---|---|---|---|---|---|---|---|---|---|---|---|
-| NIFTY | ATM | 0 | expiry | 145 | -951 | 3,009 [2,163, 3,909] | -4,910 | 62% | 50% | -388 [-1,330, 592] | 49% | -357 |
-| NIFTY | ATM | 1 | close | 145 | -751 | 2,616 [2,015, 3,234] | -4,117 | 61% | 44% | -1,325 [-2,005, -639] | 46% | -519 |
-| NIFTY | ATM | 1 | expiry | 145 | -1,135 | 5,040 [3,716, 6,515] | -7,309 | 59% | 48% | -1,621 [-2,843, -328] | 50% | 53 |
-| NIFTY | ATM | 2-3 | close | 291 | -440 | 3,163 [2,584, 3,823] | -4,042 | 56% | 45% | -850 [-1,399, -338] | 48% | 223 |
-| NIFTY | ATM | 2-3 | expiry | 290 | -1,084 | 7,360 [5,655, 9,128] | -9,527 | 56% | 46% | -2,212 [-3,673, -723] | 50% | -844 |
-| NIFTY | ATM | 4-5 | close | 247 | -554 | 3,146 [2,602, 3,683] | -4,254 | 57% | 51% | -81 [-679, 495] | 52% | 274 |
-| NIFTY | ATM | 4-5 | expiry | 245 | -1,246 | 9,613 [7,697, 11,837] | -12,105 | 56% | 46% | -2,756 [-4,716, -819] | 51% | -867 |
-| NIFTY | 1 strike OTM | 0 | expiry | 145 | -949 | 1,532 [720, 2,346] | -3,430 | 69% | 50% | -480 [-1,240, 337] | 49% | -388 |
-| NIFTY | 1 strike OTM | 1 | close | 145 | -812 | 1,833 [1,294, 2,380] | -3,458 | 65% | 44% | -1,349 [-1,910, -781] | 46% | -673 |
-| NIFTY | 1 strike OTM | 1 | expiry | 145 | -1,191 | 3,420 [2,178, 4,780] | -5,802 | 63% | 48% | -1,658 [-2,717, -504] | 50% | -191 |
-| NIFTY | 1 strike OTM | 2-3 | close | 291 | -542 | 2,569 [2,049, 3,162] | -3,653 | 59% | 45% | -892 [-1,389, -408] | 48% | 118 |
-| NIFTY | 1 strike OTM | 2-3 | expiry | 290 | -1,212 | 5,704 [4,039, 7,449] | -8,128 | 59% | 46% | -2,227 [-3,553, -838] | 50% | -983 |
-| NIFTY | 1 strike OTM | 4-5 | close | 247 | -565 | 2,867 [2,344, 3,371] | -3,997 | 58% | 51% | -126 [-684, 431] | 52% | 259 |
-| NIFTY | 1 strike OTM | 4-5 | expiry | 245 | -1,275 | 8,036 [6,135, 10,249] | -10,586 | 57% | 46% | -2,632 [-4,425, -854] | 51% | -918 |
-| SENSEX | ATM | 0 | expiry | 143 | -921 | 3,183 [2,168, 4,275] | -5,024 | 61% | 43% | -1,453 [-2,357, -460] | 44% | -442 |
-| SENSEX | ATM | 1 | close | 143 | -802 | 2,707 [1,872, 3,583] | -4,311 | 61% | 52% | -3 [-865, 896] | 46% | 389 |
-| SENSEX | ATM | 1 | expiry | 143 | -1,278 | 4,871 [3,557, 6,217] | -7,426 | 60% | 50% | -839 [-2,157, 565] | 48% | -302 |
-| SENSEX | ATM | 2-3 | close | 287 | -747 | 2,738 [2,172, 3,359] | -4,232 | 61% | 46% | -894 [-1,480, -302] | 46% | -68 |
-| SENSEX | ATM | 2-3 | expiry | 285 | -1,406 | 7,237 [5,604, 9,003] | -10,050 | 58% | 51% | -1,525 [-3,087, 92] | 50% | -220 |
-| SENSEX | ATM | 4-5 | close | 243 | -809 | 2,476 [1,987, 2,982] | -4,095 | 62% | 47% | -1,040 [-1,575, -496] | 45% | -188 |
-| SENSEX | ATM | 4-5 | expiry | 241 | -1,494 | 9,498 [7,452, 11,638] | -12,487 | 57% | 50% | -2,393 [-4,327, -407] | 49% | -1,764 |
-| SENSEX | 1 strike OTM | 0 | expiry | 143 | -912 | 2,267 [1,229, 3,352] | -4,092 | 64% | 43% | -1,350 [-2,190, -432] | 44% | -507 |
-| SENSEX | 1 strike OTM | 1 | close | 143 | -603 | 2,675 [1,784, 3,534] | -3,880 | 59% | 52% | 80 [-675, 889] | 46% | 329 |
-| SENSEX | 1 strike OTM | 1 | expiry | 143 | -1,094 | 4,244 [2,911, 5,643] | -6,432 | 60% | 50% | -704 [-1,888, 595] | 48% | -324 |
-| SENSEX | 1 strike OTM | 2-3 | close | 287 | -703 | 2,503 [1,953, 3,094] | -3,909 | 61% | 46% | -947 [-1,484, -395] | 46% | -63 |
-| SENSEX | 1 strike OTM | 2-3 | expiry | 285 | -1,357 | 6,242 [4,642, 7,943] | -8,955 | 59% | 51% | -1,620 [-3,073, -130] | 50% | -257 |
-| SENSEX | 1 strike OTM | 4-5 | close | 244 | -807 | 2,155 [1,650, 2,699] | -3,769 | 64% | 46% | -1,002 [-1,484, -504] | 45% | -168 |
-| SENSEX | 1 strike OTM | 4-5 | expiry | 242 | -1,525 | 8,507 [6,477, 10,616] | -11,557 | 58% | 50% | -2,383 [-4,226, -481] | 49% | -1,725 |
-
-### MODEL prices (repo synthetic pricer) by entry time - ATM, CE+PE pooled
-
-Exit 'close' = model price at 15:15 (hourly bar) at the bid; 'expiry' = real settlement. 09:15 uses the VIX first print (close to the previous close), 10:15/11:15 use the hourly VIX at that time.
-
-| index | entry | DTE | n | model premium / lot | exit 15:15: mean Rs [90% CI] | % profitable | hold to expiry: mean Rs [90% CI] | % profitable | % worthless |
+| slice | n | premium / lot | sell at close: mean [90% CI] | % of premium | profitable | hold to expiry: mean [90% CI] | % of premium | profitable | worthless |
 |---|---|---|---|---|---|---|---|---|---|
-| NIFTY | 09:15 | 0 | 288 | 5,657 | -1,512 [-1,952, -1,039] | 26% [22, 30] (74/288) | -1,648 [-2,098, -1,156] | 26% [22, 30] (74/288) | 50% [45, 55] (144/288) |
-| NIFTY | 09:15 | 1 | 286 | 7,956 | -1,322 [-1,524, -1,114] | 30% [26, 35] (86/286) | -2,186 [-2,791, -1,539] | 28% [24, 33] (81/286) | 50% [45, 55] (143/286) |
-| NIFTY | 09:15 | 2-3 | 580 | 10,457 | -814 [-1,010, -602] | 37% [34, 40] (214/580) | -2,059 [-2,910, -1,180] | 30% [27, 33] (175/580) | 50% [46, 53] (289/580) |
-| NIFTY | 09:15 | 4-5 | 488 | 13,023 | -691 [-853, -533] | 39% [35, 43] (190/488) | -2,163 [-3,156, -1,107] | 32% [29, 36] (157/488) | 50% [46, 53] (242/488) |
-| NIFTY | 10:15 | 0 | 288 | 5,179 | -1,781 [-2,173, -1,367] | 22% [18, 26] (64/288) | -2,016 [-2,443, -1,566] | 22% [18, 26] (64/288) | 50% [45, 55] (144/288) |
-| NIFTY | 10:15 | 1 | 286 | 7,679 | -1,273 [-1,458, -1,073] | 30% [26, 35] (86/286) | -2,132 [-2,698, -1,512] | 29% [24, 33] (82/286) | 50% [45, 55] (143/286) |
-| NIFTY | 10:15 | 2-3 | 580 | 10,294 | -874 [-997, -733] | 33% [29, 36] (189/580) | -2,094 [-2,921, -1,238] | 31% [28, 34] (181/580) | 50% [46, 53] (289/580) |
-| NIFTY | 10:15 | 4-5 | 488 | 12,833 | -725 [-839, -608] | 34% [31, 38] (166/488) | -2,481 [-3,452, -1,459] | 31% [28, 35] (153/488) | 50% [46, 53] (242/488) |
-| NIFTY | 11:15 | 0 | 288 | 4,649 | -1,434 [-1,785, -1,059] | 22% [18, 26] (64/288) | -1,701 [-2,086, -1,304] | 21% [17, 25] (61/288) | 50% [45, 55] (144/288) |
-| NIFTY | 11:15 | 1 | 286 | 7,325 | -1,052 [-1,185, -916] | 32% [27, 37] (91/286) | -1,996 [-2,525, -1,449] | 28% [23, 32] (79/286) | 50% [45, 55] (143/286) |
-| NIFTY | 11:15 | 2-3 | 580 | 10,042 | -839 [-916, -761] | 34% [31, 37] (198/580) | -1,990 [-2,784, -1,162] | 30% [27, 33] (172/580) | 50% [46, 53] (289/580) |
-| NIFTY | 11:15 | 4-5 | 488 | 12,613 | -572 [-679, -459] | 34% [30, 37] (165/488) | -2,244 [-3,203, -1,230] | 32% [28, 35] (155/488) | 50% [46, 53] (242/488) |
-| SENSEX | 09:15 | 0 | 286 | 5,912 | -1,550 [-2,039, -1,026] | 27% [23, 31] (76/286) | -1,656 [-2,179, -1,103] | 28% [23, 32] (79/286) | 50% [45, 55] (143/286) |
-| SENSEX | 09:15 | 1 | 282 | 8,381 | -1,231 [-1,501, -954] | 33% [29, 38] (93/282) | -2,074 [-2,742, -1,393] | 27% [23, 32] (77/282) | 50% [45, 55] (141/282) |
-| SENSEX | 09:15 | 2-3 | 568 | 11,093 | -917 [-1,113, -695] | 34% [31, 37] (192/568) | -2,524 [-3,326, -1,683] | 31% [28, 34] (174/568) | 50% [46, 53] (282/568) |
-| SENSEX | 09:15 | 4-5 | 484 | 13,644 | -788 [-939, -645] | 37% [33, 41] (179/484) | -2,825 [-3,897, -1,746] | 32% [28, 35] (154/484) | 50% [46, 53] (240/484) |
-| SENSEX | 10:15 | 0 | 286 | 5,403 | -1,793 [-2,174, -1,372] | 25% [21, 30] (72/286) | -1,959 [-2,377, -1,506] | 27% [23, 32] (78/286) | 50% [45, 55] (143/286) |
-| SENSEX | 10:15 | 1 | 282 | 8,063 | -1,222 [-1,427, -989] | 29% [25, 33] (81/282) | -2,110 [-2,760, -1,426] | 31% [27, 36] (87/282) | 50% [45, 55] (141/282) |
-| SENSEX | 10:15 | 2-3 | 568 | 10,895 | -1,019 [-1,142, -882] | 32% [29, 35] (180/568) | -2,603 [-3,394, -1,745] | 30% [27, 33] (171/568) | 50% [46, 53] (282/568) |
-| SENSEX | 10:15 | 4-5 | 484 | 13,499 | -831 [-930, -735] | 36% [32, 39] (173/484) | -2,779 [-3,814, -1,710] | 31% [28, 35] (151/484) | 50% [46, 53] (240/484) |
-| SENSEX | 11:15 | 0 | 286 | 4,860 | -1,584 [-1,973, -1,167] | 24% [20, 29] (69/286) | -1,823 [-2,231, -1,386] | 26% [22, 30] (74/286) | 50% [45, 55] (143/286) |
-| SENSEX | 11:15 | 1 | 282 | 7,687 | -1,055 [-1,235, -865] | 27% [23, 32] (76/282) | -1,935 [-2,603, -1,267] | 29% [25, 34] (83/282) | 50% [45, 55] (141/282) |
-| SENSEX | 11:15 | 2-3 | 568 | 10,619 | -898 [-977, -810] | 34% [31, 38] (195/568) | -2,510 [-3,285, -1,664] | 30% [27, 33] (171/568) | 50% [46, 53] (282/568) |
-| SENSEX | 11:15 | 4-5 | 484 | 13,288 | -684 [-775, -587] | 36% [33, 40] (176/484) | -2,721 [-3,722, -1,682] | 31% [28, 35] (152/484) | 50% [46, 53] (240/484) |
+| ATM, 0DTE (bought on expiry morning) | 290 | ₹4,949 | −951 [−1,411, −465] | −19.2% | 29% | (same) | | | 50% |
+| ATM, 1 session left | 290 | ₹7,072 | −751 [−997, −476] | −10.6% | 36% | −1,135 [−1,749, −452] | −16.0% | 33% | 50% |
+| ATM, 2 left | 290 | ₹8,816 | −322 [−748, 163] | −3.7% | 36% | −1,002 [−1,813, −146] | −11.4% | 33% | 50% |
+| ATM, 3 left | 292 | ₹10,215 | −556 [−803, −288] | −5.4% | 37% | −1,165 [−2,232, −55] | −11.4% | 31% | 50% |
+| ATM, 4 left | 284 | ₹11,647 | −406 [−721, −85] | −3.5% | 40% | −559 [−1,608, 584] | −4.8% | 35% | 50% |
+| ATM, 5 left | 210 | ₹12,625 | −754 [−1,035, −473] | −6.0% | 38% | −2,177 [−3,462, −888] | −17.2% | 30% | 50% |
+| 1 ITM, 1–5 left | 1,366 | ₹11,575 | −486 [−629, −338] | −4.2% | 40% | −1,089 [−1,823, −310] | −9.4% | 35% | 43% |
+| ATM, 1–5 left | 1,366 | ₹9,919 | −547 [−697, −392] | −5.5% | 37% | −1,153 [−1,898, −377] | −11.6% | 33% | 50% |
+| 1 OTM, 1–5 left | 1,366 | ₹8,476 | −608 [−746, −472] | −7.2% | 36% | −1,230 [−1,971, −461] | −14.5% | 30% | 57% |
+| 2 OTM, 1–5 left | 1,366 | ₹7,050 | −484 [−621, −346] | −6.9% | 35% | −1,126 [−1,834, −385] | −16.0% | 26% | 62% |
+| 1 OTM, 0DTE | 290 | ₹3,560 | −949 [−1,378, −516] | −26.7% | 23% | | | | 63% |
+| 2 OTM, 0DTE | 290 | ₹2,336 | −696 [−1,067, −312] | −29.8% | 18% | | | | 76% |
+| ATM CE only, 1–5 left | 683 | ₹10,538 | −830 | −7.9% | 37% | −2,260 | −21.4% | 29% | 53% |
+| ATM PE only, 1–5 left | 683 | ₹9,301 | −264 [−642, 139] | −2.8% | 38% | −46 [−1,608, 1,629] | −0.5% | 36% | 47% |
 
-Model vs real for the same contract bought at 09:15 (ATM, DTE >= 1): entry premium and P&L.
+- For a pooled ATM call and put, "worthless = 50%" holds by construction. Look at the OTM rows or at each side separately.
+- For 0DTE, selling at the close and holding to settlement are the same trade.
 
-| index | n | real entry Rs/lot | model entry Rs/lot | model/real premium | real close-exit P&L | model close-exit P&L | real expiry P&L | model expiry P&L |
-|---|---|---|---|---|---|---|---|---|
-| NIFTY | 1164 | 9,871 | 10,848 | 1.10 | -607 | -933 | -1,064 | -2,041 |
-| SENSEX | 839 | 10,294 | 11,454 | 1.11 | -753 | -917 | -1,492 | -2,648 |
+**SENSEX:**
 
-### MODEL prices (repo pricer, VIX x 1.0 / x 1.05): by entry time, DTE and moneyness (CE+PE pooled; worthless % shown per side)
+| slice | n | premium / lot | sell at close | % of premium | hold to expiry | % of premium | worthless |
+|---|---|---|---|---|---|---|---|
+| ATM, 0DTE | 286 | ₹5,246 | −921 [−1,438, −358] | −17.5% | (same) | | 50% |
+| ATM, 1 left | 286 | ₹7,592 | −802 | −10.6% | −1,278 | −16.8% | 50% |
+| ATM, 1–5 left | 1,347 | ₹10,396 | −783 [−923, −646] | −7.5% | −1,419 [−2,138, −695] | −13.6% | 50% |
+| 1 ITM, 1–5 left | 1,347 | ₹11,417 | −783 | −6.9% | −1,406 | −12.3% | 47% |
+| 2 OTM, 1–5 left | 1,347 | ₹8,494 | −711 | −8.4% | −1,371 | −16.1% | 57% |
+| 2 OTM, 0DTE | 286 | ₹3,529 | −903 | −25.6% | | | 66% |
+| ATM CE only, 1–5 left | 674 | ₹10,942 | −971 | −8.9% | −2,311 | −21.1% | 51% |
+| ATM PE only, 1–5 left | 673 | ₹9,848 | −595 [−973, −203] | −6.0% | −526 [−2,207, 1,331] | −5.3% | 49% |
 
-| index | entry | DTE | moneyness | n | premium / lot | exit 15:15: mean Rs [90% CI] | median | % profitable | hold to expiry: mean Rs [90% CI] | median | % profitable | worthless CE / PE |
-|---|---|---|---|---|---|---|---|---|---|---|---|---|
-| NIFTY | 09:15 | 0 | ATM | 288 | 5,657 | -1,512 [-1,952, -1,039] | -4,123 | 26% | -1,648 [-2,098, -1,156] | -4,242 | 26% | 61% / 39% |
-| NIFTY | 09:15 | 0 | 1 strike OTM | 288 | 4,183 | -1,441 [-1,860, -994] | -3,241 | 23% | -1,592 [-2,021, -1,127] | -3,394 | 22% | 69% / 57% |
-| NIFTY | 09:15 | 0 | 2 strikes OTM | 288 | 3,007 | -1,262 [-1,630, -862] | -2,454 | 16% | -1,372 [-1,746, -959] | -2,545 | 17% | 78% / 74% |
-| NIFTY | 09:15 | 1-5 | ATM | 1348 | 10,850 | -883 [-995, -760] | -1,800 | 36% | -2,123 [-2,826, -1,358] | -7,488 | 31% | 53% / 47% |
-| NIFTY | 09:15 | 1-5 | 1 strike OTM | 1348 | 9,307 | -865 [-977, -743] | -1,755 | 35% | -2,110 [-2,802, -1,358] | -6,696 | 28% | 60% / 52% |
-| NIFTY | 09:15 | 1-5 | 2 strikes OTM | 1348 | 7,928 | -833 [-942, -714] | -1,686 | 33% | -2,061 [-2,728, -1,335] | -5,769 | 25% | 66% / 59% |
-| NIFTY | 10:15 | 0 | ATM | 288 | 5,179 | -1,781 [-2,173, -1,367] | -3,702 | 22% | -2,016 [-2,443, -1,566] | -4,197 | 22% | 53% / 47% |
-| NIFTY | 10:15 | 0 | 1 strike OTM | 288 | 3,719 | -1,634 [-2,013, -1,246] | -3,034 | 18% | -1,777 [-2,165, -1,365] | -3,208 | 18% | 72% / 71% |
-| NIFTY | 10:15 | 0 | 2 strikes OTM | 288 | 2,581 | -1,312 [-1,638, -966] | -2,200 | 13% | -1,389 [-1,720, -1,046] | -2,223 | 12% | 81% / 81% |
-| NIFTY | 10:15 | 1-5 | ATM | 1348 | 10,653 | -908 [-988, -820] | -1,489 | 33% | -2,241 [-2,940, -1,497] | -7,268 | 31% | 53% / 47% |
-| NIFTY | 10:15 | 1-5 | 1 strike OTM | 1348 | 9,111 | -890 [-969, -803] | -1,477 | 31% | -2,190 [-2,874, -1,458] | -6,448 | 28% | 60% / 55% |
-| NIFTY | 10:15 | 1-5 | 2 strikes OTM | 1348 | 7,737 | -855 [-932, -770] | -1,408 | 29% | -2,088 [-2,740, -1,396] | -5,553 | 25% | 66% / 61% |
-| NIFTY | 11:15 | 0 | ATM | 288 | 4,649 | -1,434 [-1,785, -1,059] | -3,321 | 22% | -1,701 [-2,086, -1,304] | -3,671 | 21% | 55% / 45% |
-| NIFTY | 11:15 | 0 | 1 strike OTM | 288 | 3,207 | -1,301 [-1,620, -944] | -2,524 | 17% | -1,500 [-1,838, -1,141] | -2,700 | 16% | 72% / 70% |
-| NIFTY | 11:15 | 0 | 2 strikes OTM | 288 | 2,122 | -1,012 [-1,278, -722] | -1,771 | 12% | -1,116 [-1,387, -821] | -1,838 | 12% | 82% / 85% |
-| NIFTY | 11:15 | 1-5 | ATM | 1348 | 10,391 | -790 [-852, -730] | -1,200 | 34% | -2,082 [-2,753, -1,374] | -6,863 | 30% | 52% / 48% |
-| NIFTY | 11:15 | 1-5 | 1 strike OTM | 1348 | 8,852 | -773 [-835, -714] | -1,175 | 31% | -2,062 [-2,723, -1,363] | -6,127 | 27% | 59% / 53% |
-| NIFTY | 11:15 | 1-5 | 2 strikes OTM | 1348 | 7,486 | -741 [-802, -684] | -1,141 | 30% | -1,990 [-2,617, -1,325] | -5,343 | 24% | 66% / 61% |
-| SENSEX | 09:15 | 0 | ATM | 286 | 5,912 | -1,550 [-2,039, -1,026] | -4,389 | 27% | -1,656 [-2,179, -1,103] | -4,667 | 28% | 60% / 40% |
-| SENSEX | 09:15 | 0 | 1 strike OTM | 286 | 4,966 | -1,518 [-2,001, -1,004] | -3,898 | 23% | -1,628 [-2,132, -1,087] | -4,027 | 23% | 65% / 52% |
-| SENSEX | 09:15 | 0 | 2 strikes OTM | 286 | 4,130 | -1,436 [-1,887, -949] | -3,294 | 20% | -1,525 [-2,003, -1,015] | -3,426 | 21% | 72% / 61% |
-| SENSEX | 09:15 | 1-5 | ATM | 1326 | 11,453 | -946 [-1,061, -819] | -1,813 | 35% | -2,537 [-3,257, -1,764] | -7,852 | 31% | 51% / 49% |
-| SENSEX | 09:15 | 1-5 | 1 strike OTM | 1326 | 10,481 | -937 [-1,052, -811] | -1,793 | 34% | -2,520 [-3,238, -1,752] | -7,363 | 29% | 54% / 53% |
-| SENSEX | 09:15 | 1-5 | 2 strikes OTM | 1326 | 9,570 | -923 [-1,037, -797] | -1,759 | 33% | -2,500 [-3,198, -1,743] | -6,773 | 27% | 58% / 56% |
-| SENSEX | 10:15 | 0 | ATM | 286 | 5,403 | -1,793 [-2,174, -1,372] | -4,053 | 25% | -1,959 [-2,377, -1,506] | -4,328 | 27% | 57% / 43% |
-| SENSEX | 10:15 | 0 | 1 strike OTM | 286 | 4,462 | -1,750 [-2,119, -1,341] | -3,481 | 21% | -1,902 [-2,307, -1,464] | -3,705 | 22% | 69% / 52% |
-| SENSEX | 10:15 | 0 | 2 strikes OTM | 286 | 3,642 | -1,640 [-1,990, -1,256] | -2,889 | 16% | -1,752 [-2,122, -1,363] | -3,030 | 16% | 76% / 63% |
-| SENSEX | 10:15 | 1-5 | ATM | 1326 | 11,248 | -1,003 [-1,081, -916] | -1,553 | 32% | -2,562 [-3,245, -1,814] | -7,503 | 31% | 50% / 50% |
-| SENSEX | 10:15 | 1-5 | 1 strike OTM | 1326 | 10,277 | -994 [-1,072, -907] | -1,552 | 31% | -2,553 [-3,233, -1,809] | -7,040 | 29% | 54% / 54% |
-| SENSEX | 10:15 | 1-5 | 2 strikes OTM | 1326 | 9,367 | -979 [-1,056, -893] | -1,529 | 31% | -2,537 [-3,212, -1,804] | -6,564 | 27% | 58% / 56% |
-| SENSEX | 11:15 | 0 | ATM | 286 | 4,860 | -1,584 [-1,973, -1,167] | -3,536 | 24% | -1,823 [-2,231, -1,386] | -4,015 | 26% | 59% / 41% |
-| SENSEX | 11:15 | 0 | 1 strike OTM | 286 | 3,926 | -1,531 [-1,912, -1,126] | -3,130 | 20% | -1,714 [-2,101, -1,302] | -3,308 | 21% | 72% / 56% |
-| SENSEX | 11:15 | 0 | 2 strikes OTM | 286 | 3,125 | -1,396 [-1,749, -1,019] | -2,573 | 16% | -1,540 [-1,898, -1,159] | -2,627 | 15% | 78% / 66% |
-| SENSEX | 11:15 | 1-5 | ATM | 1326 | 10,973 | -862 [-922, -794] | -1,326 | 33% | -2,464 [-3,131, -1,741] | -7,299 | 31% | 49% / 51% |
-| SENSEX | 11:15 | 1-5 | 1 strike OTM | 1326 | 10,003 | -853 [-913, -786] | -1,307 | 32% | -2,455 [-3,119, -1,736] | -6,775 | 28% | 53% / 54% |
-| SENSEX | 11:15 | 1-5 | 2 strikes OTM | 1326 | 9,096 | -839 [-899, -773] | -1,274 | 31% | -2,436 [-3,089, -1,725] | -6,256 | 27% | 58% / 58% |
+**Calls against puts:**
 
-### CALIBRATED MODEL (vol = 0.9 x repo vol, matching real weekly premiums): by entry time, DTE and moneyness (CE+PE pooled; worthless % shown per side)
+- **Puts did far better than calls only because of the path the market took.**
+  - Bought at the open, NIFTY closed above its open on only 46.8% of days. The average open-to-close return was −3.9 basis points a day, against +4.2 overnight.
+  - NIFTY rose to 24,610 by May 2025, then fell to 22,232.
+  - Held to expiry, NIFTY ATM puts lost 7.3% in H1 and made 6.7% in H2. SENSEX puts lost 14.0% in H1 and made 5.0% in H2. Calls lost in both halves: NIFTY −6.7% and −35.7%.
+- This is not a stable edge.
 
-| index | entry | DTE | moneyness | n | premium / lot | exit 15:15: mean Rs [90% CI] | median | % profitable | hold to expiry: mean Rs [90% CI] | median | % profitable | worthless CE / PE |
-|---|---|---|---|---|---|---|---|---|---|---|---|---|
-| NIFTY | 09:15 | 0 | ATM | 288 | 5,095 | -978 [-1,418, -504] | -3,665 | 27% | -1,085 [-1,541, -597] | -3,776 | 27% | 61% / 39% |
-| NIFTY | 09:15 | 0 | 1 strike OTM | 288 | 3,638 | -923 [-1,337, -476] | -2,775 | 24% | -1,046 [-1,473, -583] | -2,913 | 23% | 69% / 57% |
-| NIFTY | 09:15 | 0 | 2 strikes OTM | 288 | 2,509 | -787 [-1,156, -392] | -2,031 | 17% | -873 [-1,239, -462] | -2,082 | 18% | 78% / 74% |
-| NIFTY | 09:15 | 1-5 | ATM | 1348 | 9,771 | -642 [-758, -515] | -1,622 | 37% | -1,044 [-1,748, -283] | -6,664 | 32% | 53% / 47% |
-| NIFTY | 09:15 | 1-5 | 1 strike OTM | 1348 | 8,236 | -625 [-741, -499] | -1,571 | 36% | -1,039 [-1,736, -286] | -5,813 | 29% | 60% / 52% |
-| NIFTY | 09:15 | 1-5 | 2 strikes OTM | 1348 | 6,885 | -596 [-709, -473] | -1,509 | 34% | -1,017 [-1,689, -297] | -4,938 | 26% | 66% / 59% |
-| NIFTY | 10:15 | 0 | ATM | 288 | 4,665 | -1,310 [-1,707, -893] | -3,308 | 23% | -1,501 [-1,928, -1,054] | -3,708 | 24% | 53% / 47% |
-| NIFTY | 10:15 | 0 | 1 strike OTM | 288 | 3,222 | -1,172 [-1,547, -779] | -2,623 | 19% | -1,281 [-1,673, -869] | -2,754 | 19% | 72% / 71% |
-| NIFTY | 10:15 | 0 | 2 strikes OTM | 288 | 2,135 | -888 [-1,216, -542] | -1,809 | 14% | -943 [-1,272, -599] | -1,810 | 14% | 81% / 81% |
-| NIFTY | 10:15 | 1-5 | ATM | 1348 | 9,593 | -705 [-791, -612] | -1,343 | 34% | -1,181 [-1,879, -439] | -6,458 | 32% | 53% / 47% |
-| NIFTY | 10:15 | 1-5 | 1 strike OTM | 1348 | 8,061 | -688 [-772, -595] | -1,332 | 32% | -1,139 [-1,827, -412] | -5,642 | 29% | 60% / 55% |
-| NIFTY | 10:15 | 1-5 | 2 strikes OTM | 1348 | 6,714 | -655 [-736, -565] | -1,260 | 30% | -1,065 [-1,715, -375] | -4,724 | 26% | 66% / 61% |
-| NIFTY | 11:15 | 0 | ATM | 288 | 4,188 | -1,015 [-1,367, -636] | -2,959 | 24% | -1,240 [-1,618, -847] | -3,264 | 24% | 55% / 45% |
-| NIFTY | 11:15 | 0 | 1 strike OTM | 288 | 2,766 | -894 [-1,218, -536] | -2,162 | 18% | -1,059 [-1,394, -696] | -2,306 | 18% | 72% / 70% |
-| NIFTY | 11:15 | 0 | 2 strikes OTM | 288 | 1,735 | -648 [-911, -356] | -1,432 | 14% | -730 [-1,000, -433] | -1,475 | 12% | 82% / 85% |
-| NIFTY | 11:15 | 1-5 | ATM | 1348 | 9,358 | -627 [-692, -563] | -1,090 | 35% | -1,048 [-1,726, -336] | -6,094 | 32% | 52% / 48% |
-| NIFTY | 11:15 | 1-5 | 1 strike OTM | 1348 | 7,828 | -610 [-674, -547] | -1,065 | 33% | -1,038 [-1,708, -340] | -5,287 | 29% | 59% / 53% |
-| NIFTY | 11:15 | 1-5 | 2 strikes OTM | 1348 | 6,489 | -579 [-642, -519] | -1,020 | 31% | -994 [-1,620, -328] | -4,545 | 25% | 66% / 61% |
-| SENSEX | 09:15 | 0 | ATM | 286 | 5,322 | -993 [-1,483, -468] | -3,897 | 29% | -1,066 [-1,584, -514] | -4,146 | 29% | 60% / 40% |
-| SENSEX | 09:15 | 0 | 1 strike OTM | 286 | 4,382 | -966 [-1,448, -453] | -3,416 | 24% | -1,044 [-1,546, -508] | -3,536 | 26% | 65% / 52% |
-| SENSEX | 09:15 | 0 | 2 strikes OTM | 286 | 3,565 | -900 [-1,356, -411] | -2,846 | 22% | -959 [-1,437, -453] | -2,934 | 21% | 72% / 61% |
-| SENSEX | 09:15 | 1-5 | ATM | 1326 | 10,312 | -694 [-816, -563] | -1,650 | 36% | -1,396 [-2,110, -634] | -6,941 | 33% | 51% / 49% |
-| SENSEX | 09:15 | 1-5 | 1 strike OTM | 1326 | 9,344 | -686 [-807, -555] | -1,624 | 35% | -1,382 [-2,094, -622] | -6,439 | 30% | 54% / 53% |
-| SENSEX | 09:15 | 1-5 | 2 strikes OTM | 1326 | 8,442 | -673 [-793, -543] | -1,587 | 34% | -1,372 [-2,069, -625] | -5,865 | 28% | 58% / 56% |
-| SENSEX | 10:15 | 0 | ATM | 286 | 4,864 | -1,293 [-1,680, -870] | -3,653 | 26% | -1,420 [-1,839, -969] | -3,872 | 28% | 57% / 43% |
-| SENSEX | 10:15 | 0 | 1 strike OTM | 286 | 3,930 | -1,256 [-1,631, -843] | -3,072 | 25% | -1,369 [-1,770, -938] | -3,226 | 24% | 69% / 52% |
-| SENSEX | 10:15 | 0 | 2 strikes OTM | 286 | 3,129 | -1,161 [-1,509, -775] | -2,462 | 20% | -1,239 [-1,601, -853] | -2,569 | 17% | 76% / 63% |
-| SENSEX | 10:15 | 1-5 | ATM | 1326 | 10,127 | -795 [-877, -704] | -1,392 | 34% | -1,441 [-2,123, -694] | -6,675 | 33% | 50% / 50% |
-| SENSEX | 10:15 | 1-5 | 1 strike OTM | 1326 | 9,160 | -786 [-868, -696] | -1,396 | 33% | -1,436 [-2,117, -693] | -6,184 | 31% | 54% / 54% |
-| SENSEX | 10:15 | 1-5 | 2 strikes OTM | 1326 | 8,260 | -771 [-852, -682] | -1,372 | 32% | -1,430 [-2,105, -705] | -5,682 | 28% | 58% / 56% |
-| SENSEX | 11:15 | 0 | ATM | 286 | 4,375 | -1,146 [-1,538, -724] | -3,170 | 25% | -1,338 [-1,743, -902] | -3,590 | 27% | 59% / 41% |
-| SENSEX | 11:15 | 0 | 1 strike OTM | 286 | 3,449 | -1,097 [-1,480, -684] | -2,754 | 22% | -1,236 [-1,620, -821] | -2,898 | 23% | 72% / 56% |
-| SENSEX | 11:15 | 0 | 2 strikes OTM | 286 | 2,670 | -976 [-1,331, -593] | -2,187 | 18% | -1,085 [-1,440, -699] | -2,226 | 16% | 78% / 66% |
-| SENSEX | 11:15 | 1-5 | ATM | 1326 | 9,879 | -693 [-757, -622] | -1,212 | 35% | -1,370 [-2,034, -649] | -6,443 | 33% | 49% / 51% |
-| SENSEX | 11:15 | 1-5 | 1 strike OTM | 1326 | 8,913 | -684 [-748, -614] | -1,178 | 34% | -1,365 [-2,023, -647] | -5,946 | 31% | 53% / 54% |
-| SENSEX | 11:15 | 1-5 | 2 strikes OTM | 1326 | 8,016 | -670 [-734, -601] | -1,154 | 32% | -1,356 [-2,007, -642] | -5,404 | 28% | 58% / 58% |
+**Where the loss comes from** (ATM, 1–5 sessions left, per lot):
 
-### Direction benchmarks, MODEL prices, entry 10:15 (direction measured from the 10:15 price to 15:15 / settlement; gap rule uses the 10:15 price vs previous close)
+| | NIFTY, sell at close | NIFTY, hold to expiry | SENSEX, sell at close | SENSEX, hold to expiry |
+|---|---|---|---|---|
+| loss at traded prices, before costs | −446 | −1,081 | −682 | −1,347 |
+| spread (repo model) | −40 | −20 | −41 | −21 |
+| charges | −66 | −51 | −66 | −52 |
+| net | −553 | −1,153 | −788 | −1,419 |
 
-Per day, one option of the chosen side. 'Right side' = CE on days the index ends above the entry price (for expiry: settles above entry), PE otherwise (perfect foresight). 'Break-even accuracy' p* solves p*E[right] + (1-p*)E[wrong] = 0. Trend rule: CE if the previous close > its 20-day average, else PE (known before the open). Gap rule: CE if today's open > previous close, else PE.
+The ₹553 net here is the ₹547 from the tables above, computed on the slightly smaller set of trades that have a closing price.
 
-| index | moneyness | DTE | exit | n days | coin-flip mean Rs | perfect-foresight mean Rs [90% CI] | wrong-side mean Rs | break-even accuracy | trend rule: accuracy | trend rule mean Rs [90% CI] | gap rule: accuracy | gap rule mean Rs |
-|---|---|---|---|---|---|---|---|---|---|---|---|---|
-| NIFTY | ATM | 0 | expiry | 144 | -2,016 | 1,199 [349, 2,077] | -5,230 | 81% | 48% | -1,896 [-2,649, -1,083] | 50% | -2,193 |
-| NIFTY | ATM | 1 | close | 143 | -1,273 | 1,661 [1,164, 2,201] | -4,207 | 72% | 43% | -2,081 [-2,537, -1,638] | 48% | -1,406 |
-| NIFTY | ATM | 1 | expiry | 143 | -2,132 | 3,433 [2,273, 4,702] | -7,698 | 69% | 47% | -2,844 [-3,921, -1,723] | 56% | -1,707 |
-| NIFTY | ATM | 2-3 | close | 290 | -874 | 2,236 [1,847, 2,678] | -3,985 | 64% | 50% | -1,076 [-1,523, -660] | 48% | -807 |
-| NIFTY | ATM | 2-3 | expiry | 289 | -2,094 | 6,134 [4,485, 7,872] | -10,322 | 63% | 49% | -3,051 [-4,487, -1,593] | 49% | -2,818 |
-| NIFTY | ATM | 4-5 | close | 244 | -725 | 2,460 [2,051, 2,876] | -3,910 | 61% | 50% | -578 [-1,052, -87] | 53% | -631 |
-| NIFTY | ATM | 4-5 | expiry | 242 | -2,481 | 8,008 [6,057, 10,101] | -12,970 | 62% | 43% | -4,627 [-6,494, -2,727] | 55% | -1,959 |
-| NIFTY | 1 strike OTM | 0 | expiry | 144 | -1,777 | 237 [-539, 1,046] | -3,792 | 94% | 48% | -1,648 [-2,276, -960] | 50% | -1,967 |
-| NIFTY | 1 strike OTM | 1 | close | 143 | -1,243 | 1,213 [755, 1,712] | -3,698 | 75% | 43% | -1,932 [-2,315, -1,556] | 48% | -1,344 |
-| NIFTY | 1 strike OTM | 1 | expiry | 143 | -2,059 | 2,065 [938, 3,271] | -6,184 | 75% | 47% | -2,675 [-3,597, -1,702] | 56% | -1,739 |
-| NIFTY | 1 strike OTM | 2-3 | close | 290 | -858 | 1,913 [1,549, 2,332] | -3,629 | 65% | 50% | -1,045 [-1,444, -672] | 48% | -797 |
-| NIFTY | 1 strike OTM | 2-3 | expiry | 289 | -2,034 | 4,726 [3,100, 6,428] | -8,794 | 65% | 49% | -2,934 [-4,234, -1,598] | 49% | -2,718 |
-| NIFTY | 1 strike OTM | 4-5 | close | 244 | -712 | 2,202 [1,815, 2,594] | -3,626 | 62% | 50% | -579 [-1,022, -124] | 53% | -626 |
-| NIFTY | 1 strike OTM | 4-5 | expiry | 242 | -2,452 | 6,503 [4,593, 8,555] | -11,407 | 64% | 43% | -4,359 [-6,037, -2,639] | 55% | -2,072 |
-| SENSEX | ATM | 0 | expiry | 143 | -1,959 | 1,507 [678, 2,372] | -5,425 | 78% | 55% | -2,027 [-2,722, -1,277] | 49% | -1,476 |
-| SENSEX | ATM | 1 | close | 141 | -1,222 | 2,008 [1,404, 2,643] | -4,451 | 69% | 55% | -842 [-1,484, -156] | 51% | -1,193 |
-| SENSEX | ATM | 1 | expiry | 141 | -2,110 | 3,839 [2,548, 5,193] | -8,060 | 68% | 49% | -2,226 [-3,416, -907] | 52% | -2,482 |
-| SENSEX | ATM | 2-3 | close | 284 | -1,019 | 2,087 [1,663, 2,519] | -4,125 | 66% | 46% | -1,462 [-1,904, -1,039] | 49% | -1,305 |
-| SENSEX | ATM | 2-3 | expiry | 282 | -2,603 | 5,714 [4,125, 7,465] | -10,920 | 66% | 51% | -3,109 [-4,505, -1,708] | 49% | -2,994 |
-| SENSEX | ATM | 4-5 | close | 242 | -831 | 2,275 [1,893, 2,649] | -3,936 | 63% | 52% | -914 [-1,380, -451] | 49% | -590 |
-| SENSEX | ATM | 4-5 | expiry | 240 | -2,779 | 8,030 [6,022, 10,151] | -13,589 | 63% | 50% | -3,668 [-5,548, -1,698] | 45% | -4,244 |
-| SENSEX | 1 strike OTM | 0 | expiry | 143 | -1,902 | 684 [-100, 1,528] | -4,487 | 87% | 55% | -2,059 [-2,668, -1,389] | 49% | -1,397 |
-| SENSEX | 1 strike OTM | 1 | close | 141 | -1,209 | 1,718 [1,142, 2,323] | -4,136 | 71% | 55% | -869 [-1,463, -231] | 51% | -1,183 |
-| SENSEX | 1 strike OTM | 1 | expiry | 141 | -2,079 | 2,950 [1,696, 4,278] | -7,108 | 71% | 49% | -2,165 [-3,246, -957] | 52% | -2,468 |
-| SENSEX | 1 strike OTM | 2-3 | close | 284 | -1,010 | 1,897 [1,486, 2,317] | -3,918 | 67% | 46% | -1,427 [-1,843, -1,025] | 49% | -1,277 |
-| SENSEX | 1 strike OTM | 2-3 | expiry | 282 | -2,596 | 4,764 [3,180, 6,495] | -9,955 | 68% | 51% | -3,116 [-4,397, -1,800] | 49% | -2,971 |
-| SENSEX | 1 strike OTM | 4-5 | close | 242 | -824 | 2,127 [1,759, 2,487] | -3,774 | 64% | 52% | -903 [-1,348, -460] | 49% | -596 |
-| SENSEX | 1 strike OTM | 4-5 | expiry | 240 | -2,782 | 7,044 [5,048, 9,151] | -12,609 | 64% | 50% | -3,666 [-5,433, -1,764] | 45% | -4,135 |
+**2-week contract** (second-nearest weekly, about 6–10 sessions left), ATM:
+
+| | sell at close | hold to expiry |
+|---|---|---|
+| NIFTY | −₹516 (−3.3%) | −₹1,401 (−9.1%) |
+| SENSEX | −₹709 (−4.7%) | −₹1,505 (−9.9%) |
+
+### 5.2 Entry time (model prices, ATM, 1–5 sessions left, exit at 15:15)
+
+| entry | NIFTY, repo model | NIFTY, calibrated model | SENSEX, repo model | SENSEX, calibrated model |
+|---|---|---|---|---|
+| 09:15 (stale VIX) | −₹883 [−995, −760] | −₹642 [−758, −515] | −₹946 | −₹694 |
+| 10:15 | −₹908 [−988, −820] | −₹705 [−791, −612] | −₹1,003 | −₹795 |
+| 11:15 | −₹790 [−852, −730] | −₹627 [−692, −563] | −₹862 | −₹693 |
+
+- Held to expiry with the calibrated model: −₹1,044 to −₹1,181 per lot (NIFTY) and −₹1,370 to −₹1,441 (SENSEX), whatever the entry time. With the repo model: −₹2,082 to −₹2,241 (NIFTY) and −₹2,464 to −₹2,562 (SENSEX).
+- For 0DTE with the calibrated model: −₹978 (09:15), −₹1,310 (10:15), −₹1,015 (11:15) for NIFTY.
+- **Entry time does not create an edge.** It only changes how many hours of time decay you pay.
+- All rows, including OTM strikes and 0DTE, are in `out/d_grid.md`.
+
+### 5.3 How accurate does the direction call have to be? (real prices, one ATM option a day)
+
+Expected P&L per lot at a given hit rate p, assuming the hit rate is unrelated to the size of the move. "Break-even" is the hit rate where the trade stops losing. "Hold beats sell above" is the hit rate above which holding to expiry earns more than selling at the close.
+
+| index, sessions left | exit | p = 50% | 55% | 60% | 65% | break-even | hold beats sell above |
+|---|---|---|---|---|---|---|---|
+| NIFTY, 1 | close | −751 | −414 | −77 | +259 | 61% | |
+| NIFTY, 1 | expiry | −1,135 | −517 | +100 | +718 | 59% | 57% |
+| NIFTY, 2–3 | close | −440 | −79 | +281 | +641 | 56% | |
+| NIFTY, 2–3 | expiry | −1,084 | −239 | +605 | +1,449 | 56% | 57% |
+| NIFTY, 4–5 | close | −554 | −184 | +186 | +556 | 57% | |
+| NIFTY, 4–5 | expiry | −1,246 | −160 | +926 | +2,012 | 56% | 55% |
+| SENSEX, 2–3 | close | −747 | −398 | −50 | +298 | 61% | |
+| SENSEX, 2–3 | expiry | −1,406 | −542 | +322 | +1,187 | 58% | 56% |
+| SENSEX, 4–5 | expiry | −1,494 | −395 | +704 | +1,804 | 57% | 54% |
+
+**Benchmarks (ATM):**
+
+- **Perfect direction knowledge** (call on up days, put on down days), sell at the close: NIFTY +₹2,616 to +₹3,163 per lot; SENSEX +₹2,476 to +₹2,738.
+- **Perfect direction knowledge, held to expiry:** NIFTY +₹5,040 (1 session left) to +₹9,613 (4–5 left); SENSEX +₹4,871 to +₹9,498.
+- **20-day trend rule:** right 43–52% of the time. P&L −₹3 to −₹2,756.
+- **Opening-gap rule:** right 44–52%. P&L between −₹1,764 and +₹389 (mostly negative).
+- No rule tested reaches the 56–62% break-even.
+
+### 5.4 Hold to expiry against selling at the close: same trades, real prices, 1–5 sessions left
+
+| index | trades | extra P&L from holding [90% CI, by expiry week] | holding beat selling | average if sold | average if held |
+|---|---|---|---|---|---|
+| NIFTY ATM, all | 1,360 | −601 [−1,331, +155] | 32% [30, 34] | −552 | −1,153 |
+| NIFTY ATM, in profit at the close | 506 | −369 [−1,582, +914] | 42% | +4,732 | +4,363 |
+| NIFTY ATM, losing at the close | 854 | **−739 [−1,367, −60]** | 26% | −3,683 | −4,421 |
+| SENSEX ATM, all | 1,339 | −626 [−1,308, +83] | 33% | −793 | −1,419 |
+| SENSEX ATM, in profit at the close | 503 | +228 [−1,140, +1,643] | 42% | +4,533 | +4,761 |
+| SENSEX ATM, losing at the close | 836 | **−1,140 [−1,722, −514]** | 27% | −3,997 | −5,137 |
+
+By half, selling at the close against holding: NIFTY H1 −442 against −698, H2 −652 against −1,611. SENSEX H1 −835 against −1,138, H2 −732 against −1,702.
+
+**The small accounts' premium band** (`src/engine/accounts.ts`): the strike nearest the money whose opening premium is ₹40–70 for NIFTY or ₹130–222 for SENSEX. That is typically 4 strikes out for NIFTY and 7 for SENSEX, at about ₹4,000 a lot.
+
+| | NIFTY (1,299 trades) | SENSEX (1,277 trades) |
+|---|---|---|
+| sell at close, mean [90% CI] | −₹173 [−271, −79] (−4.3%) | −₹6 [−121, +121] (−0.2%) |
+| hold to expiry, mean | −₹308 (−7.7%) | −₹425 (−10.7%) |
+| expired worthless | 72% | 72% |
+| paid 5× or more at expiry | 7% | 6% |
+| calls only, sell at close | −₹356 | −₹240 |
+| puts only, sell at close | +₹15 [−195, 233] | +₹230 [4, 479] (H1 +197 / H2 +263) |
+
+- The median put trade lost: −₹938 for NIFTY and −₹707 for SENSEX.
+- The positive average rests on a few crash days. SENSEX's best trade (+₹49k on 4 Jun 2024) is one of them. Without the best 5 trades of about 640, the SENSEX average falls to +₹34; without the best 10, it is −₹69.
+- These are lottery tickets that the 2024–26 path happened to pay out, not a repeatable edge.
+- Choosing the strike from its opening print may also make entries look cheaper than a live quote would have been.
 
 ---
 
-## (d2) Small-account premium-band options on real prices
+## 6. (e) When did buying options pay?
 
-Strike = nearest to ATM whose 09:15 first-trade premium is in the band (NIFTY Rs 40-70 x 65, SENSEX Rs 130-222 x 20), expiry = nearest not expiring today; CE and PE pooled. Close-exit CIs resample days; expiry CIs resample expiry weeks.
+The test: buy one ATM call and one ATM put (2 lots) at the open, with 1–5 sessions to expiry. All prices are real. H1 / H2 are the averages in each half of the sample.
 
-| index | DTE at entry | n | typical strikes OTM (median) | premium / lot | sell at close: mean Rs [90% CI] | % profitable | hold to expiry: mean Rs [90% CI] | % profitable | % expired worthless | 5x-or-better at expiry |
-|---|---|---|---|---|---|---|---|---|---|---|
-| NIFTY | 1 | 284 | 2 | 3,949 | -376 [-608, -149] | 32% [28, 37] (92/284) | -543 [-1,129, 62] | 27% [23, 31] (76/284) | 66% [61, 71] (188/284) | 5% [3, 7] (13/284) |
-| NIFTY | 2 | 281 | 3 | 3,958 | -266 [-466, -63] | 34% [29, 39] (95/281) | -456 [-1,136, 270] | 22% [18, 26] (61/281) | 71% [67, 75] (200/281) | 6% [4, 9] (17/281) |
-| NIFTY | 3 | 278 | 4 | 4,046 | -103 [-291, 110] | 36% [31, 40] (99/278) | -3 [-803, 851] | 20% [16, 24] (56/278) | 74% [70, 78] (206/278) | 9% [6, 12] (24/278) |
-| NIFTY | 4-5 | 456 | 6 | 4,079 | -33 [-186, 120] | 36% [32, 40] (164/456) | -255 [-920, 549] | 21% [18, 25] (97/456) | 75% [72, 78] (343/456) | 8% [6, 11] (38/456) |
-| NIFTY | all | 1299 | 4 | 4,018 | -173 [-271, -79] | 35% [33, 37] (450/1299) | -308 [-864, 316] | 22% [20, 24] (290/1299) | 72% [70, 74] (937/1299) | 7% [6, 8] (92/1299) |
-| SENSEX | 1 | 277 | 3 | 3,856 | -24 [-336, 312] | 35% [31, 40] (98/277) | -546 [-1,086, 4] | 25% [21, 30] (70/277) | 68% [63, 72] (187/277) | 5% [3, 7] (13/277) |
-| SENSEX | 2 | 270 | 5 | 4,018 | -193 [-409, 25] | 33% [28, 37] (88/270) | -713 [-1,338, -65] | 22% [18, 27] (60/270) | 69% [64, 74] (187/270) | 4% [3, 7] (12/270) |
-| SENSEX | 3 | 271 | 7 | 4,004 | -12 [-300, 347] | 36% [32, 41] (98/271) | -267 [-961, 495] | 22% [18, 27] (60/271) | 73% [68, 77] (197/271) | 6% [4, 9] (17/271) |
-| SENSEX | 4-5 | 459 | 9 | 4,021 | 119 [-39, 277] | 39% [35, 42] (177/459) | -275 [-1,118, 583] | 20% [17, 24] (93/459) | 76% [73, 79] (349/459) | 6% [5, 8] (29/459) |
-| SENSEX | all | 1277 | 7 | 3,981 | -6 [-121, 121] | 36% [34, 38] (461/1277) | -425 [-988, 168] | 22% [20, 24] (283/1277) | 72% [70, 74] (920/1277) | 6% [5, 7] (71/1277) |
+| condition | known before entry? | NIFTY n | NIFTY, sell at close [90% CI] | NIFTY H1 / H2 | SENSEX, sell at close | SENSEX H1 / H2 |
+|---|---|---|---|---|---|---|
+| all days | – | 680 | −1,104 [−1,396, −792] | −878 / −1,330 | −1,582 | −1,668 / −1,497 |
+| VIX < 12 | yes | 159 | −929 | −1,402 / −880 | −1,289 | −2,473 / −1,161 |
+| VIX ≥ 18 | yes | 82 | −2,053 [−3,530, −150] | −698 / −3,114 | −2,414 | −2,100 / −2,660 |
+| VIX in top third of its year | yes | 283 | −1,526 | −1,027 / −2,512 | −1,997 | −1,899 / −2,193 |
+| VIX up more than 10% in 5 days | yes | 109 | **−2,269 [−3,044, −1,482]** | −2,466 / −2,010 | **−2,427** | −2,497 / −2,333 |
+| moved more than 2% in 5 days | yes | 173 | −1,637 | −1,661 / −1,602 | −2,152 | −2,136 / −2,174 |
+| RV5/VIX ≥ 1.0 | yes | 150 | −838 [−1,696, 199] | −442 / −1,448 | −1,693 | −1,450 / −2,062 |
+| RV20/VIX ≥ 1.0 | yes | 148 | −1,496 | −1,482 / −1,517 | −2,255 | −2,728 / −1,667 |
+| gap at the open > 1% | at 09:15 | 37 | −1,059 [−3,064, 818] | −1,181 / −965 | −1,628 | −1,683 / −1,584 |
+| Friday | yes | 133 | −651 [−1,167, −125] | −928 / −377 | −1,297 | −1,704 / −896 |
+| 1 session left | yes | 145 | −1,501 | −1,493 / −1,509 | −1,605 | −1,564 / −1,645 |
+| RBI policy day | yes | 16 | −3 [−1,606, 1,615] | −866 / +859 | −908 (n = 17) | −2,169 / +213 |
+| **Trend day: index moved open-to-close more than the VIX-implied 1-day move** | **no, only afterwards** | 106 | **+4,739 [3,554, 5,962]**, 87% made money | +5,738 / +3,384 | +3,916 | +4,028 / +3,742 |
+| not a trend day | only afterwards | 574 | −2,183 | | −2,571 | |
+
+**Held to expiry, in rupees:**
+
+| | NIFTY | SENSEX |
+|---|---|---|
+| all days | −2,306 | −2,821 |
+| VIX in bottom third of its year | +377 (H1 +7,039, H2 −1,104) | +580 (H1 +10,119, H2 −1,546) |
+| VIX ≥ 18 | −5,992 | −6,855 |
+
+The bottom-third result does not hold across halves, so it is not a rule.
+
+**Can a trend day be spotted at the open?** Trend days are 16% of NIFTY days and 15% of SENSEX days. Information available at the open barely shifts those odds:
+
+| known at the open | P(trend day), NIFTY |
+|---|---|
+| gap > 1% | 24% [15, 37] (n = 37) |
+| VIX ≥ 18 | 7% |
+| VIX < 12 | 16% |
+| RV5/VIX ≥ 1 | 16% |
+| previous day's move bigger than implied | 15% |
+| Monday | 14% |
+
+SENSEX is similar: gap > 1% gives 21%, VIX ≥ 18 gives 10%.
+
+**Expiry-day straddles (0DTE, held to settlement):**
+
+- NIFTY −₹1,901 [−2,821, −929]; SENSEX −₹1,841.
+- With VIX ≥ 18: −₹6,288 (NIFTY) and −₹5,387 (SENSEX).
+- The only positive bucket was NIFTY "RV5/VIX < 0.6": +₹672 [−989, +2,564], H1 +655 / H2 +692. It failed on SENSEX (H1 +842, H2 −3,099), so it is not a rule.
+
+**Conclusion for (e):**
+
+- Long options paid on trend days and on days that beat the implied move. Those are only knowable afterwards.
+- No information available before entry made the long straddle profitable on average.
+- The conditions that reliably made it worse are the ones in the "avoid buying" list in §0.
 
 ---
 
-## (e) Conditions under which long options paid (REAL prices)
+## 7. Caveats
 
+- **Real prices are end-of-day only.**
+  - The entry price is the day's first trade, which can be away from the market at 09:15. The exit is NSE's computed close (BSE: the last trade).
+  - There are no real prices for entries during the day or exits before the close. Those are model prices, calibrated to real premiums at the open and close (0.9× the repo's volatility).
+  - Spreads use the repo's assumption of 0.4% of premium. Real NIFTY ATM spreads are tighter; far-OTM SENSEX spreads are wider.
+- **India VIX is a substitute for weekly-option volatility.** It is a 30-calendar-day index built on NIFTY's *monthly* options. SENSEX uses the same VIX. Its overnight and weekend jumps are partly an artifact of counting calendar time.
+- **Sample, Jan 2024 – Oct 2026 (about 145 weekly expiries per index):**
+  - It spans several rule changes: SEBI's November 2024 F&O rules (one weekly expiry per exchange, larger lots), NIFTY's expiry moving from Thursday to Tuesday (September 2025), SENSEX moving from Friday to Tuesday (January 2025) and then to Thursday (September 2025), and the STT increase (April 2026).
+  - The index finished near where it started, with deep falls in H2, which drives the call/put asymmetry.
+  - Lots are fixed at today's 65 and 20. Historical lots differed (NIFTY 50/25/75, SENSEX 10/20), which only changes how much the flat ₹20 brokerage weighs.
+- **Multiple comparisons.** About 25 conditions were tested for each of 2 indices, so a few 90% intervals that exclude zero are expected by chance. Only effects that hold in both halves and on both indices are recommended. The event studies are small: 16 RBI days, 3 Budgets, 1 election.
+- **Small or noisy samples:**
+  - The 5-minute VIX sample is 58 sessions in one downtrend.
+  - Since 3 August 2026, NSE's closing auction makes Yahoo's last 15 minutes of index bars unreliable. SENSEX's 15:15–15:30 hourly bar is also suspect (it shows only 1% of the day's movement).
+- **Expiry charges are assumptions.** Exercise STT of 0.125% (0.15% from April 2026) and ₹20 brokerage plus GST on exercise are assumed. The effect is small.
 
-**NIFTY, ATM straddle bought at the open, DTE 1-5** (2024-01-01 to 2026-10-05, 680 days; H1 < 2025-05-22 <= H2). Per day: buy 1 lot ATM CE + 1 lot ATM PE at the open (straddle = direction-free test of 'did buying options pay'); P&L in Rs per straddle (2 lots).
+---
 
-| condition | known before entry? | n days | straddle, sell at close: mean Rs [90% CI] | % days profitable | H1 / H2 mean | straddle held to expiry: mean Rs [90% CI, expiry clusters] | H1 / H2 mean | perfect-direction single option, close: mean Rs |
-|---|---|---|---|---|---|---|---|---|
-| all days | - | 680 | -1,104 [-1,396, -792] | 29% [26, 31] (194/680) | -878 / -1,330 | -2,306 [-3,797, -754] | -1,330 / -3,282 | 3,027 |
-| prev-close VIX < 12 | yes | 159 | -929 [-1,263, -577] | 26% [21, 32] (41/159) | -1,402 / -880 | 65 [-2,200, 2,518] | 4,912 / -440 | 2,568 |
-| prev-close VIX 12-15 | yes | 322 | -829 [-1,157, -481] | 30% [26, 35] (98/322) | -589 / -1,248 | -1,146 [-3,122, 990] | 107 / -3,341 | 2,933 |
-| prev-close VIX 15-18 | yes | 117 | -1,436 [-2,087, -732] | 31% [24, 38] (36/117) | -1,566 / -1,104 | -6,136 [-9,315, -2,493] | -7,145 / -3,568 | 3,140 |
-| prev-close VIX >= 18 | yes | 82 | -2,053 [-3,530, -150] | 23% [16, 32] (19/82) | -698 / -3,114 | -5,992 [-10,824, -887] | 1,461 / -11,825 | 4,126 |
-| VIX in bottom third of its past year | yes | 198 | -819 [-1,123, -519] | 30% [25, 36] (60/198) | 412 / -1,093 | 377 [-1,877, 2,764] | 7,039 / -1,104 | 2,718 |
-| VIX in top third of its past year | yes | 283 | -1,526 [-2,104, -898] | 27% [22, 31] (75/283) | -1,027 / -2,512 | -5,081 [-7,488, -2,574] | -3,880 / -7,458 | 3,285 |
-| RV5/VIX >= 1.0 (recent moves bigger than implied) | yes | 150 | -838 [-1,696, 199] | 26% [21, 32] (39/150) | -442 / -1,448 | -2,238 [-5,010, 591] | -276 / -5,264 | 3,984 |
-| RV5/VIX < 0.6 (quiet week) | yes | 212 | -886 [-1,346, -405] | 31% [26, 36] (65/212) | -742 / -1,057 | -937 [-3,187, 1,593] | -1,122 / -718 | 2,907 |
-| RV20/VIX >= 1.0 | yes | 148 | -1,496 [-2,011, -963] | 30% [24, 36] (44/148) | -1,482 / -1,517 | -5,156 [-7,938, -2,054] | -4,344 / -6,381 | 2,922 |
-| RV20/VIX < 0.7 | yes | 143 | -962 [-1,547, -380] | 29% [23, 35] (41/143) | -642 / -1,200 | -641 [-3,571, 2,382] | -299 / -894 | 3,119 |
-| VIX up > 10% over the last 5 days | yes | 109 | -2,269 [-3,044, -1,482] | 25% [19, 32] (27/109) | -2,466 / -2,010 | -3,973 [-7,875, 323] | -2,440 / -5,996 | 2,776 |
-| VIX down > 10% over the last 5 days | yes | 90 | -1,061 [-1,804, -342] | 28% [21, 36] (25/90) | -999 / -1,146 | -2,090 [-4,359, 399] | -1,249 / -3,242 | 2,852 |
-| gap at open > 0.5% | yes, at 09:15 | 129 | -1,018 [-1,717, -290] | 33% [26, 40] (42/129) | -1,023 / -1,014 | -2,748 [-5,181, -239] | 818 / -6,152 | 3,486 |
-| gap at open > 1% | yes, at 09:15 | 37 | -1,059 [-3,064, 818] | 32% [21, 46] (12/37) | -1,181 / -965 | -3,181 [-7,903, 2,324] | 1,374 / -6,652 | 4,546 |
-| gap at open < 0.2% | yes, at 09:15 | 305 | -1,246 [-1,563, -913] | 28% [24, 32] (84/305) | -1,291 / -1,206 | -2,107 [-3,800, -452] | -1,596 / -2,564 | 2,808 |
-| |5-day return| > 2% (trending week) | yes | 173 | -1,637 [-2,146, -1,116] | 24% [19, 30] (42/173) | -1,661 / -1,602 | -4,321 [-6,553, -2,040] | -2,659 / -6,708 | 2,619 |
-| Monday | yes | 137 | -1,108 [-1,709, -481] | 30% [24, 37] (41/137) | -541 / -1,651 | -2,868 [-4,643, -1,083] | -1,529 / -4,149 | 3,021 |
-| Friday | yes | 133 | -651 [-1,167, -125] | 38% [32, 45] (51/133) | -928 / -377 | -1,450 [-3,572, 732] | 370 / -3,243 | 3,790 |
-| 1 session to expiry (DTE 1) | yes | 145 | -1,501 [-1,993, -952] | 27% [21, 33] (39/145) | -1,493 / -1,509 | -2,269 [-3,499, -904] | -2,207 / -2,332 | 2,616 |
-| DTE 4-5 | yes | 245 | -1,105 [-1,537, -672] | 28% [24, 33] (69/245) | -1,119 / -1,091 | -2,492 [-4,496, -223] | -1,952 / -3,019 | 3,149 |
-| RBI policy day | yes | 16 | -3 [-1,606, 1,615] | 50% [31, 69] (8/16) | -866 / 859 | -2,068 [-8,823, 5,669] | 864 / -5,000 | 4,436 |
-| EX-POST: trend day (abs open-close move > implied 1-day sigma) | no | 106 | 4,739 [3,554, 5,962] | 87% [80, 91] (92/106) | 5,738 / 3,384 | 2,046 [-524, 4,725] | 3,042 / 695 | 11,453 |
-| EX-POST: not a trend day | no | 574 | -2,183 [-2,386, -1,991] | 18% [15, 21] (102/574) | -2,325 / -2,049 | -3,109 [-4,630, -1,525] | -2,285 / -3,889 | 1,471 |
-| EX-POST: close-close move > implied | no | 151 | 2,445 [1,541, 3,556] | 62% [56, 68] (94/151) | 3,328 / 1,450 | 820 [-1,547, 3,094] | 2,045 / -559 | 8,796 |
+## 8. Files
 
-NIFTY: probability of a trend day (abs open-to-close move > VIX-implied 1-day sigma) given information at the open. Base rate 16%.
+All files are under `/tmp/claude-0/-home-user-ruphak-trading-info/ce69818a-a157-5190-9186-5f96c704f981/scratchpad/research/q1/`.
 
-| known at the open | n | P(trend day) [90% CI] | lift vs base |
-|---|---|---|---|
-| gap > 0.5% | 129 | 15% [10, 21] (19/129) | 0.94x |
-| gap > 1% | 37 | 24% [15, 37] (9/37) | 1.56x |
-| gap < 0.2% | 305 | 15% [12, 19] (46/305) | 0.97x |
-| RV5/VIX >= 1.0 | 150 | 16% [12, 22] (24/150) | 1.03x |
-| RV5/VIX < 0.6 | 212 | 16% [12, 20] (33/212) | 1.00x |
-| VIX >= 18 | 82 | 7% [4, 14] (6/82) | 0.47x |
-| VIX < 12 | 159 | 16% [12, 21] (25/159) | 1.01x |
-| yesterday's abs close-close > implied | 151 | 15% [10, 20] (22/151) | 0.93x |
-| Monday | 137 | 14% [10, 19] (19/137) | 0.89x |
-| DTE 1 | 145 | 14% [10, 19] (20/145) | 0.88x |
+**Scripts** (`scripts/`; run with `python3 -I`):
 
-NIFTY: candidate filters, straddle sold at close, first vs second half.
+| step | file | what it does |
+|---|---|---|
+| 1 | `dl_nse.sh`, `dl_bse.sh` | Download the bhavcopies |
+| 2 | `build_opts.py` | Extract NIFTY and SENSEX option rows into `data/nifty_opts.csv` and `data/sensex_opts.csv` |
+| 3 | `panel.py` | Build the daily panels (lagged features, real expiries and sessions to expiry) and the real-option panels |
+| 4 | `d_trades.py` | Build trade-level P&L: real, repo model, and calibrated model |
+| – | `common.py` | Shared code: loaders, Black-Scholes, the repo's spread and charges, bootstrap and Wilson intervals |
 
-| filter | H1 n | H1 mean Rs [90% CI] | H2 n | H2 mean Rs [90% CI] |
-|---|---|---|---|---|
-| RV5/VIX >= 1.0 | 91 | -442 [-1,692, 1,154] | 59 | -1,448 [-2,270, -554] |
-| VIX >= 18 | 36 | -698 [-3,741, 2,896] | 46 | -3,114 [-4,272, -1,986] |
-| gap > 0.5% | 63 | -1,023 [-2,114, 111] | 66 | -1,014 [-1,956, -66] |
-| gap < 0.2% | 144 | -1,291 [-1,851, -723] | 161 | -1,206 [-1,583, -833] |
-| DTE 4-5 | 121 | -1,119 [-1,769, -450] | 124 | -1,091 [-1,665, -492] |
-| all | 340 | -878 [-1,353, -341] | 340 | -1,330 [-1,632, -1,036] |
+**Analysis scripts:**
 
-**SENSEX, ATM straddle bought at the open, DTE 1-5** (2024-01-02 to 2026-10-07, 669 days; H1 < 2025-05-26 <= H2). Per day: buy 1 lot ATM CE + 1 lot ATM PE at the open (straddle = direction-free test of 'did buying options pay'); P&L in Rs per straddle (2 lots).
+| section | file |
+|---|---|
+| (a) | `a_intraday_vix.py`, `a2_intraday_rv.py`, `a3_hour_holds.py` |
+| (b) | `b_daily_vix.py` |
+| (c) | `c_vrp.py` |
+| (d) | `d_report.py`, `d2_band.py` |
+| (e) | `e_conditions.py` |
 
-| condition | known before entry? | n days | straddle, sell at close: mean Rs [90% CI] | % days profitable | H1 / H2 mean | straddle held to expiry: mean Rs [90% CI, expiry clusters] | H1 / H2 mean | perfect-direction single option, close: mean Rs |
-|---|---|---|---|---|---|---|---|---|
-| all days | - | 669 | -1,582 [-1,863, -1,309] | 26% [23, 29] (172/669) | -1,668 / -1,497 | -2,821 [-4,251, -1,368] | -2,210 / -3,431 | 2,613 |
-| prev-close VIX < 12 | yes | 154 | -1,289 [-1,650, -914] | 22% [17, 28] (34/154) | -2,473 / -1,161 | -1,050 [-3,250, 1,459] | -2,067 / -940 | 2,061 |
-| prev-close VIX 12-15 | yes | 318 | -1,351 [-1,696, -997] | 28% [24, 32] (88/318) | -1,320 / -1,402 | -1,605 [-3,588, 344] | -59 / -4,189 | 2,518 |
-| prev-close VIX 15-18 | yes | 115 | -2,020 [-2,669, -1,275] | 27% [21, 34] (31/115) | -2,162 / -1,635 | -5,680 [-8,352, -2,742] | -6,917 / -2,330 | 2,894 |
-| prev-close VIX >= 18 | yes | 82 | -2,414 [-3,782, -965] | 23% [16, 32] (19/82) | -2,100 / -2,660 | -6,855 [-11,222, -2,491] | -3,173 / -9,736 | 3,623 |
-| VIX in bottom third of its past year | yes | 192 | -1,273 [-1,561, -949] | 24% [19, 29] (46/192) | -568 / -1,430 | 580 [-1,943, 3,314] | 10,119 / -1,546 | 2,252 |
-| VIX in top third of its past year | yes | 283 | -1,997 [-2,533, -1,437] | 25% [21, 30] (72/283) | -1,899 / -2,193 | -5,652 [-7,679, -3,707] | -5,497 / -5,963 | 2,921 |
-| RV5/VIX >= 1.0 (recent moves bigger than implied) | yes | 126 | -1,693 [-2,631, -783] | 25% [20, 32] (32/126) | -1,450 / -2,062 | -3,935 [-7,294, -345] | -2,088 / -6,741 | 3,343 |
-| RV5/VIX < 0.6 (quiet week) | yes | 223 | -1,418 [-1,833, -967] | 24% [19, 29] (53/223) | -1,480 / -1,342 | -1,917 [-3,904, 107] | -2,432 / -1,283 | 2,510 |
-| RV20/VIX >= 1.0 | yes | 112 | -2,255 [-2,877, -1,626] | 23% [17, 30] (26/112) | -2,728 / -1,667 | -6,930 [-9,431, -3,952] | -7,805 / -5,844 | 1,918 |
-| RV20/VIX < 0.7 | yes | 189 | -1,018 [-1,549, -506] | 30% [25, 36] (57/189) | -846 / -1,128 | -1,835 [-3,799, 297] | -1,327 / -2,162 | 2,850 |
-| VIX up > 10% over the last 5 days | yes | 108 | -2,427 [-3,304, -1,554] | 21% [16, 28] (23/108) | -2,497 / -2,333 | -6,156 [-9,460, -2,788] | -4,951 / -7,780 | 2,188 |
-| VIX down > 10% over the last 5 days | yes | 89 | -2,145 [-2,950, -1,292] | 26% [19, 34] (23/89) | -2,549 / -1,604 | -3,681 [-6,640, -617] | -2,216 / -5,648 | 2,067 |
-| gap at open > 0.5% | yes, at 09:15 | 133 | -1,716 [-2,549, -939] | 34% [27, 41] (45/133) | -1,988 / -1,485 | -2,898 [-5,732, -145] | -122 / -5,250 | 2,398 |
-| gap at open > 1% | yes, at 09:15 | 38 | -1,628 [-3,673, 397] | 42% [30, 55] (16/38) | -1,683 / -1,584 | -2,353 [-7,275, 2,509] | -1,704 / -2,878 | 2,726 |
-| gap at open < 0.2% | yes, at 09:15 | 303 | -1,484 [-1,813, -1,164] | 25% [21, 29] (75/303) | -1,578 / -1,396 | -2,152 [-3,828, -398] | -933 / -3,285 | 2,724 |
-| |5-day return| > 2% (trending week) | yes | 159 | -2,152 [-2,812, -1,548] | 20% [15, 26] (32/159) | -2,136 / -2,174 | -5,122 [-7,723, -2,447] | -3,873 / -6,794 | 2,065 |
-| Monday | yes | 134 | -1,223 [-1,812, -625] | 28% [22, 35] (38/134) | -1,065 / -1,372 | -4,107 [-6,076, -1,985] | -3,276 / -4,889 | 2,388 |
-| Friday | yes | 129 | -1,297 [-1,878, -745] | 32% [25, 39] (41/129) | -1,704 / -896 | -2,245 [-4,496, -82] | -982 / -3,490 | 3,388 |
-| 1 session to expiry (DTE 1) | yes | 143 | -1,605 [-2,323, -899] | 25% [20, 32] (36/143) | -1,564 / -1,645 | -2,555 [-3,838, -1,218] | -1,960 / -3,143 | 2,707 |
-| DTE 4-5 | yes | 241 | -1,663 [-2,024, -1,285] | 25% [21, 30] (60/241) | -1,724 / -1,606 | -2,988 [-5,165, -840] | -2,637 / -3,320 | 2,422 |
-| RBI policy day | yes | 17 | -908 [-2,268, 407] | 41% [24, 61] (7/17) | -2,169 / 213 | -3,628 [-8,651, 1,776] | -4,729 / -2,649 | 3,915 |
-| EX-POST: trend day (abs open-close move > implied 1-day sigma) | no | 102 | 3,916 [2,934, 4,983] | 81% [74, 87] (83/102) | 4,028 / 3,742 | 3,236 [85, 6,331] | 3,975 / 2,090 | 11,003 |
-| EX-POST: not a trend day | no | 567 | -2,571 [-2,781, -2,348] | 16% [13, 18] (89/567) | -2,966 / -2,207 | -3,911 [-5,284, -2,487] | -3,619 / -4,179 | 1,104 |
-| EX-POST: close-close move > implied | no | 131 | 2,428 [1,497, 3,402] | 69% [62, 75] (90/131) | 2,515 / 2,328 | 724 [-2,179, 3,439] | 1,763 / -469 | 9,228 |
+**Full output tables** (`out/`):
 
-SENSEX: probability of a trend day (abs open-to-close move > VIX-implied 1-day sigma) given information at the open. Base rate 15%.
+- `a_intraday_vix.md`
+- `a2_intraday_rv.md`
+- `a3_hour_holds.md`
+- `b_daily_vix.md`
+- `c_vrp.md`
+- `d_grid.md` (also includes direction benchmarks with the repo and calibrated models, OTM rows, and entry-time-by-strike tables)
+- `d2_band.md`
+- `e_conditions.md`
 
-| known at the open | n | P(trend day) [90% CI] | lift vs base |
-|---|---|---|---|
-| gap > 0.5% | 133 | 17% [13, 23] (23/133) | 1.13x |
-| gap > 1% | 38 | 21% [12, 34] (8/38) | 1.38x |
-| gap < 0.2% | 303 | 16% [13, 20] (48/303) | 1.04x |
-| RV5/VIX >= 1.0 | 126 | 17% [13, 24] (22/126) | 1.15x |
-| RV5/VIX < 0.6 | 223 | 14% [11, 18] (31/223) | 0.91x |
-| VIX >= 18 | 82 | 10% [6, 16] (8/82) | 0.64x |
-| VIX < 12 | 154 | 12% [8, 17] (18/154) | 0.77x |
-| yesterday's abs close-close > implied | 131 | 17% [12, 23] (22/131) | 1.10x |
-| Monday | 134 | 13% [9, 18] (17/134) | 0.83x |
-| DTE 1 | 143 | 15% [10, 20] (21/143) | 0.96x |
+**Data:**
 
-SENSEX: candidate filters, straddle sold at close, first vs second half.
+- `dl_nse/`: 684 NSE F&O bhavcopies, 806 MB.
+- `dl_bse/`: 679 BSE derivative bhavcopies, 17 MB.
+- `data/`: Yahoo bars, extracts, panels and trade pickles.
 
-| filter | H1 n | H1 mean Rs [90% CI] | H2 n | H2 mean Rs [90% CI] |
-|---|---|---|---|---|
-| RV5/VIX >= 1.0 | 76 | -1,450 [-2,820, 16] | 50 | -2,062 [-3,095, -1,022] |
-| VIX >= 18 | 36 | -2,100 [-4,611, 512] | 46 | -2,660 [-3,979, -1,271] |
-| gap > 0.5% | 61 | -1,988 [-3,343, -613] | 72 | -1,485 [-2,382, -612] |
-| gap < 0.2% | 146 | -1,578 [-2,121, -1,031] | 157 | -1,396 [-1,763, -1,025] |
-| DTE 4-5 | 117 | -1,724 [-2,351, -1,056] | 124 | -1,606 [-1,975, -1,204] |
-| all | 334 | -1,668 [-2,120, -1,189] | 335 | -1,497 [-1,803, -1,167] |
-
-**NIFTY, ATM straddle bought at the open on EXPIRY DAY (0DTE, held to settlement)** (2024-01-04 to 2026-10-06, 145 days; H1 < 2025-05-22 <= H2). Per day: buy 1 lot ATM CE + 1 lot ATM PE at the open (straddle = direction-free test of 'did buying options pay'); P&L in Rs per straddle (2 lots).
-
-| condition | known before entry? | n days | straddle, sell at close: mean Rs [90% CI] | % days profitable | H1 / H2 mean | straddle held to expiry: mean Rs [90% CI, expiry clusters] | H1 / H2 mean | perfect-direction single option, close: mean Rs |
-|---|---|---|---|---|---|---|---|---|
-| all days | - | 145 | -1,901 [-2,821, -929] | 31% [25, 38] (45/145) | -1,709 / -2,091 | -1,901 [-2,821, -929] | -1,709 / -2,091 | 3,009 |
-| prev-close VIX < 12 | yes | 36 | -1,132 [-2,449, 337] | 33% [22, 47] (12/36) | 321 / -1,367 | -1,132 [-2,449, 337] | 321 / -1,367 | 2,550 |
-| prev-close VIX 12-15 | yes | 66 | -838 [-2,128, 547] | 36% [27, 46] (24/66) | -1,313 / -59 | -838 [-2,128, 547] | -1,313 / -59 | 3,626 |
-| prev-close VIX 15-18 | yes | 24 | -2,506 [-4,954, 340] | 21% [11, 37] (5/24) | -2,006 / -4,406 | -2,506 [-4,954, 340] | -2,006 / -4,406 | 2,790 |
-| prev-close VIX >= 18 | yes | 19 | -6,288 [-9,635, -2,665] | 21% [10, 39] (4/19) | -4,669 / -7,233 | -6,288 [-9,635, -2,665] | -4,669 / -7,233 | 2,008 |
-| VIX in bottom third of its past year | yes | 42 | -1,050 [-2,188, 146] | 36% [25, 48] (15/42) | -886 / -1,089 | -1,050 [-2,188, 146] | -886 / -1,089 | 2,711 |
-| VIX in top third of its past year | yes | 65 | -3,493 [-5,041, -1,891] | 23% [16, 33] (15/65) | -2,770 / -4,729 | -3,493 [-5,041, -1,891] | -2,770 / -4,729 | 2,481 |
-| RV5/VIX >= 1.0 (recent moves bigger than implied) | yes | 29 | -3,772 [-6,420, -979] | 21% [11, 35] (6/29) | -2,175 / -7,323 | -3,772 [-6,420, -979] | -2,175 / -7,323 | 3,278 |
-| RV5/VIX < 0.6 (quiet week) | yes | 43 | 672 [-989, 2,564] | 44% [32, 57] (19/43) | 655 / 692 | 672 [-989, 2,564] | 655 / 692 | 4,859 |
-| RV20/VIX >= 1.0 | yes | 30 | -2,932 [-5,154, -605] | 23% [13, 38] (7/30) | -1,431 / -5,524 | -2,932 [-5,154, -605] | -1,431 / -5,524 | 2,542 |
-| RV20/VIX < 0.7 | yes | 31 | 418 [-1,928, 2,971] | 42% [29, 57] (13/31) | 881 / 125 | 418 [-1,928, 2,971] | 881 / 125 | 4,827 |
-| VIX up > 10% over the last 5 days | yes | 23 | -5,112 [-7,831, -2,260] | 17% [8, 34] (4/23) | -5,941 / -4,209 | -5,112 [-7,831, -2,260] | -5,941 / -4,209 | 1,056 |
-| gap at open > 0.5% | yes, at 09:15 | 26 | -3,382 [-6,197, -372] | 23% [12, 39] (6/26) | -3,564 / -3,169 | -3,382 [-6,197, -372] | -3,564 / -3,169 | 2,843 |
-| gap at open < 0.2% | yes, at 09:15 | 65 | -636 [-2,042, 733] | 37% [28, 47] (24/65) | -449 / -787 | -636 [-2,042, 733] | -449 / -787 | 3,866 |
-| EX-POST: trend day (abs open-close move > implied 1-day sigma) | no | 26 | 9,641 [7,973, 11,290] | 96% [84, 99] (25/26) | 9,601 / 9,694 | 9,641 [7,973, 11,290] | 9,601 / 9,694 | 14,401 |
-| EX-POST: not a trend day | no | 119 | -4,423 [-5,127, -3,711] | 17% [12, 23] (20/119) | -4,685 / -4,182 | -4,423 [-5,127, -3,711] | -4,685 / -4,182 | 520 |
-| EX-POST: close-close move > implied | no | 31 | 5,695 [2,988, 8,372] | 77% [63, 87] (24/31) | 6,533 / 4,678 | 5,695 [2,988, 8,372] | 6,533 / 4,678 | 11,496 |
-
-**SENSEX, ATM straddle bought at the open on EXPIRY DAY (0DTE, held to settlement)** (2024-01-05 to 2026-10-08, 143 days; H1 < 2025-05-27 <= H2). Per day: buy 1 lot ATM CE + 1 lot ATM PE at the open (straddle = direction-free test of 'did buying options pay'); P&L in Rs per straddle (2 lots).
-
-| condition | known before entry? | n days | straddle, sell at close: mean Rs [90% CI] | % days profitable | H1 / H2 mean | straddle held to expiry: mean Rs [90% CI, expiry clusters] | H1 / H2 mean | perfect-direction single option, close: mean Rs |
-|---|---|---|---|---|---|---|---|---|
-| all days | - | 143 | -1,841 [-2,876, -717] | 30% [24, 37] (43/143) | -1,070 / -2,601 | -1,841 [-2,876, -717] | -1,070 / -2,601 | 3,183 |
-| prev-close VIX < 12 | yes | 32 | -729 [-2,294, 859] | 38% [25, 52] (12/32) | 1,281 / -936 | -729 [-2,294, 859] | 1,281 / -936 | 3,066 |
-| prev-close VIX 12-15 | yes | 68 | -1,211 [-2,659, 206] | 31% [23, 41] (21/68) | -110 / -2,991 | -1,211 [-2,659, 206] | -110 / -2,991 | 3,458 |
-| prev-close VIX 15-18 | yes | 23 | -2,167 [-5,780, 1,894] | 26% [14, 43] (6/23) | -599 / -6,609 | -2,167 [-5,780, 1,894] | -599 / -6,609 | 3,664 |
-| prev-close VIX >= 18 | yes | 20 | -5,387 [-7,313, -3,289] | 20% [9, 38] (4/20) | -7,224 / -3,885 | -5,387 [-7,313, -3,289] | -7,224 / -3,885 | 1,880 |
-| VIX in bottom third of its past year | yes | 42 | -231 [-1,709, 1,261] | 40% [29, 53] (17/42) | 3,720 / -1,160 | -231 [-1,709, 1,261] | 3,720 / -1,160 | 3,801 |
-| VIX in top third of its past year | yes | 59 | -3,264 [-5,091, -1,286] | 24% [16, 34] (14/59) | -2,546 / -4,563 | -3,264 [-5,091, -1,286] | -2,546 / -4,563 | 2,775 |
-| RV5/VIX >= 1.0 (recent moves bigger than implied) | yes | 27 | -2,480 [-5,306, 629] | 26% [15, 42] (7/27) | -2,899 / -2,029 | -2,480 [-5,306, 629] | -2,899 / -2,029 | 3,543 |
-| RV5/VIX < 0.6 (quiet week) | yes | 54 | -763 [-2,503, 988] | 35% [25, 46] (19/54) | 842 / -3,099 | -763 [-2,503, 988] | 842 / -3,099 | 3,992 |
-| RV20/VIX >= 1.0 | yes | 22 | -1,890 [-4,493, 943] | 27% [15, 45] (6/22) | -1,949 / -1,786 | -1,890 [-4,493, 943] | -1,949 / -1,786 | 3,550 |
-| RV20/VIX < 0.7 | yes | 40 | -744 [-2,774, 1,406] | 35% [24, 48] (14/40) | 3,644 / -3,107 | -744 [-2,774, 1,406] | 3,644 / -3,107 | 4,072 |
-| VIX up > 10% over the last 5 days | yes | 20 | -5,620 [-8,232, -2,641] | 15% [6, 32] (3/20) | -4,502 / -6,986 | -5,620 [-8,232, -2,641] | -4,502 / -6,986 | 24 |
-| gap at open > 0.5% | yes, at 09:15 | 33 | -1,420 [-3,512, 738] | 42% [29, 57] (14/33) | -10 / -2,594 | -1,420 [-3,512, 738] | -10 / -2,594 | 3,870 |
-| gap at open < 0.2% | yes, at 09:15 | 63 | -2,603 [-4,192, -1,041] | 25% [18, 35] (16/63) | -1,513 / -3,729 | -2,603 [-4,192, -1,041] | -1,513 / -3,729 | 2,468 |
-| EX-POST: trend day (abs open-close move > implied 1-day sigma) | no | 31 | 9,547 [7,955, 11,208] | 97% [87, 99] (30/31) | 9,837 / 8,840 | 9,547 [7,955, 11,208] | 9,837 / 8,840 | 14,191 |
-| EX-POST: not a trend day | no | 112 | -4,993 [-5,686, -4,296] | 12% [8, 18] (13/112) | -5,967 / -4,236 | -4,993 [-5,686, -4,296] | -5,967 / -4,236 | 136 |
-| EX-POST: close-close move > implied | no | 31 | 7,246 [4,490, 9,861] | 84% [70, 92] (26/31) | 7,923 / 5,589 | 7,246 [4,490, 9,861] | 7,923 / 5,589 | 13,054 |
+These are the real exchange EOD option prices the parent plan's WP6 needs. They are worth keeping, or archiving the extracts and deleting the zips.
