@@ -388,6 +388,7 @@ Engine Worker variables (`workers/engine/wrangler.jsonc`):
 | `CAPITAL_INR` | 500000 | Capital used for sizing and loss caps |
 | `INDICES` | `NIFTY,SENSEX` | Indices to trade, comma-separated (`NIFTY,SENSEX` trades both; they share the daily limits). Unset or invalid means both. |
 | `MAX_TRADES_PER_DAY` | `8` | Most entries per day across the indices (1 to 12). The stored daily order cap (`maxOrdersPerDay`, 2 orders per trade plus reserve) must be raised with it. The loss-streak halt and daily loss cap still apply. Unset or invalid means 4. |
+| `EDGE_GATE` | `calibrated` | Edge gate for every account. `calibrated` re-runs the edge check on measured index moves and realized volatility ([reports/wp2-wp5-gates.md](reports/wp2-wp5-gates.md)); on today's signals it blocks every entry, i.e. buying is paused until a signal earns its decay and costs (set 9 Oct 2026). `legacy` or unset restores the original gate. |
 | `MAX_OPEN_PER_INDEX` | `2` | Most positions open at once on one index (1 to 3). They share the 4-entries-a-day and loss limits. Unset or invalid means 1. |
 | `ACCOUNTS` | `main,small10k,small5k` | Paper accounts to run, comma-separated; main is always on. `small10k` and `small5k` add the ₹10,000 and ₹5,000 accounts above, which follow main's signals with their own pinned settings (the variables above do not apply to them). Each has its own kill switch; Telegram `/kill` stops every account. |
 | `DASHBOARD_URL` | the dashboard's workers.dev URL | Base URL for the links to `/copy` in Telegram alerts; empty means no links. |

@@ -460,6 +460,9 @@ describe("per-index data age", () => {
 // Closing-auction cleaning (WP1) on real bars
 // ---------------------------------------------------------------------------
 
+/** Every bar kept: the engine's config before the closing-auction cutoff became the default. */
+const rawCfg = makeConfig({ features: { indicatorCutoffIst: null } });
+
 /**
  * Real Yahoo 5m bars of NIFTY, SENSEX, BANKNIFTY and India VIX for 9-11 Sep 2026, copied unchanged from
  * the backtest history snapshot. Since 3 Aug 2026 the last 15 minutes are a closing auction; on 10 Sep
@@ -485,7 +488,7 @@ describe("closing-auction cleaning on real bars (Yahoo 5m, 10 Sep 2026)", () => 
   const sensex1520 = bar("^BSESN", "2026-09-10", "15:20");
   const nifty1520 = bar("^NSEI", "2026-09-10", "15:20");
   const cutoffCfg = makeConfig({ features: { indicatorCutoffIst: "15:15" } });
-  const clipCfg = makeConfig({ features: { bodyClip: true } });
+  const clipCfg = makeConfig({ features: { indicatorCutoffIst: null, bodyClip: true } });
   const nextMorning = istAt("2026-09-11", "09:30"); // three bars of 11 Sep closed
   let clips: BodyClip[] = [];
 
@@ -528,7 +531,7 @@ describe("closing-auction cleaning on real bars (Yahoo 5m, 10 Sep 2026)", () => 
   });
 
   it("by default the auction prints become the next morning's previous-day high and low", () => {
-    const f = computeFeatures("SENSEX", src.snapshotSync(nextMorning), cal, cfg);
+    const f = computeFeatures("SENSEX", src.snapshotSync(nextMorning), cal, rawCfg);
     expect(f.indicators.prevDayHigh).toBe(75803.7578125);
     expect(f.indicators.prevDayLow).toBe(74482.4765625);
     expect(f.indicators.prevDayClose).toBe(74902.59375);
@@ -537,7 +540,7 @@ describe("closing-auction cleaning on real bars (Yahoo 5m, 10 Sep 2026)", () => 
 
   it("the 15:15 cutoff restores the day's real range and keeps the official close", () => {
     const snap = src.snapshotSync(nextMorning);
-    const base = computeFeatures("SENSEX", snap, cal, cfg);
+    const base = computeFeatures("SENSEX", snap, cal, rawCfg);
     const cut = computeFeatures("SENSEX", snap, cal, cutoffCfg);
     expectAllFinite(cut);
     // Within 0.002% of Yahoo's daily bar (74,910.96 / 74,598.47).
@@ -560,7 +563,7 @@ describe("closing-auction cleaning on real bars (Yahoo 5m, 10 Sep 2026)", () => 
 
   it("the cutoff drops NIFTY's flat 15:15/15:20 bars and the 15:25 jump from the indicators", () => {
     const snap = src.snapshotSync(nextMorning);
-    const base = computeFeatures("NIFTY", snap, cal, cfg);
+    const base = computeFeatures("NIFTY", snap, cal, rawCfg);
     const cut = computeFeatures("NIFTY", snap, cal, cutoffCfg);
     expect(cut.indicators.prevDayClose).toBe(23477.80078125); // the 15:25 auction close, kept
     expect(cut.indicators.prevDayClose).toBe(base.indicators.prevDayClose);
@@ -575,7 +578,7 @@ describe("closing-auction cleaning on real bars (Yahoo 5m, 10 Sep 2026)", () => 
     const at1515 = computeFeatures("SENSEX", src.snapshotSync(istAt("2026-09-10", "15:15")), cal, cutoffCfg);
     const late = istAt("2026-09-10", "15:31");
     const cut = computeFeatures("SENSEX", src.snapshotSync(late), cal, cutoffCfg);
-    const base = computeFeatures("SENSEX", src.snapshotSync(late), cal, cfg);
+    const base = computeFeatures("SENSEX", src.snapshotSync(late), cal, rawCfg);
     expect(cut.spot).toBe(base.spot); // the price itself is never cut
     expect(cut.spot).toBe(74902.59375);
     for (const k of ["rsi14", "adx14", "ema9", "ema21", "supertrendLine", "bbPctB", "bbWidthPct"] as const) {
@@ -628,7 +631,7 @@ describe("closing-auction cleaning on real bars (Yahoo 5m, 10 Sep 2026)", () => 
 
   it("changes nothing where there is nothing to clean", () => {
     const snap = src.snapshotSync(istAt("2026-09-10", "11:00"));
-    const base = computeFeatures("NIFTY", snap, cal, cfg);
+    const base = computeFeatures("NIFTY", snap, cal, rawCfg);
     expect(computeFeatures("NIFTY", snap, cal, makeConfig({ features: { indicatorCutoffIst: "15:30" } }))).toEqual(base);
     expect(computeFeatures("NIFTY", snap, cal, clipCfg)).toEqual(base); // no flagged bar before 10 Sep 15:20
     expect(clips).toHaveLength(0);
@@ -637,7 +640,7 @@ describe("closing-auction cleaning on real bars (Yahoo 5m, 10 Sep 2026)", () => 
   it("keeps cached series of different cleaning rules apart", () => {
     const snap = src.snapshotSync(nextMorning);
     expect(computeFeatures("SENSEX", snap, cal, cutoffCfg).indicators.prevDayHigh).toBe(74909.6796875);
-    expect(computeFeatures("SENSEX", snap, cal, cfg).indicators.prevDayHigh).toBe(75803.7578125);
+    expect(computeFeatures("SENSEX", snap, cal, rawCfg).indicators.prevDayHigh).toBe(75803.7578125);
     expect(computeFeatures("SENSEX", snap, cal, clipCfg).indicators.prevDayHigh).toBe(75575.28125);
     expect(computeFeatures("SENSEX", snap, cal, cutoffCfg).indicators.prevDayHigh).toBe(74909.6796875);
   });
@@ -654,8 +657,8 @@ describe("body clip on a session's last bar (synthetic)", () => {
     const morning = [...nifty, ...sessionFromCloses(TODAY, [100.9, 101], 100.9, 0)];
     const src = replay({ "^NSEI": morning, "^BSESN": [...sensex, ...sessionFromCloses(TODAY, [300.2, 300.3], 300.2, 0)] });
     const t = istAt(TODAY, "09:25");
-    const base = computeFeatures("NIFTY", src.snapshotSync(t), cal, cfg);
-    const clipped = computeFeatures("NIFTY", src.snapshotSync(t), cal, makeConfig({ features: { bodyClip: true } }));
+    const base = computeFeatures("NIFTY", src.snapshotSync(t), cal, rawCfg);
+    const clipped = computeFeatures("NIFTY", src.snapshotSync(t), cal, makeConfig({ features: { indicatorCutoffIst: null, bodyClip: true } }));
     expect(base.indicators.prevDayClose).toBe(100.8);
     expect(clipped.indicators.prevDayClose).toBe(100.8);
     expect(clipped.gapPct).toBe(base.gapPct);
@@ -665,8 +668,8 @@ describe("body clip on a session's last bar (synthetic)", () => {
 });
 
 describe("cleaning config", () => {
-  it("is off by default", () => {
-    expect(DEFAULT_CONFIG.features.indicatorCutoffIst).toBeNull();
+  it("cuts the closing auction at 15:15 by default and keeps the body clip off", () => {
+    expect(DEFAULT_CONFIG.features.indicatorCutoffIst).toBe("15:15");
     expect(DEFAULT_CONFIG.features.bodyClip).toBe(false);
   });
 

@@ -438,8 +438,11 @@ export const DEFAULT_CONFIG: EngineConfig = {
     divergenceBars: 6,
     openingRangeMin: 15,
     sessionLookbackDays: 20,
-    // ---- WP1 data cleaning: off ----
-    indicatorCutoffIst: null,
+    // ---- WP1 data cleaning ----
+    // The closing-auction cutoff is on since 9 Oct 2026 (a demonstrated data bug; owner's decision).
+    // Reference backtest 23 Jul-8 Oct: 50 trades, -₹19,400.94 with it vs 51, -₹9,595.92 without, a
+    // -1.25 standard-error difference (reports/wp1-cleaning.md). The body clip stays off.
+    indicatorCutoffIst: "15:15",
     bodyClip: false,
     // ---- end WP1 ----
   },
@@ -634,6 +637,16 @@ export function parseMaxTradesPerDay(raw: string | undefined): number | undefine
   if (!/^\d+$/.test(text)) return undefined;
   const n = Number(text);
   return n >= 1 && n <= 12 ? n : undefined;
+}
+
+/**
+ * Parses the edge-gate model of a Worker var: "legacy" (the original gate) or "calibrated" (adds the
+ * gate re-run on measured moves and realized volatility, strategy/gates.ts). Case-insensitive;
+ * anything else returns undefined, so the default stays.
+ */
+export function parseExpectedMoveModel(raw: string | undefined): EngineConfig["gates"]["expectedMoveModel"] | undefined {
+  const text = (raw ?? "").trim().toLowerCase();
+  return text === "legacy" || text === "calibrated" ? text : undefined;
 }
 
 /** Returns DEFAULT_CONFIG overridden by `overrides`, validated. Throws on invalid values. */

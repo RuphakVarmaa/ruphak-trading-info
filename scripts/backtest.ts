@@ -14,7 +14,7 @@
  *            --prod-limits (main at the production limits: 2 open per index, 2 in total, 8 entries a day)
  *            --max-open-per-index 2  --max-open-total 2  --max-trades-per-day 8   (main's limits one by one)
  *            --save-history .cache/history/snap.json  --history .cache/history/snap.json   (replay identical data)
- *            --indicator-cutoff 15:15  --body-clip   (WP1 data cleaning; both off by default, docs/DATA.md)
+ *            --indicator-cutoff 15:15|off  --body-clip   (WP1 data cleaning; cutoff 15:15 by default, body clip off, docs/DATA.md)
  *            --strategy noise-area|orb5   (published rule instead of the conviction model; one position per index)
  *              noise-area: --noise-stop opposite-band|band-vwap  --noise-sizing engine|vol-target
  *                          --noise-lookback 14  --noise-band-mult 1  --noise-every 30
@@ -98,11 +98,13 @@ const mainLimits = {
   maxTradesPerDay: limit("max-trades-per-day", 8, (n) => Number.isInteger(n) && n >= 1 && n <= 12),
 };
 // ---- WP1 data cleaning switches (both off unless given; see docs/DATA.md) ----
-//   --indicator-cutoff 15:15   leave index bars from that IST time out of every feature (closing auction)
+//   --indicator-cutoff 15:15|off   leave index bars from that IST time out of every feature (closing auction; default 15:15)
 //   --body-clip                flatten (and log) a NIFTY/SENSEX bar that moved > 0.6% while the other moved < 0.1%
-if (args["indicator-cutoff"] === true) fail("--indicator-cutoff needs a time, e.g. --indicator-cutoff 15:15");
+if (args["indicator-cutoff"] === true) fail("--indicator-cutoff needs a time or off, e.g. --indicator-cutoff 15:15");
+const cutoffArg = str(args, "indicator-cutoff", undefined);
 const dataCleaning = {
-  indicatorCutoffIst: str(args, "indicator-cutoff", undefined),
+  // The cutoff is on by default (15:15); `--indicator-cutoff off` keeps every bar.
+  indicatorCutoffIst: cutoffArg === "off" ? null : cutoffArg,
   bodyClip: args["body-clip"] === true ? true : undefined,
 };
 const dataCleaningOn = dataCleaning.indicatorCutoffIst !== undefined || dataCleaning.bodyClip === true;

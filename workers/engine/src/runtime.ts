@@ -6,7 +6,7 @@
 import { ACCOUNTS, accountConfig, parseAccounts, type AccountId, type AccountSpec } from "../../../src/engine/accounts";
 import type { AccountView } from "../../../src/engine/api-types";
 import { TradingCalendar, defaultCalendar } from "../../../src/engine/calendar/calendar";
-import { makeConfig, parseIndices, parseMaxOpenPerIndex, parseMaxTradesPerDay, type EngineConfig } from "../../../src/engine/config";
+import { makeConfig, parseExpectedMoveModel, parseIndices, parseMaxOpenPerIndex, parseMaxTradesPerDay, type EngineConfig } from "../../../src/engine/config";
 import { AnthropicLlmClient } from "../../../src/engine/events/llm/anthropicClient";
 import { DEFAULT_WORKERS_AI_MODEL, WorkersAiLlmClient, type ResponseFormatMode } from "../../../src/engine/events/llm/workersAiClient";
 import type { LlmClient, Logger, Repository } from "../../../src/engine/ports";
@@ -59,6 +59,7 @@ export function engineConfig(env: Env): EngineConfig {
     capitalRupees: num(env.CAPITAL_INR, 500_000),
     indices: parseIndices(env.INDICES),
     sizing: { maxOpenPerIndex: parseMaxOpenPerIndex(env.MAX_OPEN_PER_INDEX), maxTradesPerDay: parseMaxTradesPerDay(env.MAX_TRADES_PER_DAY) },
+    gates: { expectedMoveModel: parseExpectedMoveModel(env.EDGE_GATE) },
     llm: {
       enabled: llmAvailable(env),
       model: env.LLM_MODEL || (provider === "anthropic" ? "claude-opus-5-5" : DEFAULT_WORKERS_AI_MODEL),

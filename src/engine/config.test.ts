@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { DEFAULT_CONFIG, makeConfig, parseIndices, parseMaxOpenPerIndex, parseMaxTradesPerDay } from "./config";
+import { DEFAULT_CONFIG, makeConfig, parseExpectedMoveModel, parseIndices, parseMaxOpenPerIndex, parseMaxTradesPerDay } from "./config";
 
 describe("parseIndices", () => {
   it("reads one index or a comma-separated list", () => {
@@ -67,5 +67,18 @@ describe("parseMaxTradesPerDay", () => {
     expect(cfg.sizing.maxTradesPerDay).toBe(8);
     expect(cfg.sizing.maxOpenPerIndex).toBe(2);
     expect(cfg.sizing.maxCombinedPremiumPct).toBe(DEFAULT_CONFIG.sizing.maxCombinedPremiumPct);
+  });
+});
+
+describe("parseExpectedMoveModel (EDGE_GATE)", () => {
+  it("reads legacy or calibrated, in any case", () => {
+    expect(parseExpectedMoveModel("calibrated")).toBe("calibrated");
+    expect(parseExpectedMoveModel(" Legacy ")).toBe("legacy");
+    expect(makeConfig({ gates: { expectedMoveModel: parseExpectedMoveModel("CALIBRATED") } }).gates.expectedMoveModel).toBe("calibrated");
+  });
+
+  it("returns undefined for anything else, so the legacy gate stays", () => {
+    for (const bad of [undefined, "", "on", "calibrate", "true"]) expect(parseExpectedMoveModel(bad)).toBeUndefined();
+    expect(makeConfig({ gates: { expectedMoveModel: parseExpectedMoveModel("x") } }).gates.expectedMoveModel).toBe("legacy");
   });
 });

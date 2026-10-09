@@ -32,11 +32,13 @@ The engine stops entries at 14:30 and squares off at 15:05, so these bars never 
 
 `clipWicks` (0.3%) trims only wicks. The 10 Sep SENSEX print passes untouched: its close is the problem, and its wick is inside 0.3%.
 
-## Cleaning flags (`src/engine/config.ts`, `features`; both off by default)
+## Cleaning flags (`src/engine/config.ts`, `features`)
+
+The cutoff is **on by default since 9 Oct 2026** (owner's decision after the before/after below); the body clip stays off. The reference backtest moved from 51 trades / −₹9,595.92 to 50 trades / −₹19,400.94, a −1.25 standard-error difference. `--indicator-cutoff off` reproduces the old behaviour.
 
 | flag | what it does | backtest switch |
 |---|---|---|
-| `indicatorCutoffIst: "15:15"` (default `null`) | NIFTY, SENSEX and BANKNIFTY bars that open at or after the time are left out of every feature, including today's bars after the cutoff. Kept: the previous close (the official close, so the gap and daily vol do not move), the spot/LTP and India VIX. The time must lie between the square-off and 15:30, so the features that manage open positions are never frozen. | `--indicator-cutoff 15:15` |
+| `indicatorCutoffIst: "15:15"` (default since 9 Oct 2026; `null` keeps every bar) | NIFTY, SENSEX and BANKNIFTY bars that open at or after the time are left out of every feature, including today's bars after the cutoff. Kept: the previous close (the official close, so the gap and daily vol do not move), the spot/LTP and India VIX. The time must lie between the square-off and 15:30, so the features that manage open positions are never frozen. | `--indicator-cutoff 15:15` (default) or `--indicator-cutoff off` |
 | `bodyClip: true` (default `false`) | A NIFTY or SENSEX bar that moved more than 0.6% open to close while the other index moved less than 0.1% in the same bar is flattened to its open. Each clip is logged once per process with `console.warn`, e.g. `[features] body clip ^BSESN 2026-09-10 15:20 IST bar: body +1.269% while ^NSEI moved +0.000%; o 74630.50 h 75803.76 l 74482.48 c 75577.74 -> flat at 74630.50`. | `--body-clip` |
 
 The body clip is not a substitute for the cutoff:
