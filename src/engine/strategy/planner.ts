@@ -10,7 +10,7 @@ import { yearsToExpiry } from "../pricing/timeToExpiry";
 import { syntheticVol } from "../pricing/syntheticOptionPricer";
 import { roundTripChargesPerUnit } from "../broker/charges";
 import { marketableLimit, quoteProblem } from "../broker/fillModel";
-import type { IdGenerator, InstrumentProvider, OptionQuoteSource } from "../ports";
+import type { IdGenerator, InstrumentProvider, MarketDataSource, OptionQuoteSource } from "../ports";
 import type {
   Conviction,
   EventPressure,
@@ -27,8 +27,9 @@ import type {
 } from "../types";
 import { dailyLoss, riskGates } from "../risk/limits";
 import { attributionShares, dominantSource, findPerf } from "./conviction";
-import { convictionGate, edgeGates, evaluateEdge, eventFreshnessGate, liquidityGates, sessionGates, squareOffMs, type EdgeResult } from "./gates";
+import { convictionGate, edgeGates, evaluateEdge, eventFreshnessGate, liquidityGates, sessionGates, squareOffMs, volCheapnessGate, type EdgeResult } from "./gates";
 import { indicatorView } from "../market/features";
+import { sessionVolForecast } from "../market/volForecast";
 import { chooseContract, choosePremiumBandContract } from "./optionSelect";
 import { sizePosition } from "./sizing";
 
@@ -43,6 +44,8 @@ export interface PlanContext {
    * positions used up, cooldown), return before the strike search, so no option quotes are fetched.
    */
   accountChecksFirst?: boolean;
+  /** Point-in-time market data (the engine passes its deps); read only by gates.volCheapness, once per index and day. */
+  market?: MarketDataSource;
 }
 
 export interface PlanArgs {
@@ -171,6 +174,8 @@ export async function planEntry(a: PlanArgs, ctx: PlanContext): Promise<PlanDeci
       const vol = q.iv && q.iv > 0 ? q.iv / 100 : syntheticVol(index, f.vix, cfg);
       edge = evaluateEdge({ spot: f.spot, premium: q.ask, bid: q.bid, contract, tYears: yearsToExpiry(t, contract.expiry, ctx.calendar, cfg), vol, score: c.score, horizonMin, t }, cfg);
       gates.push(...edgeGates(edge, cfg));
+      // WP5 (off by default): buy only when the HAR-RV forecast says the option is not rich.
+      if (cfg.gates.volCheapness.enabled) gates.push(volCheapnessGate(await sessionVolForecast(ctx.market, index, t, ctx.calendar), vol, cfg));
       decision.refPremium = q.ask;
       decision.expectedMovePct = edge.expectedMovePct;
       decision.impliedMovePct = edge.impliedMovePct;

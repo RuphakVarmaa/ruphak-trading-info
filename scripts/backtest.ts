@@ -77,6 +77,27 @@ const cfg = withOverrides(configForParams(DEFAULT_CONFIG, mainParams), {
   gates: { minEdgeRatio: opt("min-edge"), minExpectedVsImplied: opt("min-evi"), kEM: opt("kem") },
   sizing: mainLimits,
 });
+// --- WP2/WP5 gate flags (begin): additive and tightening only; nothing changes unless a flag is given ---
+//   --em-model legacy|calibrated  --realized-vol-factor 0.6  --move-beta 0   (WP2: calibrated edge gate)
+//   --vol-cheapness  --vol-k 1                                               (WP5: HAR-RV vol-cheapness gate)
+// Applied to cfg's gates group after the statement above (validated by withOverrides), so that statement
+// stays as it is for the other work packages. Followers inherit these gates through accountConfig(cfg).
+{
+  const model = str(args, "em-model", undefined);
+  if (model !== undefined && model !== "legacy" && model !== "calibrated") fail("--em-model must be legacy or calibrated");
+  cfg.gates = withOverrides(cfg, {
+    gates: {
+      expectedMoveModel: model as "legacy" | "calibrated" | undefined,
+      realizedVolFactor: opt("realized-vol-factor"),
+      scoreMoveBeta: opt("move-beta"),
+      volCheapness: { enabled: args["vol-cheapness"] === true ? true : undefined, k: opt("vol-k") },
+    },
+  }).gates;
+  const g = cfg.gates;
+  if (g.expectedMoveModel !== "legacy") console.log(`Edge gate: calibrated (realized vol ${g.realizedVolFactor}× implied, beta ${g.scoreMoveBeta}) on top of the legacy gate.`);
+  if (g.volCheapness.enabled) console.log(`Vol-cheapness gate: HAR-RV forecast >= ${g.volCheapness.k}× implied session variance.`);
+}
+// --- WP2/WP5 gate flags (end) ---
 const band = str(args, "band", undefined);
 const bandMatch = band ? /^(\d+(?:\.\d+)?)-(\d+(?:\.\d+)?)$/.exec(band) : null;
 if (band && !bandMatch) fail("--band must look like 40-70");
@@ -226,6 +247,12 @@ async function main() {
     history: history.source,
     strategy: { summary: main.summary, trades: main.trades, ledgers: main.ledgers, attribution: main.attribution, notes: main.notes },
   };
+  // --- WP2/WP5 gate flags (begin): recorded only when used, so the default output stays byte-identical ---
+  {
+    const { expectedMoveModel, realizedVolFactor, scoreMoveBeta, volCheapness } = cfg.gates;
+    if (expectedMoveModel !== "legacy" || volCheapness.enabled) out.gateModels = { expectedMoveModel, realizedVolFactor, scoreMoveBeta, volCheapness };
+  }
+  // --- WP2/WP5 gate flags (end) ---
   const follower = runs.followers[account as keyof typeof runs.followers];
   if (followerCfg && follower) {
     report(accountSpec(account).label, follower);

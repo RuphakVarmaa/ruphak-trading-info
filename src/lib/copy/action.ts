@@ -390,6 +390,10 @@ export const GATE_RANK: Readonly<Record<string, number>> = {
   expected_vs_implied: 61,
   size: 62,
   loss_room: 63,
+  // WP2/WP5 gates (off by default; engine/strategy/gates.ts).
+  edge_calibrated: 64,
+  move_calibrated: 65,
+  vol_cheapness: 66,
 };
 
 const UNKNOWN_RANK = 90;
@@ -502,6 +506,13 @@ export function gateBlock(g: GateResult, s: SignalView, entryFrom: string, entry
       return block(`Not even one lot fits the risk limits: ${detail}`, "A cheaper option, or more room under the limits.");
     case "loss_room":
       return block(`Not enough room under the daily loss cap: ${detail}`, NONE_TODAY);
+    // WP2/WP5 gates (off by default).
+    case "edge_calibrated":
+      return block(`Edge too small on measured moves and realized volatility: ${detail}`, "Only if the measured link between the signal and later moves gets stronger.");
+    case "move_calibrated":
+      return block(`Measured expected move too small next to the realized move: ${detail}`, "Only if the measured link between the signal and later moves gets stronger.");
+    case "vol_cheapness":
+      return block(`Options are rich: forecast volatility below the option's implied volatility (${detail})`, "On a day whose forecast volatility is at least the implied volatility.");
     default:
       return block(detail ? `${g.label}: ${detail}` : g.label, null);
   }
