@@ -113,11 +113,11 @@ The 8 Oct example: FIIs sold ₹12,943.58 crore (NSE provisional; the depository
 
 **Yes, the open is knowable; the day is not.**
 
-- **GIFT Nifty** trades from 06:30 IST; NSE IX publishes it live (no key). Read it at 09:05–09:12 and adjust for the futures basis: implied open = GIFT price − (NSE NIFTY futures close − spot close). The naïve "GIFT minus spot close" overstates the gap by the basis (today ≈ 60 points). [R4]
+- **GIFT Nifty** trades from 06:30 IST; NSE IX publishes it live (no key). Read it at 09:05–09:12 and adjust for the futures basis: implied open = GIFT price − (NSE NIFTY futures close − spot close). The naïve "GIFT minus spot close" overstates the gap by the basis (today ≈ 61 points). [R4]
 - **NSE pre-open auction (09:00–09:12)** publishes an indicative NIFTY open that is, by construction, the opening price after the 09:08–09:10 random close. [R4]
 - **From global markets alone, at 09:00:** a four-input model (S&P futures since 15:30 IST, Asian mornings, the rupee, crude) called the gap's direction right on **71%** of days walk-forward (457 days); when it called a gap beyond ±0.3% (37% of days) it was right **87%**; typical miss ≈ 72 points. Rule of thumb: **NIFTY gap ≈ 0.4 × the S&P-futures % move since 15:30 IST.** Over 15 years the US session's direction matched NIFTY's gap 68–70% of the time, 82–89% when the S&P moved more than 1%. [Q2]
 - **But the gap is already priced at 09:15.** Gap direction gave no edge for the rest of the day (48% of 1,639 gap-up days closed above the open, 2011–2026). Gaps of 0.5% or more pulled back in the first hour on 61% of days, by only ≈ 25 points (weaker since Aug 2025); big gaps (≥ 1%) rarely fill (7–26%). [Q2, R4]
-- **Today's check:** at 09:00 the model said +0.09%; GIFT Nifty said +0.3 to +0.5%; NIFTY opened at 22,316.80, **+0.38%**. GIFT was the better guide, as expected for a contract that trades from 06:30.
+- **Today's check (9 Oct):** NIFTY's official open was 22,314.95, **+83 points (+0.37%)**. GIFT Nifty at 08:52–08:58, basis-adjusted, implied +72 to +77 points — **6–11 points off**; the naïve "GIFT minus yesterday's close" said +136 (50+ points off); the global-markets model at 09:00 said +0.09% (≈ +20 points). NSE's pre-open indicative open had the wrong sign at 09:00 (−111), was within 18 points by 09:05 and exact from 09:10. Then the day went the opposite way to Thursday's "FIIs sold, buy puts" logic: a gap-up that never filled, NIFTY +1.37% at 15:15. [R4, Q2]
 - **What to do with it:** use the pre-open to decide *whether* to trade (small implied gap and no news → no early trade; big gap → expect fade or stabilisation, wait for 09:30), then let the first 15-minute candle decide direction (E2).
 
 ---

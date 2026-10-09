@@ -9,7 +9,7 @@ Researched Fri 9 Oct 2026, 08:45–09:25 IST, from the repo container (all URLs 
 1. **Yes, the *direction and rough size* of the opening gap is knowable before 09:15.** GIFT Nifty (NSE IX, GIFT City) trades from 06:30 IST, and the NSE pre-open call auction (09:00–09:10) publishes an *indicative* NIFTY open that is, mechanically, the same equilibrium calculation that sets the 09:15 open. The pre-open indicative value is the closer of the two; GIFT Nifty is the earlier.
 2. **What is NOT knowable is what happens after 09:15.** Of the two measurable things — "where will it open" and "which way will it go after opening" — only the first is well predicted. The best public backtests on NIFTY daily data show that after a ≥1% gap-up the day's open-to-close return is *negative* on average and 29% of such gaps fill the same day; after a ≥1% gap-down, 53% of days close *above* the open and only 17% fill. The first 15-minute candle's breakouts "sustain" ~52% of the time (coin-flip). So the opening gap is largely *already priced* by 09:15; buying an option in the gap's direction at 09:25 is buying *after* the information is in the price.
 3. **For the owner's example (Thu 8 Oct):** FII provisional cash selling was **₹12,943.58 cr** (NSE provisional, not ₹12,988 cr); DIIs bought ₹10,703.11 cr. NIFTY fell 1.64% — but it *opened* at 22,599.05 vs. prev close 22,603.05, i.e. essentially flat (−4 points), and fell *during the day*. The FII number is published after the close, so it could not have been used at the open; and puts were profitable on 8 Oct because of an intraday trend, not because of a predictable gap. This is the trap: the FII figure *explains* the day after the fact, it does not *predict* the next morning (the FII daily series is covered by the flow-signal agent; the depository (NSDL) confirmed figure for 8 Oct was a much smaller −₹6,206 cr, so the two "FII" series do not even agree).
-4. **Today (Fri 9 Oct, pre-market):** GIFT Nifty Oct futures 22,365–22,370 at 08:52–08:58 IST (NSE IX live API), vs NSE NIFTY Oct futures close 22,293.20 and spot close 22,231.80 → implied open roughly **+75 to +110 points (+0.3% to +0.5%)**, i.e. a modest gap-up after a −1.64% day. US: S&P −0.47%, Nasdaq −1.25%, Dow +0.10% (8 Oct close); ES/NQ futures +0.2%/+0.3% at ~08:52 IST; Nikkei −0.8% (05:30 IST print), Hang Seng +1.0% (07:00 IST), Korea and Taiwan closed (holiday); Brent ≈ $103.4–103.8 (−0.8%); USDINR 96.78; US 10y 5.23%; India VIX 15.31 (+10.3% on 8 Oct). Live pre-open/open comparison for today is in §6.3.
+4. **Today (Fri 9 Oct, pre-market):** GIFT Nifty Oct futures 22,365–22,370 at 08:52–08:58 IST (NSE IX live API), vs NSE NIFTY Oct futures close 22,293.20 and spot close 22,231.80 → implied open roughly **+75 to +110 points (+0.3% to +0.5%)**, i.e. a modest gap-up after a −1.64% day. US: S&P −0.47%, Nasdaq −1.25%, Dow +0.10% (8 Oct close); ES/NQ futures +0.2%/+0.3% at ~08:52 IST; Nikkei −0.8% (05:30 IST print), Hang Seng +1.0% (07:00 IST), Korea and Taiwan closed (holiday); Brent ≈ $103.4–103.8 (−0.8%); USDINR 96.78; US 10y 5.23%; India VIX 15.31 (+10.3% on 8 Oct). **Outcome (recorded live, §6.3): NSE open 22,314.95 (+83.15, +0.37%) — the basis-adjusted GIFT reading at 08:52–08:58 was within 6–11 points; the NSE indicative was wrong-signed at 09:00, within 18 pts at 09:05, and exactly the open from 09:10. First 15-min candle bullish (+60 pts body, range 94); day closed-area +1.37% (22,535 at 15:15), gap never filled, VIX −6%.**
 
 ---
 
@@ -168,9 +168,49 @@ Minimal pre-market script sketch (the data agent can harden it): poll #1 + #2 ev
 Reading: a **+0.3–0.5% gap-up is indicated after a −1.64% day**, with US tech weak but futures firmer, oil/yields slightly easier, Hong Kong up and Japan down. Per §4.1 the base rate after a large *down* day's rebound-gap is unremarkable; the decisive input will be the first 15-minute candle, not the gap.
 
 ### 6.3 Live check: pre-open indicative vs. actual open (recorded this morning)
-(filled in from the 30-second poller; see `scratchpad/poll/log.txt`)
+Recorded with a 30-second poller from this container (raw JSON in `scratchpad/poll/`, `poll2/`, `poll3/`; summary in `scratchpad/summarise_poll.py`). NSE `allIndices` is the source of the indicative/open NIFTY; NSE IX `market-rate` is the source of GIFT. Times are the poller's IST clock; NSE's own stamp is in brackets.
 
-PENDING_LIVE_SECTION
+| IST | GIFT Oct fut (LTT) | NSE NIFTY 50 `last` (NSE stamp) | vs prev close 22,231.80 | NIFTY 50 pre-open book adv/dec/unch | India VIX |
+|---|---|---|---|---|---|
+| 08:54 | 22,369.0 (08:53:38) | 22,231.80 (08-Oct 15:30) | — | — | 15.31 |
+| 09:01 | 22,358.5 | **22,120.70** (09:00) | **−111.1 (−0.50%)** ← early-book noise, wrong sign | 28/13/9 | 15.28 |
+| 09:03 | 22,358.5 | 22,267.20 (09:02) | +35.4 (+0.16%) | 28/13/9 | |
+| 09:04 | 22,360.0 | 22,276.40 (09:03) | +44.6 (+0.20%) | | |
+| 09:05 | 22,367.0 | 22,296.95 (09:05) | +65.2 (+0.29%) | 33/12/5 | |
+| 09:08 | 22,358.5 | 22,305.75 (09:06) | +74.0 (+0.33%) | 33/12/5 | |
+| 09:09 | 22,358.0 | 22,313.70 (09:08) | +81.9 (+0.37%) | 35/10/5 | |
+| 09:09:35 | 22,360.5 | 22,318.15 (09:09) | +86.4 (+0.39%) | 36/8/6 (book frozen 09:09:49 = random close) | |
+| **09:11** | 22,357.5 | **open = 22,314.95** (09:10) | **+83.15 (+0.37%)** — final, published 4–5 min before 09:15 | 36/8/6 | 15.28 |
+| 09:15:26 | 22,358.0 | 22,314.95 (09:14) | +83.15 | | 15.28 |
+| 09:16:30 | **22,408.0** | 22,302.35 (09:15) | +70.6 (first continuous print dipped 13 pts below the open) | | **14.82** |
+| 09:17:34 | 22,417.0 | 22,365.15 (09:16) | +133.4 (+0.60%) | | 14.59 |
+| 09:18:06 | 22,413.5 | 22,371.45 (09:17) | +139.7 (+0.63%) | | 14.52 (−5.0% in 2 min) |
+
+What this one morning shows (one sample, not a statistic — but it is exactly the mechanism described in §1–§2):
+1. **GIFT, basis-adjusted, predicted the open to within ~10–25 points.** GIFT Oct 22,353.5–22,367 during 09:05–09:14, minus the 61.4-pt NSE futures basis → 22,292–22,306 vs. actual open 22,314.95 (error −9 to −23 pts, 0.04–0.10%). The change-on-change method (+113) overshot by ~30 pts; the naïve "GIFT − spot close" (+136) overshot by ~53 pts. Direction was right from 06:30 onward.
+2. **The NSE indicative NIFTY was wrong-signed at 09:00 (−0.5%) and converged by 09:05 (+0.29%); the final open (+0.37%) was visible on `allIndices` at 09:10–09:11**, i.e. with a 4–5-minute head start before continuous trading. Do not read the 09:00–09:02 print.
+3. **The random close happened at 09:09:49** today (`lastUpdateTime` in the NIFTY 50 pre-open book froze there) — inside the published 09:08–09:10 window.
+4. **The first continuous minute dipped below the open (22,302 vs 22,315), then the index ran to +0.63% by 09:17 while India VIX fell 15.28 → 14.52 (−5%).** A put bought at 09:15 on the "FIIs sold ₹12,944 cr yesterday" thesis lost on direction *and* on IV within two minutes; a call bought at 09:15 gained on direction but gave back part of it to the IV drop. The pre-open told you the gap; it told you nothing about the 09:15–09:17 whipsaw.
+5. Endpoint detail learned today: `market-data-pre-open?key=NIFTY` (the key every blog quotes) now returns "No Data Found"; the working keys are `key=NIFTY%2050` (`NIFTY 50`) and `key=NIFTY%20BANK`, plus `FO`, `OTHERS`, `SME`, `ALL`. The `NIFTY 50` response carries the index-level indicative open in a top-level `niftyPreopenStatus` object (`{"pChange":"0.37","change":"83.15","lastPrice":"22314.95","status":"CLOSED"}` in the final book) plus 50 rows with per-stock IEP, final price/quantity and `lastUpdateTime`; `allIndices` shows the same number as `last` (with `open=0`) during 09:00–09:10 and as `open` from ~09:10.
+
+**Final pre-open book, fetched once at 15:16 IST (one request per endpoint; NSE keeps the day's final book until the next 09:00):**
+- `key=NIFTY 50`: timestamp **09-Oct-2026 09:09:49**, `niftyPreopenStatus` lastPrice **22,314.95, +83.15 (+0.37%)**, advances/declines/unchanged **36/8/6**, pre-open traded value ₹137.5 cr / 1.56 m shares. Largest IEP moves: APOLLOHOSP +3.70% (IEP 7,950), MAXHEALTH +2.68%, INFY +1.03% (IEP 1,007.30 vs 997), TMPV +1.03%, ETERNAL +0.96%.
+- `key=FO`: same 09:09:49 stamp, 213 F&O stocks, advances/declines/unchanged **163/31/19**, traded value ₹206 cr. (Broad-based gap-up: 77% of F&O stocks opened up.)
+- Actual open: **NSE `allIndices` open = 22,314.95 (+83.15, +0.37%)**; Yahoo's daily bar prints 22,316.80 (+85.0) — Yahoo's open is its first observed tick, NSE's is the auction price; use NSE.
+
+**Scorecard for the three pre-open readings vs the NSE open 22,314.95 (+83.15):**
+| Reading (time) | Implied open | Error vs actual |
+|---|---|---|
+| GIFT Oct 22,365–22,370 at 08:52–08:58, basis-adjusted (−61.4) | 22,304–22,309 (+72 to +77) | **−6 to −11 pts** |
+| GIFT at 08:52–08:58, change-on-change vs GIFT 15:40 close | 22,342–22,347 (+110 to +115) | +27 to +32 pts |
+| Naïve GIFT − spot close | +133 to +138 | +50 to +55 pts |
+| NSE indicative at 09:00 | 22,120.70 (−111) | −194 pts, wrong sign |
+| NSE indicative at 09:05 | 22,296.95 (+65) | −18 pts |
+| NSE indicative at 09:09:49 (random close) → published 09:10 | 22,314.95 | 0 (it *is* the open) |
+
+**First 15-minute candle (09:15–09:30, from the poller's 1-minute `allIndices` prints; NSE stamps):** open 22,314.95; first print 09:15 22,302.35 (low of the minute 22,299.25); 09:17 22,371.45 (high 22,383.45); 09:19 back to 22,319.50; 09:24–09:26 22,302–22,315 (session low 22,294.75 at 09:26, i.e. the gap-up briefly *filled 20 pts of 83* and traded 20 pts below the open); 09:30 **22,375.30** (candle high 22,388.70). So the 15-min candle: O 22,314.95 / H 22,388.70 / L 22,294.75 / C 22,375.30 — bullish, body +60 pts (+0.27%, the ">0.24%" bucket in §4.2 with ~73% historical continuation), range 94 pts. India VIX 15.28 → 14.68 at 09:30 (−3.9%).
+
+**How the day resolved (allIndices at 15:15 IST, 15 minutes before close):** NIFTY 22,535.65 (+303.85, +1.37%), day high 22,580.75, low 22,294.75 (the 09:26 low held all day); India VIX 14.36 (−6.0%); NIFTY BANK +1.33%. The gap-up (+83) did not fill; the first-candle direction (bullish, large) agreed with the day — consistent with the §4.2 base rates, and the opposite of what "FIIs sold ₹12,944 cr yesterday → buy puts" would have produced. A call bought at 09:30 after the decisive first candle (22,375) had ~160 pts of index move in its favour by 15:15; a call bought at 09:15 (22,302–22,315) first endured a 20-pt dip and a 5% VIX drop; a put bought at any time today lost.
 
 ---
 
