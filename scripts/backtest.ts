@@ -14,6 +14,7 @@
  *            --prod-limits (main at the production limits: 2 open per index, 2 in total, 8 entries a day)
  *            --max-open-per-index 2  --max-open-total 2  --max-trades-per-day 8   (main's limits one by one)
  *            --save-history .cache/history/snap.json  --history .cache/history/snap.json   (replay identical data)
+ *            --indicator-cutoff 15:15  --body-clip   (WP1 data cleaning; both off by default, docs/DATA.md)
  *
  * History: Groww 5-minute index candles cached by `npm run fetch-history` when present (multi-year),
  * otherwise Yahoo (about 60 days of 5-minute bars). Option prices are synthetic (Black-Scholes on
@@ -72,10 +73,21 @@ const mainLimits = {
   maxOpenTotal: limit("max-open-total", 2, (n) => Number.isInteger(n) && n >= 1),
   maxTradesPerDay: limit("max-trades-per-day", 8, (n) => Number.isInteger(n) && n >= 1 && n <= 12),
 };
+// ---- WP1 data cleaning switches (both off unless given; see docs/DATA.md) ----
+//   --indicator-cutoff 15:15   leave index bars from that IST time out of every feature (closing auction)
+//   --body-clip                flatten (and log) a NIFTY/SENSEX bar that moved > 0.6% while the other moved < 0.1%
+if (args["indicator-cutoff"] === true) fail("--indicator-cutoff needs a time, e.g. --indicator-cutoff 15:15");
+const dataCleaning = {
+  indicatorCutoffIst: str(args, "indicator-cutoff", undefined),
+  bodyClip: args["body-clip"] === true ? true : undefined,
+};
+const dataCleaningOn = dataCleaning.indicatorCutoffIst !== undefined || dataCleaning.bodyClip === true;
+// ---- end WP1 ----
 const cfg = withOverrides(configForParams(DEFAULT_CONFIG, mainParams), {
   conviction: { gain: opt("gain"), minActiveWeight: opt("min-active") },
   gates: { minEdgeRatio: opt("min-edge"), minExpectedVsImplied: opt("min-evi"), kEM: opt("kem") },
   sizing: mainLimits,
+  features: dataCleaning, // WP1
 });
 const band = str(args, "band", undefined);
 const bandMatch = band ? /^(\d+(?:\.\d+)?)-(\d+(?:\.\d+)?)$/.exec(band) : null;
@@ -226,6 +238,13 @@ async function main() {
     history: history.source,
     strategy: { summary: main.summary, trades: main.trades, ledgers: main.ledgers, attribution: main.attribution, notes: main.notes },
   };
+  // ---- WP1: recorded only when a cleaning switch is on, so default reports stay byte-identical ----
+  if (dataCleaningOn) {
+    const { indicatorCutoffIst, bodyClip } = cfg.features;
+    out.dataCleaning = { indicatorCutoffIst, bodyClip };
+    console.log(`Data cleaning: indicator cutoff ${indicatorCutoffIst ?? "off"}, body clip ${bodyClip ? "on" : "off"}.`);
+  }
+  // ---- end WP1 ----
   const follower = runs.followers[account as keyof typeof runs.followers];
   if (followerCfg && follower) {
     report(accountSpec(account).label, follower);
