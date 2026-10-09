@@ -450,8 +450,9 @@ export const DEFAULT_CONFIG: EngineConfig = {
     sessionLookbackDays: 20,
     // ---- WP1 data cleaning ----
     // The closing-auction cutoff is on since 9 Oct 2026 (a demonstrated data bug; owner's decision).
-    // Reference backtest 23 Jul-8 Oct: 50 trades, -₹19,400.94 with it vs 51, -₹9,595.92 without, a
-    // -1.25 standard-error difference (reports/wp1-cleaning.md). The body clip stays off.
+    // Reference backtest 23 Jul-8 Oct with the hand-set gap betas: 50 trades, -₹19,400.94 with it vs
+    // 51, -₹9,595.92 without, a -1.25 standard-error difference (reports/wp1-cleaning.md); with the
+    // fitted gap betas above, 58 trades, -₹20,158.44. The body clip stays off.
     indicatorCutoffIst: "15:15",
     bodyClip: false,
     // ---- end WP1 ----
