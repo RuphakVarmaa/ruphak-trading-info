@@ -1079,7 +1079,97 @@ async function main(): Promise<void> {
     save(outDir, `sanity-${str(args, "label", "backtest")}.json`, JSON.stringify(json, null, 1));
     return;
   }
-  fail(`unknown command ${cmd} (coverage | replicate | calibrate | sanity)`);
+  if (cmd === "sanity-calibrated") {
+    await sanityCalibrated(data, args, outDir);
+    return;
+  }
+  fail(`unknown command ${cmd} (coverage | replicate | calibrate | sanity | sanity-calibrated)`);
+}
+
+/** Last visible 5-minute close at `t` (bar closed and published 90 s before), as the replay exposes it. */
+function visibleClose(candles: Candle[], t: number, lagMs = 90_000): number | null {
+  let best: Candle | null = null;
+  for (const c of candles) {
+    if (c.t + 5 * 60_000 <= t - lagMs) best = c;
+    else break;
+  }
+  return best ? best.c : null;
+}
+
+/**
+ * §5.10 with the calibrated pricer: (1) the baseline trades repriced (same times, spot and VIX; the
+ * recorded fill scaled by calibrated / default synthetic quote, so fill mechanics are kept);
+ * (2) a full backtest with pricing.ivSource = "calibrated" (its own trade list), run like
+ * `npm run backtest -- --no-events --prod-limits` on the same snapshot.
+ */
+async function sanityCalibrated(data: ResearchData, args: ReturnType<typeof parseArgs>, outDir: string): Promise<void> {
+  const { configForParams, runBacktest } = await import("../../src/engine/backtest/runBacktest");
+  const { syntheticQuote } = await import("../../src/engine/pricing/syntheticOptionPricer");
+  const { TradingCalendar: Cal } = await import("../../src/engine/calendar/calendar");
+  const btPath = str(args, "bt", undefined) ?? fail("--bt <backtest.json> is required");
+  const histPath = str(args, "history", undefined) ?? fail("--history <snapshot.json> is required");
+  const bt = JSON.parse(readFileSync(resolve(ROOT, btPath), "utf8")) as { params: { from: string; to: string }; strategy: { trades: BtTrade[] } };
+  const hist = JSON.parse(readFileSync(resolve(ROOT, histPath), "utf8")) as { candles: Record<string, Candle[]>; daily: Record<string, Candle[]> };
+  const engineCal = new Cal();
+  const params = { from: bt.params.from, to: bt.params.to, index: "BOTH" as const, thresholdDelta: 0, stopPct: 30, targetPct: 50, noEvents: true };
+  const base = withOverrides(configForParams(DEFAULT_CONFIG, params), { sizing: { maxOpenPerIndex: 2, maxOpenTotal: 2, maxTradesPerDay: 8 } });
+  const cal = withOverrides(base, { pricing: { ivSource: "calibrated" } });
+  const yahoo: Record<string, string> = { NIFTY: "^NSEI", SENSEX: "^BSESN" };
+  const repriced: BtTrade[] = [];
+  let reconstructed = 0;
+  for (const t of bt.strategy.trades) {
+    const row = resolveOptionRow(data.book, t.tradingSymbol, istDate(t.entryMs));
+    if (!row) {
+      repriced.push(t);
+      continue;
+    }
+    const contract = {
+      index: t.index as "NIFTY" | "SENSEX",
+      exchange: row.exchange,
+      tradingSymbol: t.tradingSymbol,
+      growwSymbol: "",
+      exchangeToken: "",
+      expiry: row.expiry,
+      strike: row.strike,
+      type: row.type!,
+      lotSize: row.lot ?? 1,
+      tickSize: 0.05,
+      freezeQty: 0,
+    };
+    const at = (ms: number) => ({ t: ms, spot: visibleClose(hist.candles[yahoo[t.index]] ?? [], ms) ?? 0, vix: visibleClose(hist.candles["^INDIAVIX"] ?? [], ms) ?? 0 });
+    const e0 = syntheticQuote(contract, at(t.entryMs), engineCal, base);
+    const e1 = syntheticQuote(contract, at(t.entryMs), engineCal, cal);
+    const x0 = syntheticQuote(contract, at(t.exitMs), engineCal, base);
+    const x1 = syntheticQuote(contract, at(t.exitMs), engineCal, cal);
+    if (Math.abs(e0.ask - t.entryPremium) <= 0.1) reconstructed++;
+    repriced.push({ ...t, entryPremium: Math.round((t.entryPremium * e1.ask) / e0.ask * 100) / 100, exitPremium: Math.round((t.exitPremium * (x1.bid || x1.ltp)) / (x0.bid || x0.ltp) * 100) / 100 });
+  }
+  const s0 = sanitySummary(sanityRows(data.book, bt.strategy.trades), "baseline (VIX x 1.00/1.05)");
+  const s1 = sanitySummary(sanityRows(data.book, repriced), "baseline trades repriced, calibrated IV");
+  const run = async (cfg: EngineConfig) => runBacktest({ cfg, from: params.from, to: params.to, candles: hist.candles, daily: hist.daily, events: [], noEvents: true });
+  const dflt = await run(base);
+  const calRun = await run(cal);
+  const s2 = sanitySummary(sanityRows(data.book, calRun.trades as unknown as BtTrade[]), "backtest with ivSource=calibrated");
+  const lines = [
+    `Repricing reconstructed the recorded entry within ₹0.10 for ${reconstructed} of ${bt.strategy.trades.length} trades (spot and VIX from the snapshot's 5-minute bars, 90 s lag).`,
+    `Programmatic replay, default config: ${dflt.summary.trades} trades, net ₹${dflt.summary.netPnl} (CLI: 51, -9,595.92). With ivSource = "calibrated": ${calRun.summary.trades} trades, net ₹${calRun.summary.netPnl}, hit ${calRun.summary.hitRate}, PF ${calRun.summary.profitFactor}.`,
+    "",
+    md([
+      ["run", "index", "trades", "with real row", "entry in range", "exit in range", "both in range", "entry above high", "entry below low", "median entry position", "median entry / VWAP - 1", "median exit / VWAP - 1"],
+      ...[s0, s1, s2].flatMap((s) => s.markdown.split("\n").slice(2).map((l) => l.split("|").slice(1, -1).map((c) => c.trim()))),
+    ]),
+  ].join("\n");
+  console.log(lines);
+  save(outDir, "sanity-calibrated.md", lines + "\n");
+  logTrial({
+    wp: "WP6",
+    variant: "backtest-ivSource-calibrated",
+    params: { ...params, prodLimits: true, ivSource: "calibrated", history: histPath },
+    data: "Yahoo 5m snapshot (hist.json), synthetic quotes with calibrated IV",
+    trades: calRun.summary.trades,
+    net: calRun.summary.netPnl,
+    notes: `default replay ${dflt.summary.trades} trades / ${dflt.summary.netPnl}; real-price sanity (both in range) baseline ${pct((s0.json.ALL as { bothIn: number }).bothIn, 0)}, calibrated run ${pct((s2.json.ALL as { bothIn: number }).bothIn, 0)}`,
+  });
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1])).href) {
