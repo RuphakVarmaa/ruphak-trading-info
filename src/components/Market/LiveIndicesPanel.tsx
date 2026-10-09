@@ -9,10 +9,11 @@ import { Dot, EmptyState, Panel, Skeleton } from "@/components/shared/ui";
 import { useClientNow } from "@/hooks/useEngineState";
 import { useLiveIndices } from "@/hooks/useLiveIndices";
 import { LIVE_POLL_MS, pollIntervalFor, type LiveIndexId } from "@/lib/market/liveIndices";
+import { istDay } from "./chartGeometry";
 import FreshnessBadge from "./FreshnessBadge";
 import LiveIndexCard from "./LiveIndexCard";
 import LiveIndexChart from "./LiveIndexChart";
-import { entryFreshness, panelStatus, phaseSentence, vixText } from "./marketText";
+import { closedLabel, entryFreshness, panelStatus, phaseSentence, vixText } from "./marketText";
 
 const INDICES: { id: LiveIndexId; label: string }[] = [
   { id: "NIFTY", label: "NIFTY 50" },
@@ -63,6 +64,10 @@ export default function LiveIndicesPanel() {
   const phase = data?.marketPhase ?? (now != null ? fallbackPhase(now) : null);
   const status = panelStatus(live, phase ? pollIntervalFor(phase) : LIVE_POLL_MS);
   const feed = entryFreshness(data, null, freshness, ageMs);
+  const lastTrade = data?.indices.reduce<string | null>((m, i) => (m == null || Date.parse(i.asOf) > Date.parse(m) ? i.asOf : m), null) ?? null;
+  // Shut, or open but no index has printed today yet: the last trades are the previous session's.
+  const noPrintToday = data != null && now != null && data.indices.length > 0 && data.indices.every((i) => i.session !== istDay(now));
+  const closed = phase != null && (phase !== "OPEN" || noPrintToday) && lastTrade != null ? closedLabel(lastTrade, now) : null;
   const vix = data?.vix ?? null;
   const vt = vix ? vixText(vix) : null;
 
@@ -77,7 +82,7 @@ export default function LiveIndicesPanel() {
             {data ? phaseSentence(data) : `1-minute index bars from Yahoo Finance, refreshed every ${LIVE_POLL_MS / 1000} s while the market is open.`}
           </p>
         </div>
-        <FreshnessBadge freshness={feed.freshness} ageMs={feed.ageMs} source={data ? "Yahoo Finance" : undefined} />
+        <FreshnessBadge freshness={feed.freshness} ageMs={feed.ageMs} source={data ? "Yahoo Finance" : undefined} closed={closed} />
       </div>
 
       {status && (
@@ -120,7 +125,7 @@ export default function LiveIndicesPanel() {
           // Feed-wide trouble is in the status line; a card only explains its own (one symbol stale or lagging).
           const own = !data.stale && freshness === "live" && f.freshness !== "live";
           return (
-            <LiveIndexCard key={id} index={index} freshness={f.freshness} ageMs={f.ageMs} source={data.source} note={own ? f.note : null}>
+            <LiveIndexCard key={id} index={index} freshness={f.freshness} ageMs={f.ageMs} source={data.source} note={own ? f.note : null} marketOpen={data.marketPhase === "OPEN"}>
               <LiveIndexChart index={index} />
             </LiveIndexCard>
           );

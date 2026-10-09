@@ -16,6 +16,8 @@ import { Skeleton } from "@/components/shared/ui";
 import { hms, KIND_LABEL, shortAge, type IndexAction } from "@/lib/copy/action";
 import { indexPrice, wholeRupees } from "@/lib/copy/prices";
 import { fmtDateKey } from "@/components/shared/format";
+import { closedLabel } from "@/components/Market/marketText";
+import { istDay as istDayOf } from "@/components/Market/chartGeometry";
 import AlertsToggle from "./AlertsToggle";
 import { useActionAlerts, useMissedTradeAlerts } from "./alerts";
 import { ackExit } from "./clientStores";
@@ -61,7 +63,10 @@ function livePriceLine(d: CopyData, index: IndexId): { text: string; color: stri
     if (d.live.freshness === "loading" && d.live.error == null) return { text: `${index} live price loading…`, color: C.muted2 };
     return { text: `${index} live price unavailable`, color: offline ? C.red : C.orange };
   }
-  const age = d.live.ageMs != null ? ` · ${shortAge(d.live.ageMs)} ago` : "";
+  // While the market is shut the poll age says nothing about the price: show when it last traded instead.
+  // Also before today's first print (the quote is still the previous session's).
+  const shut = d.live.data != null && (d.live.data.marketPhase !== "OPEN" || q.session !== istDayOf(Date.parse(d.live.data.generatedAt)));
+  const age = shut ? ` · ${closedLabel(q.asOf, Date.parse(d.live.data!.generatedAt))}` : d.live.ageMs != null ? ` · ${shortAge(d.live.ageMs)} ago` : "";
   return { text: `${index} ${indexPrice(q.price)}${age}${fresh ? "" : d.hidden ? " (paused in the background)" : offline ? " (offline)" : " (stale)"}`, color };
 }
 

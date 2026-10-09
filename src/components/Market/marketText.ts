@@ -3,10 +3,9 @@
  * previous close and the market-phase sentence. Pure, so it is unit-tested.
  */
 import { fmtIstDay, fmtIstHm, fmtNum, fmtPct } from "@/components/shared/format";
-import { LIVE_POLL_MS, OFFLINE_AFTER_MS, type Freshness, type LiveIndex, type LiveIndicesFeed, type LiveVix } from "@/lib/market/liveIndices";
+import { LAGGING_TRADE_MS, LIVE_POLL_MS, OFFLINE_AFTER_MS, type Freshness, type LiveIndex, type LiveIndicesFeed, type LiveVix } from "@/lib/market/liveIndices";
 
-/** While the market is open, a last trade older than this (against the payload time) reads as stale. */
-export const LAGGING_TRADE_MS = 3 * 60_000;
+export { LAGGING_TRADE_MS };
 
 /** Feed age: "1 s", "14 s", "2 min", "1 h 5 min", "2 d". */
 export function fmtFeedAge(ms: number): string {
@@ -17,6 +16,20 @@ export function fmtFeedAge(ms: number): string {
   const h = Math.floor(m / 60);
   if (h < 24) return m % 60 ? `${h} h ${m % 60} min` : `${h} h`;
   return `${Math.floor(h / 24)} d`;
+}
+
+/** IST date (YYYY-MM-DD) of an instant. */
+const istDateAt = (t: number): string => new Date(t + 330 * 60_000).toISOString().slice(0, 10);
+
+/**
+ * The badge text while the market is shut, in place of "Live · 1 s" (which measures the poll, not the
+ * price): "Closed · last trade 15:31 IST" today, "Closed · last trade 15:31 IST, Thu 08 Oct" from an earlier day.
+ */
+export function closedLabel(asOf: string, nowMs: number | null): string {
+  const t = Date.parse(asOf);
+  if (!Number.isFinite(t)) return "Closed";
+  const sameDay = nowMs != null && istDateAt(t) === istDateAt(nowMs);
+  return `Closed · last trade ${fmtIstHm(t)} IST${sameDay ? "" : `, ${fmtIstDay(t)}`}`;
 }
 
 /** "Live · 1 s", "Stale · 14 s", "Offline · 2 min", "Connecting…". */

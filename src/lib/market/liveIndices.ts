@@ -117,6 +117,8 @@ export const IDLE_POLL_MS = 30_000;
 /** Feed age (since the last good response) at which the UI turns orange, then red. */
 export const STALE_AFTER_MS = 10_000;
 export const OFFLINE_AFTER_MS = 60_000;
+/** While the market is open, an index whose last trade is older than this (against the payload time) is stale. */
+export const LAGGING_TRADE_MS = 3 * 60_000;
 
 export type Freshness = "loading" | "live" | "stale" | "offline";
 

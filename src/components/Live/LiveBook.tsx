@@ -87,7 +87,9 @@ export default function LiveBook() {
   const charges = today?.charges ?? 0;
   const net = realized + unrealized - charges;
   const engineNet = realized + engineUnrealized - charges;
-  const equity = pnl ? pnl.startingEquity + net : null;
+  // Equity at today's open: the 30-day window's startingEquity misses earlier days' P&L (as PnlTiles on the Desk).
+  const dayStart = pnl ? (today ? today.equityEnd - today.net : pnl.startingEquity) : null;
+  const equity = dayStart != null ? dayStart + net : null;
   const marks = liveMarked ? "live marks" : "engine marks";
   const updated =
     liveOn && liveData && clientNow != null
@@ -105,7 +107,7 @@ export default function LiveBook() {
         sub={
           <>
             {account ? `${account.label} · ${fmtInr(account.capitalRupees, { decimals: 0 })} capital · ` : ""}
-            {signals?.some((x) => x.index === "SENSEX") ? "NIFTY 50 and SENSEX options" : "NIFTY 50 options"}, paper trading with simulated fills.
+            {!signals || signals.length === 0 ? "Index options" : signals.some((x) => x.index === "SENSEX") ? "NIFTY 50 and SENSEX options" : "NIFTY 50 options"}, paper trading with simulated fills.
           </>
         }
         right={
@@ -134,7 +136,7 @@ export default function LiveBook() {
                 value={fmtInr(net, { decimals: 0, sign: true })}
                 color={pnlColor(net)}
                 hero
-                sub={`${marks}${equity != null ? ` · equity ${fmtInr(equity, { decimals: 0 })} (${fmtPct((net / pnl.startingEquity) * 100)})` : ""}`}
+                sub={`${marks}${equity != null && dayStart ? ` · equity ${fmtInr(equity, { decimals: 0 })} (${fmtPct((net / dayStart) * 100)})` : ""}`}
               />
               <StatTile label="Realized" value={fmtInr(realized, { decimals: 0, sign: true })} color={pnlColor(realized)} sub="closed trades, before charges" />
               <StatTile label="Unrealized" value={fmtInr(unrealized, { decimals: 0, sign: true })} color={pnlColor(unrealized)} sub={`${open.length} open · ${marks}, before charges`} />
@@ -187,7 +189,7 @@ export default function LiveBook() {
 
       <div style={{ display: "grid", gap: 20, minWidth: 0 }}>
         <DetailsSection title="Capital and P&L split" note="Premium in use and where today's P&L comes from">
-          {pnl && positions ? <CapitalPnlPies capital={pnl.startingEquity} positions={open} realized={realized} charges={charges} /> : <Skeleton height={200} />}
+          {pnl && positions && dayStart != null ? <CapitalPnlPies capital={dayStart} positions={open} realized={realized} charges={charges} /> : <Skeleton height={200} />}
         </DetailsSection>
         <DetailsSection title="NIFTY 50 feed and option chain" note="Today's NIFTY path and model option prices">
           <NiftyLiveFeed positions={open} data={liveData} error={liveError} onExpiry={setExpiry} />

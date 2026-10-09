@@ -266,7 +266,7 @@ export default function CopyDesk({ initialId, account }: { initialId: string | n
         <b>Alerts.</b> {ALERTS_EXPLAINED}
       </p>
       <p style={{ margin: 0, fontSize: 12, color: C.muted2, lineHeight: 1.6 }}>
-        These are paper trades. Over the sessions backtested so far the strategy lost money on both accounts, so copying them with real money is likely to lose money too. Without a broker feed the
+        These are paper trades. Over the sessions backtested so far the strategy lost money on every account, so copying them with real money is likely to lose money too. Without a broker feed the
         engine&apos;s option prices are model prices, and the index data is about a minute late: check the real price, size from your own capital, and always use a stop-loss.
       </p>
     </main>

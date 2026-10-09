@@ -57,7 +57,7 @@ function LiveChart({ index, ticket, live }: { index: LiveIndex; ticket: CopyTick
       }
     : {};
   return (
-    <LiveIndexCard index={index} freshness={live.freshness} ageMs={live.ageMs} source={live.data?.source ?? "Yahoo Finance"}>
+    <LiveIndexCard index={index} freshness={live.freshness} ageMs={live.ageMs} source={live.data?.source ?? "Yahoo Finance"} marketOpen={live.data ? live.data.marketPhase === "OPEN" : undefined}>
       <LiveIndexChart index={index} height={240} marks={marks} />
     </LiveIndexCard>
   );

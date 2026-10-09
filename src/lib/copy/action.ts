@@ -17,7 +17,7 @@
 import type { CopyTicketView, GateResult, IndexId, OrderReason, PositionView, Regime, SessionPhase, SignalView } from "@/engine/api-types";
 import { DEFAULT_CONFIG } from "@/engine/config";
 import { istParts } from "@/lib/ist";
-import type { Freshness, LiveIndicesFeed } from "@/lib/market/liveIndices";
+import { LAGGING_TRADE_MS, type Freshness, type LiveIndicesFeed } from "@/lib/market/liveIndices";
 import { buyLimit, ceilTick, floorTick, indexLevel, indexPrice, rupees, wholeRupees } from "./prices";
 
 /** A trade younger than this can still be copied (if the index has not run past its skip level). */
@@ -58,6 +58,8 @@ export interface FeedInput {
   error?: boolean;
   /** The server is re-serving its last good payload because its source failed. */
   sourceStale?: boolean;
+  /** While the market is open: how long this index has gone without a new trade, when over LAGGING_TRADE_MS (else null). */
+  tradeLagMs?: number | null;
   /** The tab is in the background, where the feed does not poll. */
   hidden?: boolean;
 }
@@ -73,7 +75,10 @@ export interface LiveFeedState {
 /** The feed input for one index: stale when the payload, or this index's own value, is a repeat. */
 export function feedInput(live: LiveFeedState, index: IndexId, hidden: boolean): FeedInput {
   const quote = live.data?.indices.find((i) => i.index === index) ?? null;
+  // A quote can keep arriving on time with a frozen price: judge the last trade against the payload time.
+  const tradeAge = quote && live.data?.marketPhase === "OPEN" ? Date.parse(live.data.generatedAt) - Date.parse(quote.asOf) : NaN;
   return {
+    tradeLagMs: Number.isFinite(tradeAge) && tradeAge > LAGGING_TRADE_MS ? tradeAge : null,
     freshness: live.freshness,
     ageMs: live.ageMs,
     price: quote?.price ?? null,
@@ -553,6 +558,10 @@ function pauseReason(input: ActionInput): { headline: string; sentence: string; 
   }
   if (f.freshness === "stale") return { headline: `PAUSED — live feed stale (${age ?? "old"})`, sentence: `The live ${index} price is ${age ?? "too"} old, so the skip check cannot be confirmed.`, quiet: false };
   if (f.sourceStale) return { headline: "PAUSED — live feed stale (its source stopped updating)", sentence: `The live ${index} price is being repeated from an earlier fetch.`, quiet: false };
+  if (f.tradeLagMs != null) {
+    const lag = shortAge(f.tradeLagMs);
+    return { headline: `PAUSED — no new ${index} trade for ${lag}`, sentence: `Yahoo Finance has sent no new ${index} price for ${lag}, so the skip check cannot be confirmed.`, quiet: false };
+  }
   if (f.price == null || !(f.price > 0)) return { headline: `PAUSED — no live ${index} price`, sentence: `The live feed has no ${index} price right now.`, quiet: false };
   if (input.ticketsAgeMs == null || input.ticketsAgeMs > TICKETS_MAX_AGE_MS) {
     const t = input.ticketsAgeMs != null ? shortAge(input.ticketsAgeMs) : null;

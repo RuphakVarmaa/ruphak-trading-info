@@ -9,6 +9,7 @@ import {
   engineEntryLimit,
   expiryLong,
   expiryShort,
+  feedInput,
   GATE_RANK,
   manageText,
   nowLine,
@@ -18,7 +19,9 @@ import {
   skipRule,
   type ActionInput,
   type FeedInput,
+  type LiveFeedState,
 } from "./action";
+import type { LiveIndicesFeed } from "@/lib/market/liveIndices";
 import { at, ms, niftyTicket, rangeGates, sensexTicket, signal, withGate } from "./testTickets";
 
 const LIVE: FeedInput = { freshness: "live", ageMs: 1200, price: 22610 };
@@ -141,6 +144,26 @@ describe("PAUSED (never enter on stale data)", () => {
     expect(paused({ sourceStale: true }).headline).toBe("PAUSED — live feed stale (its source stopped updating)");
     expect(paused({}, { ticketsAgeMs: 45_000 }).headline).toBe("PAUSED — engine data stale (45 s)");
     expect(paused({}, { ticketsAgeMs: null }).kind).toBe("PAUSED");
+  });
+
+  it("pauses when the index has had no new trade for over 3 minutes while the market is open", () => {
+    expect(paused({ tradeLagMs: 11 * 60_000 }).headline).toBe("PAUSED — no new NIFTY trade for 11 min");
+    // The poll is fresh (1 s) but Yahoo keeps serving a 09:55 price: never ENTER NOW on it.
+    const live = (asOf: string, marketPhase: LiveIndicesFeed["marketPhase"] = "OPEN"): LiveFeedState => ({
+      data: { marketPhase, generatedAt: at("10:08:00"), stale: false, indices: [{ index: "NIFTY", price: 22590, asOf, stale: false }] } as unknown as LiveIndicesFeed,
+      freshness: "live",
+      ageMs: 1000,
+      error: null,
+    });
+    const frozen = feedInput(live(at("09:55:00")), "NIFTY", false);
+    expect(frozen.tradeLagMs).toBe(13 * 60_000);
+    const a = deriveIndexAction(input({ tickets: [niftyTicket()], nowMs: ms("10:08"), feed: frozen }));
+    expect(a.kind).toBe("PAUSED");
+    expect(a.details[0]).toContain("Yahoo Finance has sent no new NIFTY price for 13 min");
+    // A trade 30 s old is normal; a closed market is judged by its phase, not its trade age.
+    expect(feedInput(live(at("10:07:30")), "NIFTY", false).tradeLagMs).toBeNull();
+    expect(feedInput(live(at("09:55:00"), "CLOSED"), "NIFTY", false).tradeLagMs).toBeNull();
+    expect(deriveIndexAction(input({ tickets: [niftyTicket()], nowMs: ms("10:08"), feed: feedInput(live(at("10:07:30")), "NIFTY", false) })).kind).toBe("ENTER_NOW");
   });
 
   it("says why when the tab is in the background", () => {

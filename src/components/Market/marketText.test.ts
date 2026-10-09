@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { LiveIndex, LiveIndicesFeed } from "@/lib/market/liveIndices";
-import { changeText, entryFreshness, fmtFeedAge, freshnessLabel, panelStatus, phaseSentence, rangeText, sessionPhrase, vixText } from "./marketText";
+import { changeText, closedLabel, entryFreshness, fmtFeedAge, freshnessLabel, panelStatus, phaseSentence, rangeText, sessionPhrase, vixText } from "./marketText";
 
 const T = Date.parse("2026-10-08T10:00:00+05:30");
 const iso = (ms: number) => new Date(ms).toISOString();
@@ -58,6 +58,13 @@ describe("ages and freshness labels", () => {
     expect(freshnessLabel("offline", 120_000)).toBe("Offline · 2 min");
     expect(freshnessLabel("loading", null)).toBe("Connecting…");
     expect(freshnessLabel("live", null)).toBe("Connecting…");
+  });
+
+  it("labels a shut market by its last trade, not the poll age", () => {
+    const thuClose = "2026-10-08T15:31:53+05:30";
+    expect(closedLabel(thuClose, Date.parse("2026-10-09T07:10:00+05:30"))).toBe("Closed · last trade 15:31 IST, Thu 08 Oct");
+    expect(closedLabel(thuClose, Date.parse("2026-10-08T16:00:00+05:30"))).toBe("Closed · last trade 15:31 IST");
+    expect(closedLabel("not a time", null)).toBe("Closed");
   });
 });
 

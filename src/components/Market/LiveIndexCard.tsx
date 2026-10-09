@@ -9,7 +9,7 @@ import { useClientNow } from "@/hooks/useEngineState";
 import { istTimeOn, type Freshness, type LiveIndex } from "@/lib/market/liveIndices";
 import { istDay } from "./chartGeometry";
 import FreshnessBadge from "./FreshnessBadge";
-import { changeText, rangeText } from "./marketText";
+import { changeText, closedLabel, rangeText } from "./marketText";
 
 const NUM = { fontFamily: "var(--font-num)" } as const;
 
@@ -35,6 +35,7 @@ export default function LiveIndexCard({
   ageMs,
   source,
   note,
+  marketOpen,
   children,
 }: {
   index: LiveIndex;
@@ -42,11 +43,14 @@ export default function LiveIndexCard({
   ageMs: number | null;
   source: string;
   note?: string | null;
+  /** The feed's market phase is OPEN; false shows "Closed · last trade …" in place of "Live". */
+  marketOpen?: boolean;
   children?: ReactNode;
 }) {
   const now = useClientNow();
   const change = changeText(index);
   const otherDay = now != null && index.session !== istDay(now);
+  const closed = otherDay || marketOpen === false ? closedLabel(index.asOf, now) : null;
   const sessionDay = fmtIstDay(`${index.session}T12:00:00+05:30`);
   const noteColor = freshness === "offline" ? C.red : C.orange;
   const or = index.openingRange;
@@ -61,7 +65,7 @@ export default function LiveIndexCard({
             <h3 style={{ margin: 0, fontFamily: SERIF, fontSize: 21, fontWeight: 500, lineHeight: 1.2, color: C.textStrong, letterSpacing: "-0.01em" }}>{index.label}</h3>
             {otherDay && <span style={{ fontSize: 12, color: C.muted }}>Last session, {sessionDay}</span>}
           </div>
-          <FreshnessBadge freshness={freshness} ageMs={ageMs} />
+          <FreshnessBadge freshness={freshness} ageMs={ageMs} closed={closed} />
         </div>
 
         <div style={{ display: "flex", flexWrap: "wrap", alignItems: "baseline", gap: "2px 12px" }}>
