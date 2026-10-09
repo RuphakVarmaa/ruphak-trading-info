@@ -189,6 +189,8 @@ Only events scheduled in advance count; the off-cycle RBI decisions of 27 Mar 20
    - The official close is therefore used for those 51 expiries. This changed results: NIFTY hold-to-expiry went from 348 to 399 trades, and the strangle at N = 2 from +₹543 to +₹636 a week.
 2. **Sessions to expiry are counted on NSE's calendar for both indices.** BSE's archive misses five trading days (2024-08-02, 2024-08-29, 2024-11-29, 2025-02-10, 2025-09-02), which made a few SENSEX days look like DTE 0 under convention B. This changed labels only.
 3. **Data location.** The brief points to `research/q1/dl_nse` and `dl_bse`. Those hold 2024-01 → 2026-10 only, so the 2019–2023 NSE files come from WP6's compact cache. That cache was built from the same exchange archives and already includes those zips, and it was copied read-only to the scratchpad.
+   - Index opens and closes and India VIX come from the 10-year Yahoo daily series in that cache (`index-daily.json`).
+   - The hourly bars (`dl/y1h`) and `why/hist.json` were not needed: index paths cannot price the options.
 4. **Added after the first look (reports, not rules).** These cannot change a verdict:
    - the ATM-print diagnostics (§3.4);
    - the worst mark-to-market at an interim close for hold-to-expiry trades;
