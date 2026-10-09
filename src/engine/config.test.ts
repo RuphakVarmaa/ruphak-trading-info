@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { DEFAULT_CONFIG, makeConfig, parseIndices, parseMaxOpenPerIndex, parseMaxTradesPerDay } from "./config";
+import { GLOBAL_KEYS } from "./types";
 
 describe("parseIndices", () => {
   it("reads one index or a comma-separated list", () => {
@@ -67,5 +68,17 @@ describe("parseMaxTradesPerDay", () => {
     expect(cfg.sizing.maxTradesPerDay).toBe(8);
     expect(cfg.sizing.maxOpenPerIndex).toBe(2);
     expect(cfg.sizing.maxCombinedPremiumPct).toBe(DEFAULT_CONFIG.sizing.maxCombinedPremiumPct);
+  });
+});
+
+describe("features.gapBetas", () => {
+  it("weights only known global keys, enough of them for the global-beta signal, with finite betas", () => {
+    const betas = DEFAULT_CONFIG.features.gapBetas;
+    for (const [key, beta] of Object.entries(betas)) {
+      expect(GLOBAL_KEYS).toContain(key);
+      expect(Number.isFinite(beta)).toBe(true);
+    }
+    // globalBetaSignal abstains with fewer than three known moves among these keys.
+    expect(Object.keys(betas).length).toBeGreaterThanOrEqual(3);
   });
 });

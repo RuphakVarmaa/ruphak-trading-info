@@ -29,6 +29,13 @@ import { ReplayMarketDataSource } from "./replayMarketData";
 const cal = new TradingCalendar();
 const cfg = DEFAULT_CONFIG;
 const fixture = new ReplayMarketDataSource({ candles: fixtureCandles5m(), daily: fixtureDaily() });
+/**
+ * Global moves from 6 Oct 15:30 to 7 Oct 09:15 IST in the fixture, from an independent Python scan of
+ * the raw JSON (crossAsset.test.ts): the keys with bars in that window. The expected gap is their
+ * beta-weighted sum.
+ */
+const REF_GAP_MOVES: Record<string, number> = { ES: 0.4494310394288048, USDINR: -0.0337070917030724, US10Y: -4.199981689453125 };
+const REF_EXPECTED_GAP = Object.entries(REF_GAP_MOVES).reduce((s, [k, m]) => s + (cfg.features.gapBetas[k] ?? 0) * m, 0);
 
 /** Every number anywhere in the object must be finite. */
 function expectAllFinite(obj: unknown, path = "features"): void {
@@ -112,7 +119,7 @@ describe("computeFeatures on recorded data (2026-10-07, RBI policy day)", () => 
   it("explains the gap with overnight global moves", () => {
     // Values cross-checked with an independent Python scan of the raw JSON.
     expect(f.gapPct).toBeCloseTo(-0.3760538112054346, 9);
-    expect(f.expectedGapPct).toBeCloseTo(0.294804422192102, 6);
+    expect(f.expectedGapPct).toBeCloseTo(REF_EXPECTED_GAP, 6);
     expect(f.gapResidualPct).toBeCloseTo(f.gapPct - f.expectedGapPct, 12);
     const g = globalMoves(snap, istAt("2026-10-06", "15:30"), t);
     expect(f.global).toEqual(g);
@@ -168,7 +175,7 @@ describe("computeFeatures before the first bar closes", () => {
     expect([f.ret5m, f.ret15m, f.ret60m, f.retFromOpen, f.vwapDistPct, f.barsSameSideOfVwap]).toEqual([0, 0, 0, 0, 0, 0]);
     expect(f.gapPct).toBe(0);
     expect(f.gapResidualPct).toBe(0);
-    expect(f.expectedGapPct).toBeCloseTo(0.294804422192102, 6);
+    expect(f.expectedGapPct).toBeCloseTo(REF_EXPECTED_GAP, 6);
     expect(f.openingRange).toEqual(NEUTRAL_OPENING_RANGE);
     expect(f.indicators.vwapZ).toBe(0); // no session bars yet
     expect(f.indicators.adx14).toBeGreaterThan(0); // carried over from the previous session's bars
