@@ -1,6 +1,7 @@
 /** Exit rules for an open long option position, evaluated in strict priority order. */
-import type { EngineConfig } from "../config";
+import { strategyMode, type EngineConfig } from "../config";
 import type { Conviction, ExitDecision, Position, Quote, ScoredEvent } from "../types";
+import type { PublishedSignal } from "./published";
 
 export interface ExitContext {
   nowMs: number;
@@ -43,11 +44,37 @@ export function trailPrice(p: Position): number | null {
   return p.peakPremium - (p.peakPremium - p.avgEntry) * (p.stops.trailGivebackPct / 100);
 }
 
+// --- WP3/WP4 published strategies: begin ---
+/**
+ * Index-level exits of a published strategy (cfg.strategy.mode NOISE_AREA or ORB5), read from the
+ * signal the trading cycle attached to the index's conviction: the noise-area crossover (SIGNAL_FLIP)
+ * or band/VWAP trailing stop (TRAIL), the ORB stop and target on the index (STOP, TARGET).
+ *
+ * undefined: not a published-strategy exit context (CONVICTION mode, or no published signal for the
+ * position's index), so the engine's own exits apply unchanged. null: hold. A published position
+ * has no premium target, premium trail, time stop or conviction flip; the kill switch, loss caps,
+ * square-off and the premium stop (a disaster stop here) are checked before this and never relaxed.
+ */
+export function publishedIndexExit(p: Position, q: Quote, ctx: ExitContext, cfg: EngineConfig): ExitDecision | null | undefined {
+  if (strategyMode(cfg) === "CONVICTION") return undefined;
+  const sig: PublishedSignal | undefined = ctx.conviction?.published;
+  if (!sig || ctx.conviction?.index !== p.index) return undefined;
+  const v = p.side === "BULL" ? sig.exitBull : sig.exitBear;
+  if (!v) return null;
+  if (v.reason === "TARGET") return { reason: "TARGET", orderType: "LIMIT", limitPrice: q.bid, detail: v.detail };
+  return { reason: v.reason, orderType: "MARKET", detail: v.detail };
+}
+// --- WP3/WP4 published strategies: end ---
+
 export function evaluateExits(p: Position, q: Quote, ctx: ExitContext, cfg: EngineConfig): ExitDecision | null {
   const mark = q.bid > 0 ? q.bid : q.ltp;
   if (ctx.haltReason) return { reason: ctx.haltReason.reason, orderType: "MARKET", detail: ctx.haltReason.detail };
   if (ctx.nowMs >= p.stops.squareOffMs) return { reason: "SQUARE_OFF", orderType: "MARKET", detail: "intraday square-off time" };
   if (mark <= stopPrice(p)) return { reason: "STOP", orderType: "MARKET", detail: `premium ${mark.toFixed(2)} at or below stop ${stopPrice(p).toFixed(2)}` };
+  // --- WP3/WP4 published strategies: begin ---
+  const indexExit = publishedIndexExit(p, q, ctx, cfg);
+  if (indexExit !== undefined) return indexExit;
+  // --- WP3/WP4 published strategies: end ---
   if (mark >= targetPrice(p)) return { reason: "TARGET", orderType: "LIMIT", limitPrice: q.bid, detail: `premium ${mark.toFixed(2)} reached target ${targetPrice(p).toFixed(2)}` };
   const trail = trailPrice({ ...p, peakPremium: Math.max(p.peakPremium, mark) });
   if (trail !== null && mark <= trail) return { reason: "TRAIL", orderType: "MARKET", detail: `gave back to ${mark.toFixed(2)} from peak ${p.peakPremium.toFixed(2)}` };

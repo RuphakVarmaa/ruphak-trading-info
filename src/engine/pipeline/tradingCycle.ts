@@ -3,11 +3,13 @@
  * dependencies (clock, market data, quotes, broker, repository) differ.
  */
 import { HOUR_MS, MINUTE_MS, istDate } from "../clock";
+import { strategyMode } from "../config";
 import { computePressure } from "../events/pressure";
 import { computeFeatures } from "../market/features";
 import type { EngineDeps } from "../ports";
 import { combineConviction } from "../strategy/conviction";
 import { planEntry } from "../strategy/planner";
+import { publishedConviction, publishedSignal } from "../strategy/published";
 import { classifyRegime } from "../strategy/regime";
 import { rawComponents } from "../strategy/signals";
 import type {
@@ -135,7 +137,13 @@ export async function runTradingCycle(deps: EngineDeps, opts: TradingCycleOption
   report.perf = perf;
   const risk = await loadRiskState(repo, cfg, settings, now, deps.mode);
   const halt = haltReason(risk, cfg);
-  report.halted = halt?.detail ?? opts.noEntries ?? null;
+  // --- WP3/WP4 published strategies: begin ---
+  // cfg.strategy.mode other than CONVICTION replaces the conviction model with a published rule
+  // (src/engine/strategy/published). Those rules are for paper books and replays: no LIVE entries.
+  const published = strategyMode(cfg) !== "CONVICTION";
+  const noEntries = opts.noEntries ?? (published && deps.mode === "LIVE" ? `strategy ${strategyMode(cfg)} is for paper books only` : null);
+  // --- WP3/WP4 published strategies: end ---
+  report.halted = halt?.detail ?? noEntries ?? null;
   const regimes: Partial<Record<IndexId, Regime>> = {};
 
   for (const index of cfg.indices) {
@@ -147,13 +155,15 @@ export async function runTradingCycle(deps: EngineDeps, opts: TradingCycleOption
       if (p) report.pressure[index] = p;
       const regime = classifyRegime(f, p, cfg.regime).regime;
       regimes[index] = regime;
-      const conviction = combineConviction(index, now, rawComponents(f, p, cfg, { noEvents: opts.noEvents }), regime, perf, cfg);
+      const conviction = published
+        ? publishedConviction(index, now, publishedSignal(index, now, snap, calendar, cfg), regime, cfg)
+        : combineConviction(index, now, rawComponents(f, p, cfg, { noEvents: opts.noEvents }), regime, perf, cfg);
       report.convictions[index] = conviction;
       const decision = await planEntry({ index, t: now, features: f, pressure: p, conviction, risk, perf }, { ...deps, calendar });
       report.decisions.push(decision);
       if (await shouldPersistDecision(deps, decision, opts.decisionEveryMs ?? 5 * MINUTE_MS)) await repo.decisions.append(decision);
 
-      if (decision.plan && phase === "OPEN" && !halt && !opts.noEntries) {
+      if (decision.plan && phase === "OPEN" && !halt && !noEntries) {
         const { order, position } = await submitEntry(deps, decision.plan, p);
         report.entries.push({ planId: decision.plan.id, orderId: order.id, status: order.status, positionId: position?.id ?? null });
         risk.ordersToday += 1;
