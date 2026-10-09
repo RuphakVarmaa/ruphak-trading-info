@@ -102,7 +102,7 @@ src/engine/            pure TypeScript engine: runs in Workers, Node scripts and
 workers/engine/        engine Worker: TradingEngineDO, IngestDO, BacktestDO, crons, queue consumer, EngineAdmin RPC, D1 repository
 migrations/            D1 schema (drizzle-kit)
 relay/                 static-IP order relay (Node 22 + Hono), see relay/README.md
-scripts/               backtest, fetch-history, bootstrap-events, score-batch, trigger-cron
+scripts/               backtest, fetch-history, archive-backfill, archive-export, bootstrap-events, score-batch, trigger-cron
 src/app, src/components, src/lib, src/hooks   Next.js dashboard (India Index Desk, blotter, /live, /copy, /backtest, /events)
 docs/RESEARCH.md       survey of public algo-trading projects, the Groww wire contract, charges and pitfalls
 ```
@@ -130,7 +130,7 @@ curl -X POST -H "Authorization: Bearer dev" localhost:8787/ops/status
 npm run cron:local -- "* 3-10 * * MON-FRI"                              # fire a cron by expression
 ```
 
-Then set `ENGINE_MOCK=0` in `.env.local` and restart `npm run dev`. The dashboard then reads the local engine through its `ENGINE` service binding. Other ops endpoints are `/ops/token`, `/ops/instruments`, `/ops/premarket` and `/ops/eod`.
+Then set `ENGINE_MOCK=0` in `.env.local` and restart `npm run dev`. The dashboard then reads the local engine through its `ENGINE` service binding. Other ops endpoints are `/ops/token`, `/ops/instruments`, `/ops/premarket`, `/ops/eod`, and `/ops/archive` and `/ops/archive-status` for the 5-minute bar archive ([docs/DATA.md](docs/DATA.md)).
 
 Without keys the engine still runs end to end. It paper-trades on synthetic option quotes priced from India VIX, and `npm run dev:engine` scores news with the lexicon fallback. The Workers AI binding only runs remotely, so to score with GLM-5.3 locally, log in with `npx wrangler login` and use `npm run dev:engine:ai`, which bills your Cloudflare account.
 
@@ -194,6 +194,7 @@ It creates the resources and fills in their IDs, migrates D1, deploys the engine
 | 08:10 | `40 2 * * MON-FRI` | Instrument master: Groww `instrument.csv` to KV (and the optional R2 archive) |
 | 08:30 | `0 3 * * MON-FRI` | Pre-market ingest, market snapshot, relay health |
 | 16:00 | `30 10 * * MON-FRI` | End of day: grade decisions, update signal performance, Telegram summary |
+| 16:15 | `45 10 * * MON-FRI` | Bar archive: appends the day's settled 5-minute bars to D1 `bars_5m` ([docs/DATA.md](docs/DATA.md)) |
 | 20:00 | `30 14 * * *` | Prune old D1 rows |
 
 ## Going live with Groww (only after the go/no-go below)
@@ -226,6 +227,7 @@ npm run backtest -- --from 2026-08-10 --to 2026-10-07 --placebo    # + no-events
 npm run backtest -- --from 2026-01-01 --to 2026-10-07 --walk-forward   # out-of-sample folds (slow)
 
 npm run fetch-history -- --from 2024-01-01 --to 2026-10-07          # Groww 5-minute index history (needs Groww keys)
+npm run archive-export -- --remote                                   # the engine's D1 bar archive as a --history snapshot (docs/DATA.md)
 npm run bootstrap-events -- --from 2026-07-01 --to 2026-10-07       # GDELT crawl -> clusters (resumable, hours)
 npm run score-batch -- --dry-run                                     # request count and token estimate
 npm run score-batch -- --provider workers-ai                        # GLM-5.3 on Workers AI (needs CLOUDFLARE_ACCOUNT_ID + CLOUDFLARE_API_TOKEN)
@@ -367,7 +369,7 @@ Limits worth knowing before copying with real money:
 
 | Item | Estimate |
 |---|---|
-| Cloudflare (Workers Paid, Durable Objects, D1, KV, Queues) | about $5 a month, mostly within included usage |
+| Cloudflare (Workers Paid, Durable Objects, D1, KV, Queues) | about $5 a month, mostly within included usage. The D1 bar archive adds about 1.2 million rows written and 70 MB a year, inside the included allowance. |
 | News scoring, GLM-5.3 on Workers AI | $1.40 per million input tokens and $4.40 per million output tokens, billed to the Cloudflare account. The default daily caps limit spend to about $8.60 a day; reasoning tokens count as output. |
 | News scoring with Claude (optional) | Roughly $200–280 a month on Opus 5.5 at about 200 calls a day; set `LLM_PROVIDER=anthropic`. |
 | Groww Trade API | ₹499 + GST a month (live data and live trading) |

@@ -78,6 +78,8 @@ Sizes: the first capture is about 13 MB, because it fetches 60 days of everythin
 
 ### Running it nightly
 
+Once the D1 archive below is deployed, the engine archives every trading day by itself and this laptop cron is optional: a second copy, and the source for a back-fill.
+
 Run it on weekdays after the close and Yahoo's settle time, e.g. 16:45 IST. A missed night is caught up by the next run, because the Indian window is 60 days and stale cross-asset series refetch 60 days. Cron on a machine that is on in the evening (times in UTC; 16:45 IST = 11:15 UTC):
 
 ```
@@ -91,3 +93,99 @@ GitHub Actions is possible but is **not installed**. The repository's only workf
 - persistence through `actions/cache` (path `.cache/history`, key `yahoo-5m-archive-${{ github.run_id }}`, restore-key `yahoo-5m-archive-`).
 
 GitHub evicts caches unused for 7 days, and Yahoo may throttle runner IPs, so a local cron with a backup copy is the more reliable choice.
+
+## The private archive in D1 (`bars_5m`)
+
+The GitHub repository is **public**, so raw market data never goes into git: the laptop archive stays in `.cache/` (gitignored), the back-fill SQL goes to the OS temp directory, an export goes to `.cache/` or outside the repository (both scripts refuse a path git could commit), and the engine keeps its own archive in D1 (`ruphak-trading`, binding `DB`), which only the Cloudflare account can read.
+
+### Setting it up
+
+1. `npm run db:migrate:remote` creates the table (CI does this on a push to `main`).
+2. `npm run deploy:engine` adds the 16:15 IST job (CI does this too). Without the table, the job only records an error.
+3. Back-fill the laptop archive, outside market hours (below).
+4. After the next 16:15 IST run, check `/ops/archive-status`.
+
+The preview environment has no archive cron. Once its own database has the migration, `POST /ops/archive` runs the job there by hand.
+
+### What is archived
+
+Every settled 5-minute bar of the 16 symbols the engine's market-data source holds: NIFTY, SENSEX, BANKNIFTY, India VIX and the 12 cross assets. Bars are stored as Yahoo serves them, including off-session bars such as the 15:30 closing tick (the replay filters sessions itself). Daily bars are not archived; Yahoo serves years of them.
+
+Table `bars_5m` (`migrations/0001_bars_5m.sql`), primary key `(symbol, t)`:
+
+| column | content |
+|---|---|
+| `symbol` | Yahoo symbol, e.g. `^NSEI`, `ES=F` |
+| `t` | bar open time, epoch ms |
+| `o`, `h`, `l`, `c` | prices as served |
+| `v` | volume (0 for the Indian indices) |
+| `oi` | open interest; NULL for Yahoo bars |
+| `source` | writer that archived the bar first: `yahoo:engine` or `yahoo:fetch-history` (back-fill) |
+| `first_seen_ms` | when the bar was first archived |
+
+Rows are only ever inserted, with `INSERT OR IGNORE`. They are never updated or deleted, and the nightly prune does not touch the table.
+
+### When and how the engine writes it
+
+At 16:15 IST on trading days (cron `45 10 * * MON-FRI`, after the 16:00 end of day), `workers/engine/src/barArchive.ts` runs inside the trading Durable Object:
+
+1. The DO refreshes its market-data source as usual (Indian indices: Yahoo's 60-day window; cross assets: 5 days) and hands over the bars it holds.
+2. A bar is written once it closed 30 minutes before the run, the `fetch-history` rule. At 16:15 that is every Indian bar of the day and cross-asset bars up to 15:40; later bars go in with the next run.
+3. Per symbol, it compares the fresh bars with the archive from IST midnight of the day of the last archived bar. The first run therefore writes everything Yahoo still serves, and a missed night is caught up by the next run. A cross asset whose archive is empty or ends before the 5-day window gets one `range=60d` request. An archive that ends before even Yahoo's 60-day window is reported under `gaps`: those bars are lost.
+4. Inserts are `INSERT OR IGNORE`, 9 rows per statement (D1 allows 100 bound parameters) and 50 statements per batch. A normal day is about 280 statements in 6 batches. Running the job twice changes nothing.
+5. A fresh copy that differs from the archived bar is a **revision**. It is counted and logged with up to 5 examples (`bar archive: revised bars` in Workers Logs), and the archived copy is kept. Most revisions are volume-only, because Yahoo's 5-day and 60-day ranges disagree on futures volumes. A few change prices: in a test run on 9 Oct, a Hang Seng bar's high and close had changed hours later. The next run compares the same day again, so it can count a revised bar a second time.
+6. Non-trading days are skipped: the bundled holiday calendar plus the dashboard's overrides.
+
+The job runs outside the alarm loop and never throws. A failure is logged as `bar archive failed` and recorded in the status below. It can neither stop trading nor count toward DEGRADED.
+
+Status (KV key `archive:bars_5m:status`), and a manual run:
+
+```
+curl -X POST -H "Authorization: Bearer $ADMIN_TOKEN" https://<engine-host>/ops/archive-status
+curl -X POST -H "Authorization: Bearer $ADMIN_TOKEN" https://<engine-host>/ops/archive          # ?full=1: compare everything held; ?force=1: run on a non-trading day
+```
+
+The status has `ok`, `ranAt`, `skipped`, `new` (bars found), `added` (rows inserted), `revisions`, per-symbol counts with the last archived bar, `fetched60d`, `gaps`, `errors` and `lastOkAt` (the last run that wrote without an error).
+
+### Back-filling from the laptop archive
+
+Do this once, and again whenever a laptop archive holds days D1 lacks:
+
+```
+npm run archive-backfill -- --archive .cache/history/yahoo-5m-archive.json            # --apply-local loads the files into the local D1 too
+```
+
+- It writes `INSERT OR IGNORE` SQL files of 20,000 bars each, plus `manifest.json`, to a new directory under the OS temp directory. `--out` picks another directory, but never one inside the repository.
+- It keeps only bars that closed 30 minutes before the file's `savedAt`. Each bar's `first_seen_ms` is the first capture that could have archived it.
+- It prints one command per file. Run them from the repository root, outside market hours. Wrangler asks for confirmation, and the database serves no queries while a file is imported (a few seconds each):
+
+  ```
+  npx wrangler d1 execute ruphak-trading --remote --config workers/engine/wrangler.jsonc --file <dir>/bars-0001.sql
+  npm run archive-export -- --remote --compare .cache/history/yahoo-5m-archive.json    # then: every bar identical?
+  ```
+
+The 9 Oct archive gives 7 files with 128,928 bars (16.5 MB of SQL). Applied to the local D1 and read back, all 128,928 bars were identical to the JSON, value for value. A backtest on the export matched a backtest on the JSON archive trade for trade. Delete the SQL files once they are applied.
+
+### Exporting for a backtest
+
+```
+npm run archive-export -- --from 2026-07-01 --to 2026-12-31          # local D1 -> .cache/history/d1-5m-export.json
+npm run backtest -- --history .cache/history/d1-5m-export.json --from 2026-07-08 --to 2026-12-31 --no-events --prod-limits
+```
+
+- It reads the local D1 by default. `--remote` reads the deployed database; it is read-only, and rows read are billed.
+- The output is the snapshot format `--save-history` writes. Daily bars are fetched from Yahoo (2 years, longer when the archive reaches further back) and frozen into the file. `--daily-from <snapshot>` takes them from a saved file instead, and `--no-daily` leaves them out, so the replay builds them from the 5-minute bars.
+- Leave a week of warm-up before `--from`; the script suggests a window.
+
+### Cost
+
+Measured on the local D1 with the 9 Oct archive: a bar takes 109.5 bytes including its primary-key index. Each new bar counts as 2 rows written (the table and the index), and re-inserting an archived bar writes nothing.
+
+| | per trading day | per year |
+|---|---|---|
+| bars | ≈2,470 (Indian 4 × 75; 24-hour futures ≈280 each; the rest 45–160) | ≈620,000 |
+| D1 storage | ≈270 KB | ≈68 MB |
+| rows written | ≈4,900 | ≈1.2 million |
+| rows read | ≈2,500 (the comparison window) | ≈0.6 million |
+
+Workers Paid includes 50 million rows written and 25 billion rows read a month, plus 5 GB of storage, so the archive adds nothing to the bill. The one-off back-fill writes about 258,000 rows; that is more than the free plan's 100,000 a day, but within the paid allowance. An export reads one row per bar.
