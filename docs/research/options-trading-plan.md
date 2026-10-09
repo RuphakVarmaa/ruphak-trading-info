@@ -8,7 +8,7 @@ Prepared Friday 9 October 2026 (IST) from four web-research notes, two studies o
 
 1. **Most people lose because buying options is the losing side of a game that is zero-sum before costs.** SEBI's August 2026 studies: 87.7% of individual F&O traders lost money in FY26 (₹91,685 crore); 92% of the losses came from options; 97% of individuals are mostly option *buyers*; the median option-only buyer lost 114% of the capital they used in the year. The other side is algorithmic prop desks and foreign funds: 99% of their profit came from entities that trade by algorithm, mostly as market makers and net option sellers. [R1]
 2. **Our engine is doing the same thing today.** Over 23 Jul–8 Oct it lost ₹188 per trade; random entries with the same rules lose ₹402 per trade. The difference is inside the noise: the current signals are statistically indistinguishable from random entry. [PLAN §1]
-3. **There is no published example of a reliably profitable strategy that buys index options intraday.** For NIFTY, intraday long-option returns are about zero before costs (Bhat, Pandey & Rao 2024, NSE 2017–2020); the premium sellers earn is mostly earned overnight. [PLAN §2]
+3. **There is no published example of a reliably profitable strategy that buys index options intraday, and real NSE prices agree.** For NIFTY, intraday long-option returns are about zero before costs (Bhat, Pandey & Rao 2024, NSE 2017–2020). On real exchange prices for 2024–2026, an at-the-money NIFTY weekly bought at the open lost ₹547 per lot on average when sold at the close (37% of trades profitable) and ₹1,153 when held to expiry (33% profitable; half expired worthless). With perfect hindsight on direction the same option made +₹3,027: **direction is everything, and nothing we tested predicts it.** [PLAN §2, Q1]
 4. **What the evidence does support is a short list of rules** that remove the most expensive trades and keep the buyer only in the situations where buyers have been paid. That is the plan below: trade far less, pay less for each trade, ignore folklore signals, and prove every rule on data the rule never saw before risking real money.
 
 ---
@@ -47,7 +47,7 @@ Each rule removes trades; none adds trades. Each is tested on our data before it
 |---|---|---|
 | **N1. No new position the session before a scheduled event** (Budget, RBI policy, election results, major US data), and none in the ±30 min around it. | Premium is bid up before and falls on the day: India VIX fell on Budget day in 15 of 15 Budgets (−9.3% on average); long straddles lost at nearly every Budget entry time. | R2 |
 | **N2. No entry when India VIX has just jumped** (> +8% on the day) or sits above its 20-day high. | Buyers pay the top of the volatility; India VIX falls back fast after spikes. | R2 |
-| **N3. No entry in the first 15–30 minutes** unless the first 15-minute candle is decisive (see E2). | Implied vol is highest after the open; price came back to the first candle's breakout level on 99.9% of days (2017–2026 study), so stops at the range edge get hit. | R2, R4 |
+| **N3. No entry before 09:30, and no new entry between 11:15 and 14:15.** Prefer 09:30–10:45 when a direction is confirmed (E2). | The first 15 minutes carry the spikiest premiums and the opening range gets revisited (99.9% of days, 2017–2026 study). But the first hour is also when NIFTY moves most for the decay it costs: 30% of the day's movement in 16% of the time (719 sessions); from 11:15 to 14:15 the index moves less than the decay ("value" ≈ 0.7). Our engine's six 11:00–13:00 entries all lost. | R2, R4, Q1 |
 | **N4. Never buy a contract with 2 or fewer days left.** On Mondays use next week's NIFTY contract; on Wednesdays next week's SENSEX contract; otherwise skip. | A 1-day NIFTY ATM option loses ≈₹595 a lot on a flat Monday vs ≈₹250 for the 6-day contract (model). Our engine currently buys the 1-day contract on these days. | R2 |
 | **N5. No overnight or weekend holds.** | A 4-day ATM option bought Friday is worth about half by Monday's close if the index doesn't move (model); overnight is where sellers earn the premium. | R2, R1 |
 | **N6. No far out-of-the-money strikes because they are cheap.** | Worst returns per rupee; two-thirds expire worthless if held. | R1, R2 |
@@ -60,7 +60,8 @@ Each rule removes trades; none adds trades. Each is tested on our data before it
 ## 5. When premiums are at their highest (avoid paying then)
 
 - **Before scheduled events** (Budget, RBI, results, US CPI/Fed), then they collapse on the day. [R2]
-- **Right after the open** on ordinary days, then they settle over the first 30–60 minutes. [R2, R4; India-specific intraday IV data: §10, Q1]
+- **Right after the open.** India VIX made the day's high in the first hour on 61% of 719 sessions and fell from 10:15 into the close on 65% of days. [Q1, R2, R4]
+- **Monday mornings:** VIX opened on average about 3.8% above Friday's close (weekend risk priced in). On NIFTY's expiry day (Tuesday) VIX fell intraday on 73% of days. [Q1]
 - **After a VIX spike** (8 Oct: India VIX +10.3% to 15.31, so today's premiums are about 10% richer for the same move). [R3, R4]
 - **Mondays**, which show a positive India VIX day-of-week effect, and the **last 2 days** of any contract, when decay accelerates. [R2]
 - **Per rupee, far out-of-the-money strikes** always carry the richest premium. [R2]
@@ -71,7 +72,7 @@ Each rule removes trades; none adds trades. Each is tested on our data before it
 
 | Condition | Rule | Status |
 |---|---|---|
-| **E1. Options are cheap relative to how the market is moving** | Recent realized volatility ≥ implied (ratio 1.0–1.5), or a HAR-RV forecast (Corsi 2009) ≥ VIX-implied variance | Published model; being built and tested (WP5) |
+| **E1. Options are not expensive relative to how the market is moving** | Recent realized volatility ≥ implied (ratio 1.0–1.5), or a HAR-RV forecast (Corsi 2009) ≥ VIX-implied variance | A cost filter, not an edge: on real prices no condition known at the open (VIX level, recent realized/implied, gap size, weekday) made buying a straddle profitable on average. HAR gate being tested (WP5). |
 | **E2. Direction confirmed early, not chased** | Either the first 15-minute candle is large (> 0.24%) and we trade in its direction after 09:30, or price breaks the published "noise area" band at a half-hour mark (Zarattini, Aziz & Barbon 2024) | First-candle rule: 73% day-direction agreement in a 2017–2026 non-peer-reviewed study (R4), checked on our data in Q2. Noise area: being built (WP3). |
 | **E3. The expected move beats the cost of the trade** | An honest expected move (calibrated on realized moves, not on VIX × 1.1) must exceed the break-even of ≈9 NIFTY / ≈31 SENSEX points plus charges | The current gate overstates moves about 2.4× (PLAN §1.3); being fixed (WP2) |
 | **E4. No rule in §4 applies** | — | — |
@@ -83,9 +84,9 @@ Each rule removes trades; none adds trades. Each is tested on our data before it
 
 - **Strike: at the money or one strike in the money (delta 0.5–0.7).** OTM carries the most premium per rupee and the fastest percentage decay. [R2]
 - **Expiry: at least 4 calendar days left, ideally 6–8.** Flat-session cost per NIFTY lot ≈ ₹416 at 2 days, ₹250 at 6, ₹221 at 8 (model). Beyond 7 days liquidity is thin (3% of turnover), so always use limit orders. [R2]
-- **Holding period: the same day, exit on target, stop or time.** A 45-minute time stop cut the cost of a no-edge trade from ≈₹400 to ≈₹295 (random-entry test). [PLAN]
-- **"Enter now and wait till expiry for the most benefit" is not supported.** Holding to expiry pays the whole premium plus the steepest last-day decay; held-to-maturity NIFTY options lose across moneyness (Pillai 2026, preprint), and "big-move" expiry bets on scheduled events mostly lost. The only case for holding is a well-founded view that the move will exceed what the straddle already prices, and even then the evidence is weak. [R2]
-- **₹5k/₹10k accounts:** their premium bands (NIFTY ₹40–60/70, SENSEX ₹130–222) land on the worst region: ~+200 points OTM at 6 days (delta ≈0.3) or near-ATM at 1–2 days. Rule: trade only when every entry condition holds, take the highest delta in the band on the longest-dated contract, never the 1–2-day contract, and **skip the day when no lot with delta ≥ 0.30 and ≥ 4 days left fits.** SENSEX's lot rises to 25 for January 2027 expiries; re-derive the band then. [R2, R1]
+- **Holding period: the same day, exit on target, stop or time.** A 45-minute time stop cut the cost of a no-edge trade from ≈₹400 to ≈₹295 (random-entry test). On real prices, 1-strike-ITM options (DTE 1–5) lost the least per lot sold at the close (−₹486, 40% profitable) and OTM the most per rupee. [PLAN, Q1]
+- **"Enter now and wait till expiry for the most benefit" is not supported — on real NSE prices it was the worst choice.** ATM NIFTY weeklies (2024–2026, direction random): sold the same day −₹547 per lot; held to expiry −₹1,153, half expired worthless. Two strikes OTM: 62% expired worthless. Bought on expiry day (0DTE): −19% of premium per trade. Held-to-maturity NIFTY options lose across moneyness in the literature too (Pillai 2026). The only case for holding is a well-founded view that the move will exceed what the straddle already prices — and straddles bought at the open lost money in every condition we could identify in advance. [Q1, R2]
+- **₹5k/₹10k accounts:** their premium bands (NIFTY ₹40–60/70, SENSEX ₹130–222) land on the worst region: ~+200 points OTM at 6 days (delta ≈0.3) or near-ATM at 1–2 days. On real prices (2024–2026) a band option bought at 09:15 lost ₹173 per NIFTY lot sold at the close (35% profitable) and ₹308 held to expiry; 72% of them expired worthless and 7% returned five times or more — a lottery ticket. Rule: trade only when every entry condition holds, take the highest delta in the band on the longest-dated contract, never the 1–2-day contract, and **skip the day when no lot with delta ≥ 0.30 and ≥ 4 days left fits.** SENSEX's lot rises to 25 for January 2027 expiries; re-derive the band then. [R2, R1]
 
 ---
 
@@ -122,7 +123,17 @@ The 8 Oct example: FIIs sold ₹12,943.58 crore (NSE provisional; the depository
 
 ## 10. What our own data says
 
-_[Q1 — premium timing, variance risk premium, hold-to-expiry grid on our data: pending]_
+**Q1 — premium timing, volatility premium and holding period** (India VIX 5-minute and hourly bars; NIFTY/SENSEX hourly 2023–2026; **real option prices from NSE and BSE daily files, 2024-01 to 2026-10**) [notes/q1-premium-timing.md]:
+
+| Question | Answer from our data |
+|---|---|
+| When is the premium highest during the day? | In the first hour: the day's India VIX high fell in 09:15–10:15 on 61% of 719 sessions; VIX fell from 10:15 into the close on 65% of days |
+| Which days are richest? | Monday mornings (VIX opens ≈ 3.8% above Friday's close); VIX falls on NIFTY's expiry day 73% of the time |
+| When does movement beat the decay? | 09:15–10:15 (30% of the day's movement in 16% of the time); 11:15–14:15 is the worst (index moves ≈ 0.7× what the decay costs). One-hour ATM holds cost ≈ ₹60 a lot in the first hour vs ≈ ₹250 in any hour after 11:15 (model calibrated to real prices) |
+| Are options cheap or expensive vs what NIFTY then did? | Expensive: realized/implied variance 0.82 close-to-close and only ≈ 0.49 open-to-close (2 years); 55% of daily variance is the overnight gap, which an intraday buyer pays for but can't capture |
+| Does holding to expiry pay? | No: ATM held to expiry −₹1,153 per lot vs −₹547 sold the same day; half expire worthless; 62% of 2-strike-OTM options expire worthless |
+| Did any condition known before entry make buying pay? | No: straddles bought at the open lost under every pre-entry filter (VIX level, VIX percentile, recent realized/implied, gap size, weekday, DTE). Only *trend days* paid (+₹4,739 per straddle, 87% profitable) — 16% of days, and nothing known at the open raised that probability meaningfully |
+| Small-account band options? | NIFTY band −₹173 per lot same day, −₹308 to expiry; 72% expire worthless, 7% return ≥ 5× |
 
 **Q2 — gaps, trend indicators and FII flows** (Yahoo daily 2007–2026, hourly 2 years, 5-minute 60 days; NSDL FPI flows 2019–2026; every rule fitted on an earlier period and scored on a later one) [notes/q2-gaps-trend-flows.md]:
 
@@ -179,9 +190,10 @@ Until a variant clears §12, **copying trades with real money has negative expec
 
 ## 14. Today, Friday 9 October
 
-- GIFT Nifty at ~08:55 implied a **+0.3% to +0.5% gap-up** after Thursday's −1.64%; US tech fell, US futures firmer, Hong Kong up, Japan down; Brent ≈ $103; India VIX 15.31 after a +10% jump, so premiums are rich (N2). [R4]
+- GIFT Nifty at ~08:55 implied a **+0.3% to +0.5% gap-up** after Thursday's −1.64%; NIFTY **opened at 22,316.80 (+0.38%)**. India VIX opened lower (≈ 14.6 from 15.31). [R4, live feed]
+- **Data warning:** Yahoo's SENSEX feed had no trades for today as of 09:21 (still Thursday's close). Don't copy SENSEX trades today; /copy pauses SENSEX entries; the engine's freshness check measures fetch time, not trade time, and is being fixed after the close.
 - Contracts: NIFTY's Tuesday 13 Oct contract has 4 days left (allowed); SENSEX's Thursday 15 Oct has 6. It is Friday, so nothing is held over the weekend (N5).
-- By the rules above: no trade before 09:30; trade only if the first 15-minute candle is large and in one direction and the expected move clears costs; otherwise no trade today.
+- By the rules above: no trade before 09:30; consider an entry only between 09:30 and 10:45 if the first 15-minute candle is large (> 0.24%) and in one direction and the expected move clears costs; nothing new between 11:15 and 14:15; otherwise no trade today.
 - The live paper engine still runs the old rules today; the new rules are tested after the close.
 
 ---
@@ -194,4 +206,4 @@ Until a variant clears §12, **copying trades with real money has negative expec
 - [R4 — GIFT Nifty, pre-open auction, gaps, data sources](notes/r4-preopen-gaps.md)
 - [PLAN — diagnosis of our engine, published strategies, acceptance criteria, work packages](notes/strategy-plan.md)
 - [Q2 — gaps, trend indicators and FII flows on our data](notes/q2-gaps-trend-flows.md)
-- Q1 — premium timing on our data (added when complete)
+- [Q1 — premium timing, volatility premium and holding period on real prices](notes/q1-premium-timing.md)
