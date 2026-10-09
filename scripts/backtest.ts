@@ -15,6 +15,11 @@
  *            --max-open-per-index 2  --max-open-total 2  --max-trades-per-day 8   (main's limits one by one)
  *            --save-history .cache/history/snap.json  --history .cache/history/snap.json   (replay identical data)
  *            --indicator-cutoff 15:15  --body-clip   (WP1 data cleaning; both off by default, docs/DATA.md)
+ *            --strategy noise-area|orb5   (published rule instead of the conviction model; one position per index)
+ *              noise-area: --noise-stop opposite-band|band-vwap  --noise-sizing engine|vol-target
+ *                          --noise-lookback 14  --noise-band-mult 1  --noise-every 30
+ *              orb5:       --orb-entry engine-window|published (published: entry window opens at the range end)
+ *                          --orb-target-r 10  --orb-range-min 5
  *
  * History: Groww 5-minute index candles cached by `npm run fetch-history` when present (multi-year),
  * otherwise Yahoo (about 60 days of 5-minute bars). Option prices are synthetic (Black-Scholes on
@@ -28,7 +33,7 @@ import { ACCOUNT_IDS, accountConfig, accountSpec, parseAccountId } from "../src/
 import { configForParams, runBacktest, runBacktestAccounts, type BacktestOutput } from "../src/engine/backtest/runBacktest";
 import { followerExitGrid, makeFolds, walkForward, walkForwardFollower } from "../src/engine/backtest/walkForward";
 import { addDays, istDate } from "../src/engine/clock";
-import { DEFAULT_CONFIG, withOverrides } from "../src/engine/config";
+import { DEFAULT_CONFIG, withOverrides, type DeepPartial, type EngineConfig } from "../src/engine/config";
 import type { Candle, ScoredEvent } from "../src/engine/types";
 import { MARKET_SYMBOLS } from "../src/engine/types";
 import { fail, num, parseArgs, readJson, str, table, writeJson } from "./lib/node";
@@ -83,12 +88,54 @@ const dataCleaning = {
 };
 const dataCleaningOn = dataCleaning.indicatorCutoffIst !== undefined || dataCleaning.bodyClip === true;
 // ---- end WP1 ----
-const cfg = withOverrides(configForParams(DEFAULT_CONFIG, mainParams), {
+// --- WP3/WP4 published strategies: begin ---
+/**
+ * --strategy noise-area|orb5: a published rule replaces the conviction model (main and followers).
+ * The rules hold one position per index, so that limit is 1 even with --prod-limits; ORB's
+ * --orb-entry published opens the entry window at the end of the opening range for that run only.
+ */
+function publishedStrategyOverrides(): DeepPartial<EngineConfig> {
+  const name = str(args, "strategy", undefined);
+  if (name === undefined || name === "conviction") return {};
+  const pick = <T extends string>(flag: string, allowed: readonly T[], fallback: T): T => {
+    const v = (str(args, flag, fallback) ?? fallback).toUpperCase().replace(/-/g, "_") as T;
+    return allowed.includes(v) ? v : fail(`--${flag} must be one of ${allowed.map((a) => a.toLowerCase().replace(/_/g, "-")).join(", ")}`);
+  };
+  if (name === "noise-area") {
+    return {
+      strategy: {
+        mode: "NOISE_AREA",
+        noiseArea: {
+          stop: pick("noise-stop", ["OPPOSITE_BAND", "BAND_VWAP"] as const, "OPPOSITE_BAND"),
+          sizing: pick("noise-sizing", ["ENGINE", "VOL_TARGET"] as const, "ENGINE"),
+          lookbackSessions: opt("noise-lookback"),
+          bandMult: opt("noise-band-mult"),
+          decisionEveryMin: opt("noise-every"),
+        },
+      },
+      sizing: { maxOpenPerIndex: 1 },
+    };
+  }
+  if (name === "orb5") {
+    const entry = pick("orb-entry", ["ENGINE_WINDOW", "PUBLISHED"] as const, "ENGINE_WINDOW");
+    const rangeMin = opt("orb-range-min") ?? DEFAULT_CONFIG.strategy.orb5.rangeMin;
+    const end = 9 * 60 + 15 + rangeMin;
+    const rangeEnd = `${String(Math.floor(end / 60)).padStart(2, "0")}:${String(end % 60).padStart(2, "0")}`;
+    return {
+      strategy: { mode: "ORB5", orb5: { entry, targetR: opt("orb-target-r"), rangeMin } },
+      sizing: { maxOpenPerIndex: 1 },
+      gates: entry === "PUBLISHED" ? { noEntryBeforeIst: rangeEnd } : {},
+    };
+  }
+  return fail("--strategy must be noise-area, orb5 or conviction");
+}
+// --- WP3/WP4 published strategies: end ---
+const cfg = withOverrides(withOverrides(configForParams(DEFAULT_CONFIG, mainParams), {
   conviction: { gain: opt("gain"), minActiveWeight: opt("min-active") },
   gates: { minEdgeRatio: opt("min-edge"), minExpectedVsImplied: opt("min-evi"), kEM: opt("kem") },
   sizing: mainLimits,
   features: dataCleaning, // WP1
-});
+}), publishedStrategyOverrides()); // WP3/WP4
 // --- WP2/WP5 gate flags (begin): additive and tightening only; nothing changes unless a flag is given ---
 //   --em-model legacy|calibrated  --realized-vol-factor 0.6  --move-beta 0   (WP2: calibrated edge gate)
 //   --vol-cheapness  --vol-k 1                                               (WP5: HAR-RV vol-cheapness gate)
@@ -272,6 +319,12 @@ async function main() {
     console.log(`Data cleaning: indicator cutoff ${indicatorCutoffIst ?? "off"}, body clip ${bodyClip ? "on" : "off"}.`);
   }
   // ---- end WP1 ----
+  // --- WP3/WP4 published strategies: begin ---
+  if (cfg.strategy.mode !== "CONVICTION") {
+    out.published = { ...cfg.strategy, entryWindow: [cfg.gates.noEntryBeforeIst, cfg.gates.noEntryAfterIst], maxOpenPerIndex: cfg.sizing.maxOpenPerIndex };
+    console.log(`Published strategy ${cfg.strategy.mode}: ${JSON.stringify(cfg.strategy.mode === "ORB5" ? cfg.strategy.orb5 : cfg.strategy.noiseArea)}; entry window ${cfg.gates.noEntryBeforeIst}-${cfg.gates.noEntryAfterIst}.`);
+  }
+  // --- WP3/WP4 published strategies: end ---
   const follower = runs.followers[account as keyof typeof runs.followers];
   if (followerCfg && follower) {
     report(accountSpec(account).label, follower);

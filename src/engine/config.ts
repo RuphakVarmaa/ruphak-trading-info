@@ -289,7 +289,57 @@ export interface EngineConfig {
     reenableShadowTrades: number;
     probationTrades: number;
   };
+  // --- WP3/WP4 published strategies: begin ---
+  /** Which rule makes the entry decisions. CONVICTION (the default) is the engine's own model, unchanged. */
+  strategy: StrategyConfig;
+  // --- WP3/WP4 published strategies: end ---
 }
+
+// --- WP3/WP4 published strategies: begin ---
+/**
+ * Entry rule. CONVICTION is the engine's conviction model (default, unchanged). NOISE_AREA and ORB5
+ * are published intraday rules implemented exactly as published (src/engine/strategy/published/),
+ * for paper replays and research only; every risk gate, loss cap and the premium stop still apply.
+ */
+export type StrategyMode = "CONVICTION" | "NOISE_AREA" | "ORB5";
+export const STRATEGY_MODES: readonly StrategyMode[] = ["CONVICTION", "NOISE_AREA", "ORB5"];
+
+export interface StrategyConfig {
+  mode: StrategyMode;
+  /** Zarattini, Aziz & Barbon (2024, rev. 2025), "Beat the Market" (SSRN 4824172): noise-area intraday momentum. */
+  noiseArea: {
+    /** Sessions in the mean absolute move from the open at each time of day (paper: 14). */
+    lookbackSessions: number;
+    /** Volatility multiplier VM on the band width (paper: 1). */
+    bandMult: number;
+    /** Entries and stops only at bar ends whose IST minute of day is a multiple of this (paper: 30, i.e. HH:00 and HH:30). */
+    decisionEveryMin: number;
+    /**
+     * OPPOSITE_BAND: hold until a close beyond the opposite band (then exit and reverse) or the
+     * square-off (paper's base model). BAND_VWAP: trailing stop at max(upper band, VWAP) for longs and
+     * min(lower band, VWAP) for shorts (paper's refinement).
+     */
+    stop: "OPPOSITE_BAND" | "BAND_VWAP";
+    /** ENGINE: the engine's sizing. VOL_TARGET: size multiplier min(maxLeverage, volTargetPct / 14-session daily volatility) (paper's last refinement). */
+    sizing: "ENGINE" | "VOL_TARGET";
+    volTargetPct: number;
+    maxLeverage: number;
+  };
+  /** Zarattini & Aziz (2023), "Can Day Trading Really Be Profitable?" (SSRN 4416622): 5-minute opening-range breakout. */
+  orb5: {
+    /** Opening range in minutes from 09:15 (paper: the first 5-minute candle). */
+    rangeMin: number;
+    /** Target as a multiple of R, the distance from the entry to the stop (paper: 10). */
+    targetR: number;
+    /**
+     * PUBLISHED: enter on the bar right after the range (09:20), which needs gates.noEntryBeforeIst at or
+     * before the range end. ENGINE_WINDOW: enter at the first bar inside the engine's entry window, skipping
+     * the day when the stop has already traded.
+     */
+    entry: "PUBLISHED" | "ENGINE_WINDOW";
+  };
+}
+// --- WP3/WP4 published strategies: end ---
 
 export const DEFAULT_CONFIG: EngineConfig = {
   capitalRupees: 500_000,
@@ -510,6 +560,13 @@ export const DEFAULT_CONFIG: EngineConfig = {
     reenableShadowTrades: 10,
     probationTrades: 10,
   },
+  // --- WP3/WP4 published strategies: begin ---
+  strategy: {
+    mode: "CONVICTION",
+    noiseArea: { lookbackSessions: 14, bandMult: 1, decisionEveryMin: 30, stop: "OPPOSITE_BAND", sizing: "ENGINE", volTargetPct: 2, maxLeverage: 4 },
+    orb5: { rangeMin: 5, targetR: 10, entry: "ENGINE_WINDOW" },
+  },
+  // --- WP3/WP4 published strategies: end ---
 };
 
 export type DeepPartial<T> = {
@@ -670,5 +727,44 @@ export function validateConfig(cfg: EngineConfig): string[] {
   pos("pricing.tradingMinutesPerDay", cfg.pricing.tradingMinutesPerDay);
   if (!(cfg.pricing.r >= 0 && cfg.pricing.r < 0.5)) p.push("pricing.r must be an annual decimal rate");
   if (!(cfg.llm.batchSize >= 1 && cfg.llm.batchSize <= 25)) p.push("llm.batchSize must be within 1-25");
+  // --- WP3/WP4 published strategies: begin ---
+  p.push(...strategyProblems(cfg));
+  // --- WP3/WP4 published strategies: end ---
   return p;
 }
+
+// --- WP3/WP4 published strategies: begin ---
+/** The entry rule in use (CONVICTION when the config predates the strategy block). */
+export function strategyMode(cfg: EngineConfig): StrategyMode {
+  return cfg.strategy?.mode ?? "CONVICTION";
+}
+
+function strategyProblems(cfg: EngineConfig): string[] {
+  const s = cfg.strategy;
+  if (!s) return [];
+  const p: string[] = [];
+  const intIn = (name: string, v: number, lo: number, hi: number, step = 1) => {
+    if (!(Number.isInteger(v) && v >= lo && v <= hi && v % step === 0)) p.push(`${name} must be an integer ${lo}-${hi}${step > 1 ? ` in steps of ${step}` : ""} (got ${v})`);
+  };
+  if (!STRATEGY_MODES.includes(s.mode)) p.push(`strategy.mode must be one of ${STRATEGY_MODES.join(", ")}`);
+  const n = s.noiseArea;
+  intIn("strategy.noiseArea.lookbackSessions", n.lookbackSessions, 2, 60);
+  if (!(Number.isFinite(n.bandMult) && n.bandMult > 0 && n.bandMult <= 5)) p.push("strategy.noiseArea.bandMult must be within (0, 5]");
+  intIn("strategy.noiseArea.decisionEveryMin", n.decisionEveryMin, 5, 120, 5);
+  if (n.stop !== "OPPOSITE_BAND" && n.stop !== "BAND_VWAP") p.push("strategy.noiseArea.stop must be OPPOSITE_BAND or BAND_VWAP");
+  if (n.sizing !== "ENGINE" && n.sizing !== "VOL_TARGET") p.push("strategy.noiseArea.sizing must be ENGINE or VOL_TARGET");
+  if (!(n.volTargetPct > 0)) p.push("strategy.noiseArea.volTargetPct must be > 0");
+  if (!(n.maxLeverage > 0)) p.push("strategy.noiseArea.maxLeverage must be > 0");
+  const o = s.orb5;
+  intIn("strategy.orb5.rangeMin", o.rangeMin, 5, 60, 5);
+  if (!(Number.isFinite(o.targetR) && o.targetR > 0)) p.push("strategy.orb5.targetR must be > 0");
+  if (o.entry !== "PUBLISHED" && o.entry !== "ENGINE_WINDOW") p.push("strategy.orb5.entry must be PUBLISHED or ENGINE_WINDOW");
+  // The published rules are flat, long or short on an index, never two positions on one index.
+  if (s.mode !== "CONVICTION" && cfg.sizing.maxOpenPerIndex !== 1) p.push(`strategy.mode ${s.mode} holds at most one position per index: sizing.maxOpenPerIndex must be 1`);
+  if (s.mode === "ORB5" && o.entry === "PUBLISHED" && HHMM.test(cfg.gates.noEntryBeforeIst)) {
+    const [h, m] = cfg.gates.noEntryBeforeIst.split(":").map(Number);
+    if (h * 60 + m > 9 * 60 + 15 + o.rangeMin) p.push("strategy.orb5.entry PUBLISHED needs gates.noEntryBeforeIst at or before the end of the opening range");
+  }
+  return p;
+}
+// --- WP3/WP4 published strategies: end ---
