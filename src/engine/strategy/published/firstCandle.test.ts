@@ -3,7 +3,7 @@ import { describe, expect, it } from "vitest";
 import { accountConfig } from "../../accounts";
 import { runBacktestAccounts } from "../../backtest/runBacktest";
 import { TradingCalendar } from "../../calendar/calendar";
-import { MINUTE_MS, istAt, istDate, istParts } from "../../clock";
+import { MINUTE_MS, addDays, istAt, istDate, istParts, weekdayOf } from "../../clock";
 import { DEFAULT_CONFIG, makeConfig, type DeepPartial, type EngineConfig } from "../../config";
 import { computeFeatures } from "../../market/features";
 import { ReplayMarketDataSource } from "../../market/replayMarketData";
@@ -153,6 +153,37 @@ describe("plan §4 rules through the engine (conviction model)", () => {
     expect(main).toEqual([]);
     expect(small).toEqual([]);
   }, 120_000);
+
+  it("N2 in the planner: passes on a quiet year, blocks after a 5-session VIX jump", async () => {
+    const days: string[] = [];
+    for (let d = "2026-10-07"; days.length < 300; ) {
+      d = addDays(d, -1);
+      if (weekdayOf(d) <= 5 && d !== "2026-10-02") days.unshift(d);
+    }
+    const bar = (date: string, c: number) => ({ t: istAt(date, "09:15"), o: c, h: c, l: c, c, v: 0 });
+    const decide = async (lastVix: number) => {
+      const daily = {
+        ...fixtures.daily,
+        [MARKET_SYMBOLS.INDIAVIX]: days.map((d) => bar(d, d === "2026-10-06" ? lastVix : 15)),
+        [MARKET_SYMBOLS.NIFTY]: days.map((d) => bar(d, 22_500)),
+      };
+      const cfg = makeConfig({ rules: { n2: { enabled: true } }, gates: { minEdgeRatio: -100, minExpectedVsImplied: 0, maxDataAgeSec: 100_000 } });
+      const t = istAt("2026-10-07", "10:01") + 30_000;
+      const deps = createReplayDeps({ cfg, startMs: t, candles: fixtures.candles, daily, lagMs: 90_000 });
+      const f = computeFeatures("NIFTY", await deps.market.snapshot(t), deps.calendar, cfg);
+      const risk = await loadRiskState(deps.repo, cfg, await deps.repo.settings.get(), t, "BACKTEST");
+      const conviction = publishedConviction("NIFTY", t, { ...firstCandleState([], t, p, BAR), entry: "BULL" }, "RANGE", cfg);
+      return { d: await planEntry({ index: "NIFTY", t, features: f, pressure: null, conviction, risk, perf: [] }, deps), f };
+    };
+    const quiet = await decide(15);
+    const gate = quiet.d.gates.find((g) => g.gate === "vol_jump")!;
+    expect(gate.passed, gate.detail).toBe(quiet.f.vixChangePct <= 8);
+    const jump = await decide(17);
+    const blocked = jump.d.gates.find((g) => g.gate === "vol_jump")!;
+    expect(blocked.passed).toBe(false);
+    expect(blocked.detail).toMatch(/VIX \+13\.3% over 5 sessions/);
+    expect(jump.d.plan).toBeNull();
+  });
 
   it("N4: plans next week's NIFTY contract on Monday and SENSEX's on Wednesday, for main and the ₹10k account", async () => {
     const open = { gates: { minEdgeRatio: -100, minExpectedVsImplied: 0, maxDataAgeSec: 100_000 } };
