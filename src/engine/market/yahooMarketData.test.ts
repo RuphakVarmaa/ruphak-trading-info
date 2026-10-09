@@ -115,6 +115,21 @@ describe("YahooMarketDataSource", () => {
     expect(snap.dataAgeSec).toBe((AFTER_CLOSE - freshest) / 1000);
   });
 
+  it("hands the cached 5-minute bars to the bar archive without fetching or changing them", async () => {
+    const yahoo = fakeYahoo();
+    const c = clock(AFTER_CLOSE);
+    const src = new YahooMarketDataSource({ calendar: cal, fetchImpl: yahoo.fetchImpl, now: c.now });
+    expect(src.heldBars()).toEqual({});
+    await src.refresh();
+    const n = yahoo.calls.length;
+    const held = src.heldBars();
+    expect(yahoo.calls.length).toBe(n);
+    expect(Object.keys(held).sort()).toEqual(Object.keys(FIXTURE_5M).sort());
+    const snap = await src.snapshot(c.now());
+    for (const [sym, bars] of Object.entries(held)) expect(bars).toEqual(snap.candles[sym]);
+    expect(held["^NSEI"].length).toBe(301);
+  });
+
   it("serves from cache within the TTLs and refreshes incrementally after them", async () => {
     const yahoo = fakeYahoo();
     const c = clock(istAt("2026-10-07", "11:00"));

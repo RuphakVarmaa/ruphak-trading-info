@@ -159,6 +159,7 @@ describe("appendCandles (append-only 5-minute archive)", () => {
     // The next window overlaps the archive: only the new bars are added.
     const second = appendCandles(first.candles, [...day2], settled(day2));
     expect(second.added).toBe(2);
+    expect(second.appended).toEqual(day2.slice(2));
     expect(second.revisions).toEqual([]);
     expect(second.candles.map((c) => c.c)).toEqual([1, 2, 3, 4, 5, 6, 7]);
     expect(new Set(second.candles.map((c) => c.t)).size).toBe(7);

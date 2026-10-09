@@ -164,6 +164,8 @@ export interface AppendResult {
   /** The archive after the append: ascending, one bar per open time. */
   candles: Candle[];
   added: number;
+  /** The bars added by this append (`added` of them), in the order they came in `fresh`. */
+  appended: Candle[];
   /** Fresh bars that differ from the archived bar with the same open time (the archived one is kept). */
   revisions: { archived: Candle; fetched: Candle }[];
   /** Fresh bars left out because they had not closed by `settledAtMs` or had a non-finite price. */
@@ -178,11 +180,11 @@ const sameBar = (a: Candle, b: Candle) => a.o === b.o && a.h === b.h && a.l === 
  * archived bars are never changed or removed, and a fresh copy that differs is returned as a revision
  * so the caller can record it.
  */
-export function appendCandles(archived: Candle[], fresh: Candle[], settledAtMs: number, barMs = BAR_5M_MS): AppendResult {
+export function appendCandles(archived: readonly Candle[], fresh: readonly Candle[], settledAtMs: number, barMs = BAR_5M_MS): AppendResult {
   const byT = new Map<number, Candle>();
   for (const c of archived) if (!byT.has(c.t)) byT.set(c.t, c);
-  let added = 0;
   let skipped = 0;
+  const appended: Candle[] = [];
   const revisions: AppendResult["revisions"] = [];
   const revised = new Set<number>();
   for (const c of fresh) {
@@ -194,13 +196,13 @@ export function appendCandles(archived: Candle[], fresh: Candle[], settledAtMs: 
     const old = byT.get(c.t);
     if (!old) {
       byT.set(c.t, c);
-      added++;
+      appended.push(c);
     } else if (!sameBar(old, c) && !revised.has(c.t)) {
       revised.add(c.t);
       revisions.push({ archived: old, fetched: c });
     }
   }
-  return { candles: [...byT.values()].sort((a, b) => a.t - b.t), added, revisions, skipped };
+  return { candles: [...byT.values()].sort((a, b) => a.t - b.t), added: appended.length, appended, revisions, skipped };
 }
 
 /** Index of the last bar with open time <= t (binary search on a sorted array), -1 if none. */
