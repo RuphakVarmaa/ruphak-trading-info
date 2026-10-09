@@ -142,6 +142,14 @@ export class YahooMarketDataSource implements MarketDataSource {
     return this.refreshing;
   }
 
+  /**
+   * The cached 5-minute bars per symbol, oldest first, including a still-forming last bar (for the D1 bar
+   * archive). Read-only: a refresh replaces these arrays instead of changing them.
+   */
+  heldBars(): Record<string, readonly Candle[]> {
+    return Object.fromEntries(this.intraday);
+  }
+
   async snapshot(t: number): Promise<MarketSnapshot> {
     await this.refresh();
     const now = this.now();

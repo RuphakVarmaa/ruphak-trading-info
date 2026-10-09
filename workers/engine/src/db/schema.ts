@@ -190,3 +190,28 @@ export const heartbeat = sqliteTable("heartbeat", {
   id: integer("id").primaryKey(),
   json: text("json").notNull(),
 });
+
+/**
+ * Private archive of settled 5-minute bars (Yahoo serves only the last ~60 days of them). Append-only:
+ * rows are written with INSERT OR IGNORE and never updated or pruned (docs/DATA.md).
+ */
+export const bars5m = sqliteTable(
+  "bars_5m",
+  {
+    /** Yahoo symbol, e.g. "^NSEI" or "ES=F" (MARKET_SYMBOLS). */
+    symbol: text("symbol").notNull(),
+    /** Bar open time, epoch ms. */
+    t: integer("t").notNull(),
+    o: real("o").notNull(),
+    h: real("h").notNull(),
+    l: real("l").notNull(),
+    c: real("c").notNull(),
+    v: integer("v").notNull(),
+    oi: integer("oi"),
+    /** Writer that archived the bar first: "yahoo:engine" (nightly job) or "yahoo:fetch-history" (back-fill). */
+    source: text("source").notNull(),
+    /** When the bar was first archived (epoch ms). */
+    firstSeenMs: integer("first_seen_ms").notNull(),
+  },
+  (t) => [primaryKey({ columns: [t.symbol, t.t] })],
+);
