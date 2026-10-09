@@ -73,7 +73,7 @@ Each rule removes trades; none adds trades. Each is tested on our data before it
 
 | Condition | Rule | Status |
 |---|---|---|
-| **E1. Options are not expensive relative to how the market is moving** | Recent realized volatility ≥ implied (ratio 1.0–1.5), or a HAR-RV forecast (Corsi 2009) ≥ VIX-implied variance | A cost filter, not an edge: on real prices no condition known at the open (VIX level, recent realized/implied, gap size, weekday) made buying a straddle profitable on average. HAR gate being tested (WP5). |
+| **E1. Options are not expensive relative to how the market is moving** | Recent realized volatility ≥ implied (ratio 1.0–1.5), or a HAR-RV forecast (Corsi 2009) ≥ VIX-implied variance | A cost filter, not an edge: on real prices no condition known at the open (VIX level, recent realized/implied, gap size, weekday) made buying a straddle profitable on average — days with 5-day realized ≥ implied still lost ₹873 per NIFTY trade. HAR gate being tested (WP5). |
 | **E2. A direction signal that works from the moment you can enter** | Candidates: (a) a large first 15-minute candle (> 0.24%), entered after it closes; (b) a break of the published "noise area" band at a half-hour mark (Zarattini, Aziz & Barbon 2024) | **Not validated yet.** The often-quoted "73% continuation" counts the candle's own move. Measured from the candle's close on our data: a big *first hour* had no follow-through (48.9% of 319 days, 2 years); a big first 15-minute candle continued 74% of the time but on only 19 days (range 55–87%) — too few to trust. The nightly 5-minute archive (WP1) builds the history to test it; noise area is being built (WP3). Until one passes §12, no entry trigger is trusted. |
 | **E3. The expected move beats the cost of the trade** | An honest expected move (calibrated on realized moves, not on VIX × 1.1) must exceed the break-even of ≈9 NIFTY / ≈31 SENSEX points plus charges | The current gate overstates moves about 2.4× (PLAN §1.3); being fixed (WP2) |
 | **E4. No rule in §4 applies** | — | — |
@@ -180,6 +180,8 @@ Work in progress (each in its own branch, flags off by default, live engine unch
 | Next | The rules from §4 and §6 that are not yet covered (N2–N4, N8, E2 first-candle) as switchable rules, tested the same way; re-fit the gap model's weights (a demonstrated bug: gaps overstated ≈ 2.1×) |
 
 **A rule or strategy goes live on a paper account only if, on data it was not fitted to,** it has ≥ 180 trades, beats random entry by at least 2 standard errors, has a bootstrap 95% confidence interval above zero per trade and per day, profit factor ≥ 1.3, survives ±20% parameter changes, includes the cost of copying by hand a few minutes late, and passes an independent review for look-ahead bias. Every variant tried is logged and the bar rises with the number tried.
+
+**Known bias in our backtests:** real weekly options trade at about 0.88–0.91× India VIX (NIFTY) and 0.92–0.93× (SENSEX); the engine's model uses 1.00× and 1.05×, so it prices options 10–12% too high and model backtests somewhat overstate buyers' losses. WP6 recalibrates the model against real prices before any result counts. [Q1]
 
 **Ship plan:** after 15:30 IST today only the harness, the data fix (if its before/after shows it only removes artefact-driven decisions) and the data fetchers; strategy modules stay switched off. Nothing changes the main account's behaviour during market hours.
 
