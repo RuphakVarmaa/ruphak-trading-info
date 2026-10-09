@@ -17,9 +17,14 @@
  * - gapResidualPct is 0 until today's open is known (pre-market there is no gap to explain).
  * - Divergence returns are measured over the same clock window for both legs (ending at the latest bar
  *   closed in both series) so a late-arriving bar in one series cannot fake a divergence.
+ *
+ * Data cleaning (config.features, both off by default): `indicatorCutoffIst` leaves NIFTY, SENSEX and
+ * BANKNIFTY bars that open at or after that IST time out of every feature (the closing auction since
+ * 3 Aug 2026), while the previous close stays the official close; `bodyClip` flattens, and logs, a
+ * NIFTY or SENSEX bar that moved far more than the other index in the same five minutes.
  */
 import type { TradingCalendar } from "../calendar/calendar";
-import { DAY_MS, MINUTE_MS, SESSION, istAt, istDate, istMidnight } from "../clock";
+import { DAY_MS, MINUTE_MS, SESSION, formatIst, istAt, istDate, istMidnight, parseHHMM } from "../clock";
 import type { EngineConfig } from "../config";
 import {
   GLOBAL_KEYS,
@@ -34,7 +39,7 @@ import {
   type OpeningRange,
 } from "../types";
 import { logRetPct, percentileRank } from "../util/math";
-import { BAR_5M_MS, isTradingDayCached, istDateOf, istMinuteOfDay } from "./candles";
+import { BAR_5M_MS, isTradingDayCached, istDateOf, istMinuteOfDay, lastIndexAtOrBefore } from "./candles";
 import { dailyFinalAfterMs, expectedGapPct, globalMoves, pricePointAtOrBefore } from "./crossAsset";
 import {
   annualizedVolPct,
@@ -84,7 +89,41 @@ interface Series {
   prevDates: string[];
   /** Daily bars with t <= snap.t. */
   daily: Candle[];
+  /**
+   * Close of each date's last closed session bar as published, before the cutoff and the body clip:
+   * the official close (Yahoo's last 5-minute close equals the daily close).
+   */
+  sessionClose: Map<string, number>;
 }
+
+/** The data-cleaning rules of a config, resolved once per feature build. */
+interface CleaningRules {
+  /** Minutes since IST midnight from which index bars are dropped, or null. */
+  cutoffMin: number | null;
+  bodyClip: boolean;
+  /** Part of the series cache key. */
+  key: string;
+}
+
+function cleaningRules(cfg: EngineConfig): CleaningRules {
+  const raw = cfg.features.indicatorCutoffIst;
+  // A malformed time throws: computeFeatures then returns stale neutral features and nothing trades.
+  const cutoffMin = typeof raw === "string" && raw !== "" ? parseHHMM(raw) : null;
+  const bodyClip = cfg.features.bodyClip === true;
+  return { cutoffMin, bodyClip, key: `${cutoffMin ?? "-"}|${bodyClip ? "clip" : "-"}` };
+}
+
+/**
+ * Series whose closing-session bars the cutoff drops: the cash indices, whose last 15 minutes have been
+ * a closing auction since 3 Aug 2026. India VIX (computed from options, which keep trading) is kept.
+ */
+const CUTOFF_SYMBOLS: ReadonlySet<string> = new Set([MARKET_SYMBOLS.NIFTY, MARKET_SYMBOLS.SENSEX, MARKET_SYMBOLS.BANKNIFTY]);
+
+/** Each index checked by the body clip, with the index it is checked against. */
+const BODY_CLIP_PAIR: Readonly<Record<string, string>> = {
+  [MARKET_SYMBOLS.NIFTY]: MARKET_SYMBOLS.SENSEX,
+  [MARKET_SYMBOLS.SENSEX]: MARKET_SYMBOLS.NIFTY,
+};
 
 /**
  * Calendar days of 5m history the features need: enough prior sessions for the ATR percentile
@@ -114,7 +153,7 @@ function firstIndexAtOrAfter(candles: Candle[], t: number): number {
   return lo;
 }
 
-/** One pass over the history window: session filter, closed/visible split and grouping by date. */
+/** One pass over the history window: session filter, cleaning, closed/visible split and grouping by date. */
 function prepare(
   snap: MarketSnapshot,
   symbol: string,
@@ -122,20 +161,25 @@ function prepare(
   t: number,
   today: string,
   windowDays: number,
+  rules: CleaningRules,
 ): Series {
   let byCal = seriesCache.get(snap);
   if (!byCal) seriesCache.set(snap, (byCal = new WeakMap()));
   let byKey = byCal.get(calendar);
   if (!byKey) byCal.set(calendar, (byKey = new Map()));
-  const key = `${symbol}|${t}|${windowDays}`;
+  const key = `${symbol}|${t}|${windowDays}|${rules.key}`;
   const hit = byKey.get(key);
   if (hit) return hit;
 
   const raw = snap.candles[symbol] ?? [];
   const fromMs = istMidnight(today) - windowDays * DAY_MS;
+  const cutoffMin = rules.cutoffMin !== null && CUTOFF_SYMBOLS.has(symbol) ? rules.cutoffMin : null;
+  const pairSymbol = rules.bodyClip ? BODY_CLIP_PAIR[symbol] : undefined;
+  const pairBars = pairSymbol ? (snap.candles[pairSymbol] ?? []) : null;
   const visible: Candle[] = [];
   const closed: Candle[] = [];
   const byDate = new Map<string, Candle[]>();
+  const sessionClose = new Map<string, number>();
   let todayOpen: number | null = null;
   // Candles are sorted by open time (MarketSnapshot contract), so the window is a contiguous range.
   for (let i = firstIndexAtOrAfter(raw, fromMs); i < raw.length; i++) {
@@ -146,10 +190,22 @@ function prepare(
     if (m < SESSION.open || m >= SESSION.close) continue;
     const d = istDateOf(c.t);
     if (!isTradingDayCached(calendar, d)) continue;
-    visible.push(clipWicks(c));
+    const isClosed = c.t + BAR_5M_MS <= t;
+    if (isClosed) sessionClose.set(d, c.c);
+    if (cutoffMin !== null && m >= cutoffMin) continue;
+    let clean = clipWicks(c);
+    // Only a large body can be clipped; look up the other index's bar just for those.
+    if (pairBars && pairSymbol && isClosed && Math.abs(barBodyPct(c)) > BODY_CLIP_MIN_PCT) {
+      const j = lastIndexAtOrBefore(pairBars, c.t);
+      const verdict = bodyClip(c, j >= 0 && pairBars[j].t === c.t ? pairBars[j] : undefined);
+      if (verdict) {
+        clean = verdict.clipped;
+        reportBodyClip({ symbol, otherSymbol: pairSymbol, t: c.t, bar: c, ...verdict });
+      }
+    }
+    visible.push(clean);
     if (d === today && todayOpen === null) todayOpen = c.o > 0 ? c.o : null;
-    if (c.t + BAR_5M_MS <= t) {
-      const clean = visible[visible.length - 1];
+    if (isClosed) {
       closed.push(clean);
       const arr = byDate.get(d);
       if (arr) arr.push(clean);
@@ -164,6 +220,7 @@ function prepare(
     todayOpen,
     prevDates: [...byDate.keys()].filter((d) => d < today).sort(),
     daily: (snap.daily[symbol] ?? []).filter((c) => c.t <= t && Number.isFinite(c.c)),
+    sessionClose,
   };
   byKey.set(key, series);
   return series;
@@ -187,16 +244,108 @@ export function clipWicks(c: Candle): Candle {
   return { ...c, h: Math.min(c.h, hiCap), l: Math.max(c.l, loCap) };
 }
 
-/** Close of the previous session: 5m bars of `prevDate`, its daily bar, else the latest earlier data. */
+/**
+ * Body clip (features.bodyClip): a NIFTY or SENSEX 5-minute bar whose open-to-close move exceeds
+ * BODY_CLIP_MIN_PCT while the other index's bar with the same open time moved less than
+ * BODY_CLIP_OTHER_MAX_PCT. The two indices share most of their weight (same-slot correlation 0.93-0.99
+ * from 09:20 to 15:10), so in continuous trading that is a bad print: e.g. Yahoo's SENSEX on 10 Sep
+ * 2026 15:20, +1.27% (open 74,630.5, close 75,577.7, high 75,803.8) while NIFTY's bar was flat.
+ * clipWicks cannot catch it: the close itself is wrong and the wick is inside the 0.3% limit.
+ * Caveat: on Jul-Oct 2026 data it fired only on closing-auction bars (15:20/15:25, including NIFTY's
+ * real auction close when SENSEX's landed in another bar); the cutoff handles those (docs/DATA.md).
+ */
+export const BODY_CLIP_MIN_PCT = 0.6;
+export const BODY_CLIP_OTHER_MAX_PCT = 0.1;
+
+/** Open-to-close move of a bar in percent (0 without a positive open). */
+export function barBodyPct(c: Candle): number {
+  return c.o > 0 && Number.isFinite(c.c) ? (c.c / c.o - 1) * 100 : 0;
+}
+
+export interface BodyClipVerdict {
+  /** The bar flattened to its open (open = high = low = close); volume and OI kept. */
+  clipped: Candle;
+  bodyPct: number;
+  otherBodyPct: number;
+}
+
+/**
+ * The body-clip verdict for `bar` given the other index's bar with the same open time: null when the
+ * bar is kept (normal body, or no usable bar to compare with, so nothing is changed on a guess).
+ */
+export function bodyClip(bar: Candle, other: Candle | undefined): BodyClipVerdict | null {
+  const bodyPct = barBodyPct(bar);
+  if (!(Math.abs(bodyPct) > BODY_CLIP_MIN_PCT)) return null;
+  if (!other || other.t !== bar.t || !(other.o > 0) || !Number.isFinite(other.c)) return null;
+  const otherBodyPct = barBodyPct(other);
+  if (!(Math.abs(otherBodyPct) < BODY_CLIP_OTHER_MAX_PCT)) return null;
+  return { clipped: { ...bar, h: bar.o, l: bar.o, c: bar.o }, bodyPct, otherBodyPct };
+}
+
+/** One applied body clip, as reported to the listener. */
+export interface BodyClip extends BodyClipVerdict {
+  symbol: string;
+  otherSymbol: string;
+  /** Bar open time (epoch ms). */
+  t: number;
+  /** The bar as published. */
+  bar: Candle;
+}
+
+export type BodyClipListener = (clip: BodyClip) => void;
+
+const fmtPx = (x: number) => x.toFixed(2);
+const fmtPct = (x: number) => `${x >= 0 ? "+" : ""}${x.toFixed(3)}%`;
+
+/** One log line per clip: what was changed, why, and to what. */
+export function describeBodyClip(c: BodyClip): string {
+  return (
+    `[features] body clip ${c.symbol} ${formatIst(c.t).slice(0, 16)} IST bar: body ${fmtPct(c.bodyPct)} while ${c.otherSymbol} ` +
+    `moved ${fmtPct(c.otherBodyPct)}; o ${fmtPx(c.bar.o)} h ${fmtPx(c.bar.h)} l ${fmtPx(c.bar.l)} c ${fmtPx(c.bar.c)} -> flat at ${fmtPx(c.clipped.c)}`
+  );
+}
+
+const warnBodyClip: BodyClipListener = (c) => console.warn(describeBodyClip(c));
+let bodyClipListener: BodyClipListener = warnBodyClip;
+/** Clips already reported in this process: the same bar is re-cleaned on every snapshot. */
+const reportedClips = new Set<string>();
+const MAX_REPORTED_CLIPS = 10_000;
+
+/**
+ * Where body clips are reported: by default one console warning per clipped bar and process (Workers
+ * logs live, the terminal in backtests). Tests and reports can collect them instead; null restores
+ * the warning. Either way the "already reported" memory starts afresh.
+ */
+export function setBodyClipListener(fn: BodyClipListener | null): void {
+  bodyClipListener = fn ?? warnBodyClip;
+  reportedClips.clear();
+}
+
+function reportBodyClip(clip: BodyClip): void {
+  const key = `${clip.symbol}|${clip.t}|${clip.bar.o}|${clip.bar.c}`;
+  if (reportedClips.has(key)) return;
+  if (reportedClips.size >= MAX_REPORTED_CLIPS) reportedClips.clear();
+  reportedClips.add(key);
+  try {
+    bodyClipListener(clip);
+  } catch {
+    warnBodyClip(clip); // a failing listener must neither hide the clip nor break the features
+  }
+}
+
+/**
+ * Close of the previous session: the official close of `prevDate` (its last 5m close as published,
+ * unaffected by the cleaning rules), its daily bar, else the latest earlier data.
+ */
 function prevSessionClose(s: Series, prevDate: string | null, today: string): number | null {
   if (prevDate) {
-    const bars = s.byDate.get(prevDate);
-    if (bars && bars.length > 0) return bars[bars.length - 1].c;
+    const close = s.sessionClose.get(prevDate);
+    if (close !== undefined) return close;
     for (let i = s.daily.length - 1; i >= 0; i--) if (istDateOf(s.daily[i].t) === prevDate) return s.daily[i].c;
   }
   if (s.prevDates.length > 0) {
-    const bars = s.byDate.get(s.prevDates[s.prevDates.length - 1]) ?? [];
-    if (bars.length > 0) return bars[bars.length - 1].c;
+    const close = s.sessionClose.get(s.prevDates[s.prevDates.length - 1]);
+    if (close !== undefined) return close;
   }
   for (let i = s.daily.length - 1; i >= 0; i--) if (istDateOf(s.daily[i].t) < today) return s.daily[i].c;
   return null;
@@ -453,10 +602,11 @@ function buildFeatures(index: IndexId, snap: MarketSnapshot, calendar: TradingCa
   const today = istDate(t);
   const otherIndex: IndexId = index === "NIFTY" ? "SENSEX" : "NIFTY";
   const windowDays = historyWindowDays(cfg);
-  const self = prepare(snap, MARKET_SYMBOLS[index], calendar, t, today, windowDays);
-  const other = prepare(snap, MARKET_SYMBOLS[otherIndex], calendar, t, today, windowDays);
-  const bank = prepare(snap, MARKET_SYMBOLS.BANKNIFTY, calendar, t, today, windowDays);
-  const vixS = prepare(snap, MARKET_SYMBOLS.INDIAVIX, calendar, t, today, windowDays);
+  const rules = cleaningRules(cfg);
+  const self = prepare(snap, MARKET_SYMBOLS[index], calendar, t, today, windowDays, rules);
+  const other = prepare(snap, MARKET_SYMBOLS[otherIndex], calendar, t, today, windowDays, rules);
+  const bank = prepare(snap, MARKET_SYMBOLS.BANKNIFTY, calendar, t, today, windowDays, rules);
+  const vixS = prepare(snap, MARKET_SYMBOLS.INDIAVIX, calendar, t, today, windowDays, rules);
   const openMs = istAt(today, SESSION.open);
 
   // --- Spot -------------------------------------------------------------------------------
@@ -580,10 +730,11 @@ function buildFeatures(index: IndexId, snap: MarketSnapshot, calendar: TradingCa
   const barsPerDay = cfg.pricing.tradingMinutesPerDay / 5;
   const realizedVol2h = annualizedVolPct(rets, barsPerDay * cfg.pricing.tradingDaysPerYear);
 
+  // Official closes (not moved by the cleaning rules), overridden by daily bars where present.
   const closeByDate = new Map<string, number>();
   for (const d of self.prevDates) {
-    const bars = self.byDate.get(d) ?? [];
-    if (bars.length > 0) closeByDate.set(d, bars[bars.length - 1].c);
+    const close = self.sessionClose.get(d);
+    if (close !== undefined) closeByDate.set(d, close);
   }
   for (const c of self.daily) {
     const d = istDateOf(c.t);

@@ -1,19 +1,29 @@
-import { describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { TradingCalendar } from "../calendar/calendar";
 import { istAt } from "../clock";
-import { DEFAULT_CONFIG } from "../config";
+import { DEFAULT_CONFIG, makeConfig } from "../config";
 import { GLOBAL_KEYS, type Candle, type MarketSnapshot } from "../types";
 import { logRetPct } from "../util/math";
 import {
   fixtureCandles5m,
   fixtureDaily,
   normalSampler,
+  readMarketFixture,
   sessionFromCloses,
   zigzagSession,
 } from "../__fixtures__/market/loadFixtures";
 import { barsOnDate, sessionBars } from "./candles";
 import { globalMoves } from "./crossAsset";
-import { clipWicks, computeFeatures, NEUTRAL_OPENING_RANGE, NO_DATA_AGE_SEC } from "./features";
+import {
+  barBodyPct,
+  bodyClip,
+  clipWicks,
+  computeFeatures,
+  NEUTRAL_OPENING_RANGE,
+  NO_DATA_AGE_SEC,
+  setBodyClipListener,
+  type BodyClip,
+} from "./features";
 import { ReplayMarketDataSource } from "./replayMarketData";
 
 const cal = new TradingCalendar();
@@ -406,5 +416,230 @@ describe("bad prints", () => {
     expect(clipWicks(normal)).toBe(normal);
     const down = clipWicks({ t: 0, o: 100, h: 100.1, l: 98, c: 99.9, v: 0 });
     expect(down.l).toBeCloseTo(99.9 * 0.997, 9);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Closing-auction cleaning (WP1) on real bars
+// ---------------------------------------------------------------------------
+
+/**
+ * Real Yahoo 5m bars of NIFTY, SENSEX, BANKNIFTY and India VIX for 9-11 Sep 2026, copied unchanged from
+ * the backtest history snapshot. Since 3 Aug 2026 the last 15 minutes are a closing auction; on 10 Sep
+ * NIFTY's 15:15 and 15:20 bars are flat and its 15:25 bar jumps to the official close (+0.38%), while
+ * SENSEX's 15:20 bar prints +1.27% (high 75,803.8) and its 15:25 bar falls back -0.89%. Yahoo's daily
+ * SENSEX bar for the day: high 74,910.96, low 74,598.47, close 74,902.59.
+ */
+function auctionFixture(): Record<string, Candle[]> {
+  const doc = readMarketFixture("snapshot-5m-2026-09-09_11.json") as { candles: Record<string, number[][]> };
+  const out: Record<string, Candle[]> = {};
+  for (const [sym, rows] of Object.entries(doc.candles)) out[sym] = rows.map(([t, o, h, l, c, v]) => ({ t, o, h, l, c, v }));
+  return out;
+}
+
+describe("closing-auction cleaning on real bars (Yahoo 5m, 10 Sep 2026)", () => {
+  const bars = auctionFixture();
+  const src = new ReplayMarketDataSource({ candles: bars });
+  const bar = (symbol: string, date: string, time: string): Candle => {
+    const found = bars[symbol].find((c) => c.t === istAt(date, time));
+    if (!found) throw new Error(`no ${symbol} bar at ${date} ${time}`);
+    return found;
+  };
+  const sensex1520 = bar("^BSESN", "2026-09-10", "15:20");
+  const nifty1520 = bar("^NSEI", "2026-09-10", "15:20");
+  const cutoffCfg = makeConfig({ features: { indicatorCutoffIst: "15:15" } });
+  const clipCfg = makeConfig({ features: { bodyClip: true } });
+  const nextMorning = istAt("2026-09-11", "09:30"); // three bars of 11 Sep closed
+  let clips: BodyClip[] = [];
+
+  beforeEach(() => {
+    clips = [];
+    setBodyClipListener((c) => clips.push(c));
+  });
+  afterEach(() => setBodyClipListener(null));
+
+  it("the SENSEX 15:20 print gets past clipWicks: the close is wrong, the wick is inside 0.3%", () => {
+    expect(sensex1520).toMatchObject({ o: 74630.5, h: 75803.7578125, l: 74482.4765625, c: 75577.7421875 });
+    expect(clipWicks(sensex1520)).toBe(sensex1520);
+    expect(barBodyPct(sensex1520)).toBeCloseTo(1.2692, 4);
+    expect(nifty1520).toMatchObject({ o: 23389.25, h: 23389.25, l: 23389.25, c: 23389.25 });
+  });
+
+  it("the body clip flattens it to its open because NIFTY did not move", () => {
+    const v = bodyClip(sensex1520, nifty1520);
+    expect(v).not.toBeNull();
+    expect(v!.clipped).toEqual({ ...sensex1520, h: 74630.5, l: 74630.5, c: 74630.5 });
+    expect(v!.bodyPct).toBeCloseTo(1.2692, 4);
+    expect(v!.otherBodyPct).toBe(0);
+  });
+
+  it("the body clip keeps confirmed or uncheckable bars, and flags nothing else in the three sessions", () => {
+    // SENSEX 15:25 falls 0.89% while NIFTY's 15:25 bar carries the +0.38% auction close: confirmed, kept.
+    expect(bodyClip(bar("^BSESN", "2026-09-10", "15:25"), bar("^NSEI", "2026-09-10", "15:25"))).toBeNull();
+    // NIFTY's +0.38% is below the 0.6% threshold.
+    expect(bodyClip(bar("^NSEI", "2026-09-10", "15:25"), bar("^BSESN", "2026-09-10", "15:25"))).toBeNull();
+    // Nothing to compare with: kept.
+    expect(bodyClip(sensex1520, undefined)).toBeNull();
+    expect(bodyClip(sensex1520, { ...nifty1520, t: nifty1520.t + 300_000 })).toBeNull();
+    const flagged: string[] = [];
+    for (const [sym, other] of [["^NSEI", "^BSESN"], ["^BSESN", "^NSEI"]]) {
+      for (const c of bars[sym]) {
+        if (bodyClip(c, bars[other].find((o) => o.t === c.t))) flagged.push(`${sym}@${c.t}`);
+      }
+    }
+    expect(flagged).toEqual([`^BSESN@${sensex1520.t}`]);
+  });
+
+  it("by default the auction prints become the next morning's previous-day high and low", () => {
+    const f = computeFeatures("SENSEX", src.snapshotSync(nextMorning), cal, cfg);
+    expect(f.indicators.prevDayHigh).toBe(75803.7578125);
+    expect(f.indicators.prevDayLow).toBe(74482.4765625);
+    expect(f.indicators.prevDayClose).toBe(74902.59375);
+    expect(clips).toHaveLength(0);
+  });
+
+  it("the 15:15 cutoff restores the day's real range and keeps the official close", () => {
+    const snap = src.snapshotSync(nextMorning);
+    const base = computeFeatures("SENSEX", snap, cal, cfg);
+    const cut = computeFeatures("SENSEX", snap, cal, cutoffCfg);
+    expectAllFinite(cut);
+    // Within 0.002% of Yahoo's daily bar (74,910.96 / 74,598.47).
+    expect(cut.indicators.prevDayHigh).toBe(74909.6796875);
+    expect(cut.indicators.prevDayLow).toBe(74600.59375);
+    // Rule 2: the previous close stays the official close, so the gap and daily vol do not move.
+    expect(cut.indicators.prevDayClose).toBe(74902.59375);
+    expect(cut.gapPct).toBe(base.gapPct);
+    expect(cut.realizedVol20d).toBe(base.realizedVol20d);
+    expect(cut.spot).toBe(base.spot);
+    // Early in the session realized vol borrows the previous session's last bars: no more +1.27% / -0.89%.
+    expect(base.realizedVol2h).toBeGreaterThan(2 * cut.realizedVol2h);
+    expect(cut.indicators.bbWidthPct).toBeLessThan(base.indicators.bbWidthPct);
+    expect(cut.indicators.rsi14).not.toBeCloseTo(base.indicators.rsi14, 3);
+    // Today's bars before the cutoff are untouched.
+    expect(cut.retFromOpen).toBe(base.retFromOpen);
+    expect(cut.ret5m).toBe(base.ret5m);
+    expect(cut.openingRange).toEqual(base.openingRange);
+  });
+
+  it("the cutoff drops NIFTY's flat 15:15/15:20 bars and the 15:25 jump from the indicators", () => {
+    const snap = src.snapshotSync(nextMorning);
+    const base = computeFeatures("NIFTY", snap, cal, cfg);
+    const cut = computeFeatures("NIFTY", snap, cal, cutoffCfg);
+    expect(cut.indicators.prevDayClose).toBe(23477.80078125); // the 15:25 auction close, kept
+    expect(cut.indicators.prevDayClose).toBe(base.indicators.prevDayClose);
+    expect(cut.gapPct).toBe(base.gapPct);
+    expect(cut.indicators.prevDayHigh).toBe(base.indicators.prevDayHigh); // flat bars never set the range
+    expect(cut.indicators.rsi14).not.toBeCloseTo(base.indicators.rsi14, 3);
+    expect(cut.realizedVol2h).toBeLessThan(base.realizedVol2h);
+  });
+
+  it("the cutoff holds for today's bars too: after 15:15 the indicators stop at the 15:10 bar", () => {
+    // At 15:15 the 15:10 bar is the last closed one, so the cutoff has nothing of today's to drop yet.
+    const at1515 = computeFeatures("SENSEX", src.snapshotSync(istAt("2026-09-10", "15:15")), cal, cutoffCfg);
+    const late = istAt("2026-09-10", "15:31");
+    const cut = computeFeatures("SENSEX", src.snapshotSync(late), cal, cutoffCfg);
+    const base = computeFeatures("SENSEX", src.snapshotSync(late), cal, cfg);
+    expect(cut.spot).toBe(base.spot); // the price itself is never cut
+    expect(cut.spot).toBe(74902.59375);
+    for (const k of ["rsi14", "adx14", "ema9", "ema21", "supertrendLine", "bbPctB", "bbWidthPct"] as const) {
+      expect(cut.indicators[k]).toBe(at1515.indicators[k]);
+    }
+    expect(base.indicators.rsi14).not.toBe(cut.indicators.rsi14);
+  });
+
+  it("with the body clip alone the 15:20 print goes, but the 15:25 bar still opens at it", () => {
+    const snap = src.snapshotSync(nextMorning);
+    const f = computeFeatures("SENSEX", snap, cal, clipCfg);
+    computeFeatures("NIFTY", snap, cal, clipCfg); // prepares SENSEX again as NIFTY's other index
+    computeFeatures("SENSEX", src.snapshotSync(istAt("2026-09-11", "09:35")), cal, clipCfg);
+    expect(f.indicators.prevDayHigh).toBe(75575.28125); // the 15:25 bar's open
+    expect(f.indicators.prevDayLow).toBe(74600.59375);
+    expect(f.indicators.prevDayClose).toBe(74902.59375);
+    // Reported once, however often the bar is cleaned.
+    expect(clips.map((c) => [c.symbol, c.otherSymbol, c.t, c.clipped.c])).toEqual([["^BSESN", "^NSEI", sensex1520.t, 74630.5]]);
+  });
+
+  it("logs every clip as a console warning by default", () => {
+    setBodyClipListener(null);
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      computeFeatures("SENSEX", src.snapshotSync(nextMorning), cal, clipCfg);
+      computeFeatures("NIFTY", src.snapshotSync(nextMorning), cal, clipCfg);
+      expect(warn).toHaveBeenCalledTimes(1);
+      expect(warn.mock.calls[0][0]).toBe(
+        "[features] body clip ^BSESN 2026-09-10 15:20 IST bar: body +1.269% while ^NSEI moved +0.000%; o 74630.50 h 75803.76 l 74482.48 c 75577.74 -> flat at 74630.50",
+      );
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it("a failing listener neither hides the clip nor breaks the features", () => {
+    setBodyClipListener(() => {
+      throw new Error("listener down");
+    });
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      const f = computeFeatures("SENSEX", src.snapshotSync(nextMorning), cal, clipCfg);
+      expect(f.dataAgeSec).not.toBe(NO_DATA_AGE_SEC);
+      expect(f.indicators.prevDayHigh).toBe(75575.28125);
+      expect(warn).toHaveBeenCalledTimes(1);
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it("changes nothing where there is nothing to clean", () => {
+    const snap = src.snapshotSync(istAt("2026-09-10", "11:00"));
+    const base = computeFeatures("NIFTY", snap, cal, cfg);
+    expect(computeFeatures("NIFTY", snap, cal, makeConfig({ features: { indicatorCutoffIst: "15:30" } }))).toEqual(base);
+    expect(computeFeatures("NIFTY", snap, cal, clipCfg)).toEqual(base); // no flagged bar before 10 Sep 15:20
+    expect(clips).toHaveLength(0);
+  });
+
+  it("keeps cached series of different cleaning rules apart", () => {
+    const snap = src.snapshotSync(nextMorning);
+    expect(computeFeatures("SENSEX", snap, cal, cutoffCfg).indicators.prevDayHigh).toBe(74909.6796875);
+    expect(computeFeatures("SENSEX", snap, cal, cfg).indicators.prevDayHigh).toBe(75803.7578125);
+    expect(computeFeatures("SENSEX", snap, cal, clipCfg).indicators.prevDayHigh).toBe(75575.28125);
+    expect(computeFeatures("SENSEX", snap, cal, cutoffCfg).indicators.prevDayHigh).toBe(74909.6796875);
+  });
+});
+
+describe("body clip on a session's last bar (synthetic)", () => {
+  afterEach(() => setBodyClipListener(null));
+
+  it("still takes the previous close from the bar as published (the official close)", () => {
+    setBodyClipListener(() => {});
+    // Synthetic: NIFTY's last bar jumps 0.8% (an auction close) while SENSEX's last bar is flat.
+    const nifty = sessionFromCloses("2026-10-06", [...Array(74).fill(100), 100.8], 100, 0);
+    const sensex = sessionFromCloses("2026-10-06", Array(75).fill(300), 300, 0);
+    const morning = [...nifty, ...sessionFromCloses(TODAY, [100.9, 101], 100.9, 0)];
+    const src = replay({ "^NSEI": morning, "^BSESN": [...sensex, ...sessionFromCloses(TODAY, [300.2, 300.3], 300.2, 0)] });
+    const t = istAt(TODAY, "09:25");
+    const base = computeFeatures("NIFTY", src.snapshotSync(t), cal, cfg);
+    const clipped = computeFeatures("NIFTY", src.snapshotSync(t), cal, makeConfig({ features: { bodyClip: true } }));
+    expect(base.indicators.prevDayClose).toBe(100.8);
+    expect(clipped.indicators.prevDayClose).toBe(100.8);
+    expect(clipped.gapPct).toBe(base.gapPct);
+    expect(clipped.indicators.prevDayHigh).toBe(100); // the jump no longer sets the range
+    expect(base.indicators.prevDayHigh).toBe(100.8);
+  });
+});
+
+describe("cleaning config", () => {
+  it("is off by default", () => {
+    expect(DEFAULT_CONFIG.features.indicatorCutoffIst).toBeNull();
+    expect(DEFAULT_CONFIG.features.bodyClip).toBe(false);
+  });
+
+  it("validates the cutoff time", () => {
+    expect(makeConfig({ features: { indicatorCutoffIst: "15:15" } }).features.indicatorCutoffIst).toBe("15:15");
+    expect(makeConfig({ features: { indicatorCutoffIst: null } }).features.indicatorCutoffIst).toBeNull();
+    expect(() => makeConfig({ features: { indicatorCutoffIst: "3:15pm" } })).toThrow(/indicatorCutoffIst/);
+    // Before the square-off it would freeze the features that manage open positions.
+    expect(() => makeConfig({ features: { indicatorCutoffIst: "14:00" } })).toThrow(/indicatorCutoffIst/);
+    expect(() => makeConfig({ features: { indicatorCutoffIst: "15:45" } })).toThrow(/indicatorCutoffIst/);
+    expect(() => makeConfig({ features: { bodyClip: "yes" as unknown as boolean } })).toThrow(/bodyClip/);
   });
 });
