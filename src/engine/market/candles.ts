@@ -160,6 +160,49 @@ export function normalizeCandles(candles: Candle[]): Candle[] {
   return mergeCandles([], candles);
 }
 
+export interface AppendResult {
+  /** The archive after the append: ascending, one bar per open time. */
+  candles: Candle[];
+  added: number;
+  /** Fresh bars that differ from the archived bar with the same open time (the archived one is kept). */
+  revisions: { archived: Candle; fetched: Candle }[];
+  /** Fresh bars left out because they had not closed by `settledAtMs` or had a non-finite price. */
+  skipped: number;
+}
+
+const sameBar = (a: Candle, b: Candle) => a.o === b.o && a.h === b.h && a.l === b.l && a.c === b.c && (a.v ?? 0) === (b.v ?? 0) && a.oi === b.oi;
+
+/**
+ * Append-only merge for the 5-minute archive: a fresh bar is added when no bar with its open time is
+ * archived yet and it closed by `settledAtMs` (a still-forming bar would otherwise be frozen in);
+ * archived bars are never changed or removed, and a fresh copy that differs is returned as a revision
+ * so the caller can record it.
+ */
+export function appendCandles(archived: Candle[], fresh: Candle[], settledAtMs: number, barMs = BAR_5M_MS): AppendResult {
+  const byT = new Map<number, Candle>();
+  for (const c of archived) if (!byT.has(c.t)) byT.set(c.t, c);
+  let added = 0;
+  let skipped = 0;
+  const revisions: AppendResult["revisions"] = [];
+  const revised = new Set<number>();
+  for (const c of fresh) {
+    const ok = Number.isFinite(c.t) && Number.isFinite(c.o) && Number.isFinite(c.h) && Number.isFinite(c.l) && Number.isFinite(c.c);
+    if (!ok || c.t + barMs > settledAtMs) {
+      skipped++;
+      continue;
+    }
+    const old = byT.get(c.t);
+    if (!old) {
+      byT.set(c.t, c);
+      added++;
+    } else if (!sameBar(old, c) && !revised.has(c.t)) {
+      revised.add(c.t);
+      revisions.push({ archived: old, fetched: c });
+    }
+  }
+  return { candles: [...byT.values()].sort((a, b) => a.t - b.t), added, revisions, skipped };
+}
+
 /** Index of the last bar with open time <= t (binary search on a sorted array), -1 if none. */
 export function lastIndexAtOrBefore(candles: Candle[], t: number): number {
   let lo = 0;

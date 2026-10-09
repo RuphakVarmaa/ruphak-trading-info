@@ -4,6 +4,7 @@ import { istAt, istDate, istMinutes } from "../clock";
 import type { Candle } from "../types";
 import { fixtureCandles5m, fixtureDaily, sessionFromCloses } from "../__fixtures__/market/loadFixtures";
 import {
+  appendCandles,
   BAR_5M_MS,
   barsOnDate,
   closedBars,
@@ -144,5 +145,40 @@ describe("daily aggregation and merging", () => {
     const b = [{ ...a[1], c: 20 }, ...sessionFromCloses("2026-10-06", [9], 9)];
     const m = mergeCandles(a, b);
     expect(m.map((c) => c.c)).toEqual([9, 1, 20, 3]);
+  });
+});
+
+describe("appendCandles (append-only 5-minute archive)", () => {
+  const day1 = sessionFromCloses("2026-10-06", [1, 2, 3], 1);
+  const day2 = sessionFromCloses("2026-10-07", [4, 5, 6, 7], 3);
+  const settled = (bars: Candle[]) => bars.at(-1)!.t + BAR_5M_MS;
+
+  it("adds new settled bars once and keeps the archive sorted without duplicates", () => {
+    const first = appendCandles([], [...day1, ...day2.slice(0, 2)], settled(day2.slice(0, 2)));
+    expect(first.added).toBe(5);
+    // The next window overlaps the archive: only the new bars are added.
+    const second = appendCandles(first.candles, [...day2], settled(day2));
+    expect(second.added).toBe(2);
+    expect(second.revisions).toEqual([]);
+    expect(second.candles.map((c) => c.c)).toEqual([1, 2, 3, 4, 5, 6, 7]);
+    expect(new Set(second.candles.map((c) => c.t)).size).toBe(7);
+    // Fresh input in any order still yields a sorted archive.
+    expect(appendCandles([], [...day2].reverse(), settled(day2)).candles.map((c) => c.c)).toEqual([4, 5, 6, 7]);
+  });
+
+  it("never rewrites an archived bar: a different fresh copy comes back as a revision", () => {
+    const archived = appendCandles([], day1, settled(day1)).candles;
+    const revised = { ...day1[1], c: 2.5 };
+    const r = appendCandles(archived, [day1[0], revised, day1[2]], settled(day1));
+    expect(r.added).toBe(0);
+    expect(r.candles[1].c).toBe(2);
+    expect(r.revisions).toEqual([{ archived: day1[1], fetched: revised }]);
+  });
+
+  it("leaves out bars that had not closed by the settle time, and non-finite bars", () => {
+    const at = day2[1].t + BAR_5M_MS; // bars 0 and 1 closed, 2 and 3 still forming
+    const r = appendCandles([], [...day2, { ...day1[0], c: NaN }], at);
+    expect(r.candles.map((c) => c.c)).toEqual([4, 5]);
+    expect(r.skipped).toBe(3);
   });
 });

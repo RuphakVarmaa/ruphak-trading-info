@@ -132,6 +132,22 @@ export interface EngineConfig {
     divergenceBars: number;
     openingRangeMin: number;
     sessionLookbackDays: number;
+    // ---- WP1 data cleaning (both off by default, which keeps the earlier behaviour) ----
+    /**
+     * IST time (HH:MM) from which NIFTY, SENSEX and BANKNIFTY 5-minute bars are left out of every
+     * feature (RSI/ADX/Supertrend/EMA/Bollinger, previous-day high/low, ATR percentile, divergence,
+     * realized vol). Since 3 Aug 2026 the market's last 15 minutes are a closing auction: Yahoo's NIFTY
+     * bars go flat at 15:15/15:20 and jump at 15:25, SENSEX's swing by about 1%. The previous close
+     * stays the official close (the session's last 5-minute close). null keeps every bar.
+     */
+    indicatorCutoffIst: string | null;
+    /**
+     * Flatten a NIFTY or SENSEX 5-minute bar to its open when its body exceeds BODY_CLIP_MIN_PCT
+     * while the other index moved less than BODY_CLIP_OTHER_MAX_PCT in the same bar (features.ts).
+     * Every clip is logged.
+     */
+    bodyClip: boolean;
+    // ---- end WP1 ----
   };
   regime: {
     trendRet60mPct: number;
@@ -363,6 +379,10 @@ export const DEFAULT_CONFIG: EngineConfig = {
     divergenceBars: 6,
     openingRangeMin: 15,
     sessionLookbackDays: 20,
+    // ---- WP1 data cleaning: off ----
+    indicatorCutoffIst: null,
+    bodyClip: false,
+    // ---- end WP1 ----
   },
   regime: {
     trendRet60mPct: 0.35,
@@ -619,6 +639,17 @@ export function validateConfig(cfg: EngineConfig): string[] {
   if (!(cfg.exits.stopPct < 0 && cfg.exits.stopPct > -100)) p.push("exits.stopPct must be within (-100, 0)");
   pos("exits.targetPct", cfg.exits.targetPct);
   if (!(cfg.exits.trailGivebackPct > 0 && cfg.exits.trailGivebackPct < 100)) p.push("exits.trailGivebackPct must be within (0, 100)");
+  // ---- WP1 data cleaning ----
+  // The cutoff also applies to today's bars, so it may not fall before the square-off: open
+  // positions are managed (signal-flip exits) on these features until then.
+  const cutoff: unknown = cfg.features.indicatorCutoffIst;
+  if (cutoff !== null && cutoff !== undefined) {
+    if (typeof cutoff !== "string" || !HHMM.test(cutoff)) p.push("features.indicatorCutoffIst must be HH:MM or null");
+    else if (cutoff < cfg.exits.squareOffIst || cutoff > "15:30") p.push("features.indicatorCutoffIst must lie between exits.squareOffIst and 15:30");
+  }
+  const bodyClip: unknown = cfg.features.bodyClip;
+  if (bodyClip !== undefined && typeof bodyClip !== "boolean") p.push("features.bodyClip must be true or false");
+  // ---- end WP1 ----
   pos("sizing.maxRiskPctPerTrade", cfg.sizing.maxRiskPctPerTrade);
   if (cfg.sizing.defaultRiskPct > cfg.sizing.maxRiskPctPerTrade) p.push("sizing.defaultRiskPct must not exceed maxRiskPctPerTrade");
   if (cfg.sizing.minRiskPct > cfg.sizing.defaultRiskPct) p.push("sizing.minRiskPct must not exceed defaultRiskPct");
