@@ -9,7 +9,7 @@ Prepared Friday 9 October 2026 (IST) from four web-research notes, two studies o
 1. **Most people lose because buying options is the losing side of a game that is zero-sum before costs.** SEBI's August 2026 studies: 87.7% of individual F&O traders lost money in FY26 (₹91,685 crore); 92% of the losses came from options; 97% of individuals are mostly option *buyers*; the median option-only buyer lost 114% of the capital they used in the year. The other side is algorithmic prop desks and foreign funds: 99% of their profit came from entities that trade by algorithm, mostly as market makers and net option sellers. [R1]
 2. **Our engine is doing the same thing today.** Over 23 Jul–8 Oct it lost ₹188 per trade; random entries with the same rules lose ₹402 per trade. The difference is inside the noise: the current signals are statistically indistinguishable from random entry. [PLAN §1]
 3. **There is no published example of a reliably profitable strategy that buys index options intraday, and real NSE prices agree.** For NIFTY, intraday long-option returns are about zero before costs (Bhat, Pandey & Rao 2024, NSE 2017–2020). On real exchange prices for 2024–2026, an at-the-money NIFTY weekly bought at the open lost ₹547 per lot on average when sold at the close (37% of trades profitable) and ₹1,153 when held to expiry (33% profitable; half expired worthless). With perfect hindsight on direction the same option made +₹3,027: **direction is everything, and nothing we tested predicts it.** [PLAN §2, Q1]
-4. **What the evidence does support is a short list of rules** that remove the most expensive trades and keep the buyer only in the situations where buyers have been paid. That is the plan below: trade far less, pay less for each trade, ignore folklore signals, and prove every rule on data the rule never saw before risking real money.
+4. **What the evidence does support is a short list of rules** that remove the most expensive trades. **What it does not yet give us is a validated way to pick direction** — every candidate entry trigger we checked was a coin flip once measured from the moment a trader could actually enter (§6). So the plan is: trade far less, pay less for each trade, ignore folklore signals, test the published candidates properly, and risk no real money until one passes.
 
 ---
 
@@ -61,9 +61,9 @@ Each rule removes trades; none adds trades. Each is tested on our data before it
 
 - **Before scheduled events** (Budget, RBI, results, US CPI/Fed), then they collapse on the day. [R2]
 - **Right after the open.** India VIX made the day's high in the first hour on 61% of 719 sessions and fell from 10:15 into the close on 65% of days. [Q1, R2, R4]
-- **Monday mornings:** VIX opened on average about 3.8% above Friday's close (weekend risk priced in). On NIFTY's expiry day (Tuesday) VIX fell intraday on 73% of days. [Q1]
+- **Monday mornings:** VIX opened on average about 3.8% above Friday's close (weekend risk priced in); a positive Monday effect also shows in the literature. On NIFTY's expiry day (Tuesday) VIX fell intraday on 73% of days. [Q1, R2]
 - **After a VIX spike** (8 Oct: India VIX +10.3% to 15.31, so today's premiums are about 10% richer for the same move). [R3, R4]
-- **Mondays**, which show a positive India VIX day-of-week effect, and the **last 2 days** of any contract, when decay accelerates. [R2]
+- **The last 2 days** of any contract, when decay accelerates. [R2]
 - **Per rupee, far out-of-the-money strikes** always carry the richest premium. [R2]
 
 ---
@@ -73,7 +73,7 @@ Each rule removes trades; none adds trades. Each is tested on our data before it
 | Condition | Rule | Status |
 |---|---|---|
 | **E1. Options are not expensive relative to how the market is moving** | Recent realized volatility ≥ implied (ratio 1.0–1.5), or a HAR-RV forecast (Corsi 2009) ≥ VIX-implied variance | A cost filter, not an edge: on real prices no condition known at the open (VIX level, recent realized/implied, gap size, weekday) made buying a straddle profitable on average. HAR gate being tested (WP5). |
-| **E2. Direction confirmed early, not chased** | Either the first 15-minute candle is large (> 0.24%) and we trade in its direction after 09:30, or price breaks the published "noise area" band at a half-hour mark (Zarattini, Aziz & Barbon 2024) | First-candle rule: 73% day-direction agreement in a 2017–2026 non-peer-reviewed study (R4), checked on our data in Q2. Noise area: being built (WP3). |
+| **E2. A direction signal that works from the moment you can enter** | Candidates: (a) a large first 15-minute candle (> 0.24%), entered after it closes; (b) a break of the published "noise area" band at a half-hour mark (Zarattini, Aziz & Barbon 2024) | **Not validated yet.** The often-quoted "73% continuation" counts the candle's own move. Measured from the candle's close on our data: a big *first hour* had no follow-through (48.9% of 319 days, 2 years); a big first 15-minute candle continued 74% of the time but on only 19 days (range 55–87%) — too few to trust. The nightly 5-minute archive (WP1) builds the history to test it; noise area is being built (WP3). Until one passes §12, no entry trigger is trusted. |
 | **E3. The expected move beats the cost of the trade** | An honest expected move (calibrated on realized moves, not on VIX × 1.1) must exceed the break-even of ≈9 NIFTY / ≈31 SENSEX points plus charges | The current gate overstates moves about 2.4× (PLAN §1.3); being fixed (WP2) |
 | **E4. No rule in §4 applies** | — | — |
 | **E5. One bet at a time across NIFTY and SENSEX** | They move together (5-minute return correlation 0.965 outside the closing auction); two positions are one bet twice | To be tested; the quick test so far made results worse, so not adopted yet |
@@ -156,7 +156,8 @@ The 8 Oct example: FIIs sold ₹12,943.58 crore (NSE provisional; the depository
 | 06:30–09:05 | GIFT Nifty (basis-adjusted implied gap), US close, Asia, crude, USDINR, VIX | Expected gap and regime |
 | 09:00–09:12 | NSE pre-open indicative open | The open, almost exactly |
 | 09:15–09:30 | **No trades.** Watch the first 15-minute candle and IV settling | E2 |
-| 09:30–14:30 | Entries only when E1–E5 hold; decisions at half-hour marks | Entry |
+| 09:30–10:45 | Entries only when E1–E5 hold (once a trigger passes §12); decisions at half-hour marks | Entry |
+| 11:15–14:30 | No new entries; manage open trades | — |
 | During the trade | Index-level stop, premium stop, 45-minute time stop if the index goes nowhere | Exit |
 | 15:05 | Square off everything (no overnight) | — |
 | Weekly | Review paper results against the random-entry baseline | Kill or keep |
@@ -193,8 +194,8 @@ Until a variant clears §12, **copying trades with real money has negative expec
 - GIFT Nifty at ~08:55 implied a **+0.3% to +0.5% gap-up** after Thursday's −1.64%; NIFTY **opened at 22,316.80 (+0.38%)**. India VIX opened lower (≈ 14.6 from 15.31). [R4, live feed]
 - **Data warning:** Yahoo's SENSEX feed had no trades for today as of 09:21 (still Thursday's close). Don't copy SENSEX trades today; /copy pauses SENSEX entries; the engine's freshness check measures fetch time, not trade time, and is being fixed after the close.
 - Contracts: NIFTY's Tuesday 13 Oct contract has 4 days left (allowed); SENSEX's Thursday 15 Oct has 6. It is Friday, so nothing is held over the weekend (N5).
-- By the rules above: no trade before 09:30; consider an entry only between 09:30 and 10:45 if the first 15-minute candle is large (> 0.24%) and in one direction and the expected move clears costs; nothing new between 11:15 and 14:15; otherwise no trade today.
-- The live paper engine still runs the old rules today; the new rules are tested after the close.
+- By the rules above there is **no validated entry trigger today**, so the plan's answer for real money is: no trade. The paper engine keeps running its current rules so we keep measuring.
+- The new rules are tested after the close; nothing changes the live engine during market hours.
 
 ---
 
