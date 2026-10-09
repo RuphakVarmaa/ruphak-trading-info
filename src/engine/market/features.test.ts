@@ -408,3 +408,40 @@ describe("bad prints", () => {
     expect(down.l).toBeCloseTo(99.9 * 0.997, 9);
   });
 });
+
+describe("per-index data age", () => {
+  it("does not let a frozen SENSEX borrow NIFTY's freshness", () => {
+    // 9 Oct 2026: Yahoo kept serving SENSEX's previous close into the session while NIFTY updated.
+    const t = istAt("2026-10-07", "11:00");
+    const all = fixtureCandles5m();
+    const frozen = { ...all, "^BSESN": all["^BSESN"].filter((c) => c.t < istAt("2026-10-07", "00:00")) };
+    const snap = new ReplayMarketDataSource({ candles: frozen, daily: fixtureDaily() }).snapshotSync(t);
+    const nifty = computeFeatures("NIFTY", snap, cal, cfg);
+    const sensex = computeFeatures("SENSEX", snap, cal, cfg);
+    expect(nifty.dataAgeSec).toBeLessThanOrEqual(300);
+    expect(sensex.dataAgeSec).toBeGreaterThan(17 * 3600);
+    expect(sensex.dataAgeSec).toBeGreaterThan(cfg.gates.maxDataAgeSec);
+    // The snapshot-wide age still reports the freshest index.
+    expect(snap.dataAgeSec).toBe(nifty.dataAgeSec);
+  });
+
+  it("matches the snapshot-wide age when both indices are fresh", () => {
+    const snap = fixture.snapshotSync(istAt("2026-10-07", "11:00"));
+    expect(computeFeatures("NIFTY", snap, cal, cfg).dataAgeSec).toBe(snap.dataAgeSec);
+    expect(computeFeatures("SENSEX", snap, cal, cfg).dataAgeSec).toBe(snap.dataAgeSec);
+  });
+
+  it("falls back to the snapshot-wide age when per-index ages are absent, and never reports fresher than it", () => {
+    const daily = fixtureDaily();
+    const snap: MarketSnapshot = {
+      t: istAt("2026-10-07", "11:00"),
+      candles: {},
+      daily: Object.fromEntries(Object.entries(daily).map(([k, v]) => [k, v.filter((c) => c.t < istAt("2026-10-07", "00:00"))])),
+      ltp: {},
+      dataAgeSec: 120,
+    };
+    expect(computeFeatures("SENSEX", snap, cal, cfg).dataAgeSec).toBe(120);
+    expect(computeFeatures("SENSEX", { ...snap, dataAgeSecByIndex: { SENSEX: 30 } }, cal, cfg).dataAgeSec).toBe(120);
+    expect(computeFeatures("SENSEX", { ...snap, dataAgeSecByIndex: { SENSEX: 4000 } }, cal, cfg).dataAgeSec).toBe(4000);
+  });
+});

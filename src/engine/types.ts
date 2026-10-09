@@ -123,6 +123,11 @@ export interface MarketSnapshot {
   /** Age in seconds of the freshest index observation at `t`. */
   dataAgeSec: number;
   /**
+   * Age in seconds of each traded index's own latest observation at `t`. A frozen SENSEX must not
+   * borrow NIFTY's freshness, so features read their own index's age when it is present.
+   */
+  dataAgeSecByIndex?: Partial<Record<FeatureIndexId, number>>;
+  /**
    * When each symbol's latest price was traded (epoch ms): Yahoo's regularMarketTime, or the fetch
    * time of a broker LTP that replaced it. Absent in replays.
    */

@@ -22,6 +22,7 @@ const LTP_SYMBOLS: Record<FeatureIndexId, string> = {
   BANKNIFTY: MARKET_SYMBOLS.BANKNIFTY,
 };
 const FRESHNESS_SYMBOLS = [MARKET_SYMBOLS.NIFTY, MARKET_SYMBOLS.SENSEX];
+const FRESHNESS_INDEX_IDS: readonly FeatureIndexId[] = ["NIFTY", "SENSEX"];
 
 export interface ReplayData {
   /** 5m bars keyed by MARKET_SYMBOLS value, any order (sorted and de-duplicated on construction). */
@@ -87,7 +88,12 @@ export class ReplayMarketDataSource implements MarketDataSource {
       if (arr && arr.length > 0) freshest = Math.max(freshest, arr[arr.length - 1].t + BAR_5M_MS);
     }
     const dataAgeSec = Number.isFinite(freshest) ? Math.max(0, (t - freshest) / 1000) : NO_DATA_AGE_SEC;
-    return { t, candles, daily, ltp, dataAgeSec };
+    const dataAgeSecByIndex: Partial<Record<FeatureIndexId, number>> = {};
+    for (const id of FRESHNESS_INDEX_IDS) {
+      const arr = candles[LTP_SYMBOLS[id]];
+      dataAgeSecByIndex[id] = arr && arr.length > 0 ? Math.max(0, (t - (arr[arr.length - 1].t + BAR_5M_MS)) / 1000) : NO_DATA_AGE_SEC;
+    }
+    return { t, candles, daily, ltp, dataAgeSec, dataAgeSecByIndex };
   }
 }
 

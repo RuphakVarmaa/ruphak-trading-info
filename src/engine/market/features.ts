@@ -325,10 +325,12 @@ function sanitizeGlobal(g: Record<GlobalKey, number | null>): Record<GlobalKey, 
   return out;
 }
 
-function snapshotAge(snap: MarketSnapshot): number {
+function snapshotAge(snap: MarketSnapshot, index?: IndexId): number {
   const a = snap.dataAgeSec;
-  if (typeof a !== "number" || !Number.isFinite(a)) return NO_DATA_AGE_SEC;
-  return Math.max(0, a);
+  const all = typeof a !== "number" || !Number.isFinite(a) ? NO_DATA_AGE_SEC : Math.max(0, a);
+  // The index's own age when known: a frozen index must not pass on the other index's freshness.
+  const own = index !== undefined ? snap.dataAgeSecByIndex?.[index] : undefined;
+  return typeof own === "number" && Number.isFinite(own) ? Math.max(all, own) : all;
 }
 
 function calendarFields(index: IndexId, t: number, today: string, calendar: TradingCalendar) {
@@ -667,7 +669,7 @@ function buildFeatures(index: IndexId, snap: MarketSnapshot, calendar: TradingCa
     index,
     t,
     spot: fin(spot),
-    dataAgeSec: snapshotAge(snap),
+    dataAgeSec: snapshotAge(snap, index),
     ret5m: fin(ret5m),
     ret15m: fin(ret15m),
     ret60m: fin(ret60m),

@@ -167,6 +167,8 @@ export class YahooMarketDataSource implements MarketDataSource {
     }
 
     let freshest = -Infinity;
+    // When each traded index was last observed: its broker LTP fetch, else its newest bar / trade time.
+    const observed: Partial<Record<FeatureIndexId, number>> = {};
     if (this.ltp) {
       try {
         const live = await this.ltp();
@@ -175,7 +177,10 @@ export class YahooMarketDataSource implements MarketDataSource {
           if (typeof v === "number" && Number.isFinite(v) && v > 0) {
             ltp[id] = v;
             asOfMs[INDEX_SYMBOL[id]] = now;
-            if (FRESHNESS_INDICES.includes(id)) freshest = now;
+            if (FRESHNESS_INDICES.includes(id)) {
+              freshest = now;
+              observed[id] = now;
+            }
           }
         }
       } catch (err) {
@@ -192,10 +197,16 @@ export class YahooMarketDataSource implements MarketDataSource {
       if (mt !== undefined && mt >= last.t) obs = Math.min(obs, mt);
       obs = Math.min(obs, now);
       if (obs > freshest) freshest = obs;
+      if (observed[id] === undefined || obs > observed[id]!) observed[id] = obs;
     }
     const dataAgeSec = Number.isFinite(freshest) ? Math.max(0, (now - freshest) / 1000) : NO_DATA_AGE_SEC;
+    const dataAgeSecByIndex: Partial<Record<FeatureIndexId, number>> = {};
+    for (const id of FRESHNESS_INDICES) {
+      const obs = observed[id];
+      dataAgeSecByIndex[id] = obs !== undefined ? Math.max(0, (now - obs) / 1000) : NO_DATA_AGE_SEC;
+    }
 
-    return { t, candles, daily, ltp, dataAgeSec, asOfMs };
+    return { t, candles, daily, ltp, dataAgeSec, dataAgeSecByIndex, asOfMs };
   }
 
   private async doRefresh(): Promise<void> {
