@@ -437,12 +437,18 @@ async function main() {
   out.legacyOnTrades = legacySummary;
 
   // ---------------- WP2: the calibrated gate on the baseline's trades (counterfactual filter) ----------------
-  const gateOn = (p: DecisionPoint, f: number, beta: number) => {
+  /**
+   * The calibrated gate at one entry decision. `ivScale` re-prices the option at a different implied
+   * vol (VIX × vixMultiplier × ivScale) while keeping the same absolute realized move (f / ivScale).
+   */
+  const gateOn = (p: DecisionPoint, f: number, beta: number, ivScale = 1) => {
     const plan = p.plan!;
-    const q = syntheticQuote(plan.contract, { t: p.t, spot: p.spot, vix: p.vix }, calendar, cfg);
+    const vix = p.vix * ivScale;
+    const vol = syntheticVol(p.index, vix, cfg);
+    const q = syntheticQuote(plan.contract, { t: p.t, spot: p.spot, vix }, calendar, cfg);
     const run = (b: number) => {
-      const c2 = withOverrides(cfg, { gates: { expectedMoveModel: "calibrated", realizedVolFactor: f, scoreMoveBeta: b } });
-      const e = evaluateEdge({ spot: p.spot, premium: q.ask, bid: q.bid, contract: plan.contract, tYears: yearsToExpiry(p.t, plan.contract.expiry, calendar, cfg), vol: p.vol, score: p.score, horizonMin: plan.horizonMin, t: p.t }, c2);
+      const c2 = withOverrides(cfg, { gates: { expectedMoveModel: "calibrated", realizedVolFactor: f / ivScale, scoreMoveBeta: b } });
+      const e = evaluateEdge({ spot: p.spot, premium: q.ask, bid: q.bid, contract: plan.contract, tYears: yearsToExpiry(p.t, plan.contract.expiry, calendar, cfg), vol, score: p.score, horizonMin: plan.horizonMin, t: p.t }, c2);
       return { e, g: edgeGates(e, c2) };
     };
     const { e, g } = run(beta);
@@ -540,6 +546,28 @@ async function main() {
   console.log(`Beta needed to keep a trade: min ${needed[0].toFixed(2)}, median ${needed[Math.floor(needed.length / 2)].toFixed(2)}, max ${needed[needed.length - 1].toFixed(2)} (measured: ${full.beta.toFixed(2)} ± ${full.betaSe.toFixed(2)}).`);
   out.calibratedGateOnTrades = { perTrade: tradeJson, verdicts, betaUpper95: betaHi, betaNeeded: { min: needed[0], median: needed[Math.floor(needed.length / 2)], max: needed[needed.length - 1] } };
 
+  // Sensitivity: options priced at the implied vol measured on exchange prices (WP6 research note,
+  // NSE/BSE weekly options 2024-2026: NIFTY 0.88-0.91 × India VIX, SENSEX 0.92-0.93 ×), instead of
+  // the engine's VIX × vixMultiplier (NIFTY 1.00, SENSEX 1.05). Same absolute realized move.
+  const realIv: Record<IndexId, [number, number]> = { NIFTY: [0.88, 0.91], SENSEX: [0.92, 0.93] };
+  const ivRows: (string | number)[][] = [["IV vs VIX (NIFTY / SENSEX)", "kept at beta -0.10", "kept at upper bound", "beta needed: min", "median", "max"]];
+  const ivJson: unknown[] = [];
+  for (const end of [0, 1] as const) {
+    const res = tradePoints
+      .filter((x) => x.p)
+      .map(({ p }) => {
+        const scale = realIv[p!.index][end] / cfg.pricing.vixMultiplier[p!.index];
+        return { atBeta: gateOn(p!, full.f, full.beta, scale), atHi: gateOn(p!, full.f, betaHi, scale) };
+      });
+    const need = sorted(res.map((r) => r.atBeta.betaNeeded), (x) => x);
+    const row = { niftyIv: realIv.NIFTY[end], sensexIv: realIv.SENSEX[end], keptAtBeta: res.filter((r) => r.atBeta.kept).length, keptAtUpper: res.filter((r) => r.atHi.kept).length, betaNeeded: { min: need[0], median: need[Math.floor(need.length / 2)], max: need[need.length - 1] } };
+    ivJson.push(row);
+    ivRows.push([`${row.niftyIv} / ${row.sensexIv}`, row.keptAtBeta, row.keptAtUpper, r2(need[0], 2), r2(row.betaNeeded.median, 2), r2(need[need.length - 1], 2)]);
+  }
+  console.log(`\nSensitivity: the ${tradePoints.length} trades re-priced at the measured real implied vol (realized move unchanged)\n`);
+  console.log(table(ivRows));
+  out.calibratedGateRealIv = ivJson;
+
   // ---------------- WP5: realized-variance measures and HAR fits ----------------
   const series: { name: string; index: IndexId; rv: SessionVariance[]; minObs: number }[] = [];
   for (const index of INDICES) {
@@ -636,6 +664,49 @@ async function main() {
     console.log(`${index} sessions passing at k = 0.8 (engine forecast): ${passDates[index].join(", ") || "none"}`);
   }
   out.passDatesK08 = passDates;
+
+  // Sensitivity: implied session variance from the real option IV (realIv × VIX) instead of the
+  // engine's VIX × vixMultiplier; frozen k = 1. Ex post: realized Parkinson / that implied variance.
+  const pkByIndex: Record<IndexId, Map<string, number>> = {
+    NIFTY: new Map(parkinsonSeries(dailyByIndex.NIFTY).map((x) => [x.date, x.rv])),
+    SENSEX: new Map(parkinsonSeries(dailyByIndex.SENSEX).map((x) => [x.date, x.rv])),
+  };
+  const realRows: (string | number)[][] = [["index", "IV / VIX", "sessions", "pass rate (hours)", "sessions with a pass", "mean forecast / implied", "realized / implied: pass days", "n", "other days", "n"]];
+  const realJson: unknown[] = [];
+  for (const index of INDICES) {
+    for (const r of realIv[index]) {
+      let hours = 0;
+      let pass = 0;
+      let ratioSum = 0;
+      const passDays = new Set<string>();
+      const expost: Record<"pass" | "fail", number[]> = { pass: [], fail: [] };
+      let sessions = 0;
+      for (const [date, fc] of engineForecast[index]) {
+        const v = vixH.get(date);
+        if (!v) continue;
+        sessions++;
+        for (let s = 0; s < 5; s++) {
+          const implied = impliedSessionVariancePct2((v[s].c * r) / 100, cfg.pricing.tradingDaysPerYear);
+          if (!(implied > 0)) continue;
+          hours++;
+          ratioSum += fc / implied;
+          if (fc >= implied) {
+            pass++;
+            passDays.add(date);
+          }
+        }
+        const realized = pkByIndex[index].get(date);
+        const implied1015 = impliedSessionVariancePct2((v[0].c * r) / 100, cfg.pricing.tradingDaysPerYear);
+        if (realized !== undefined && implied1015 > 0) expost[passDays.has(date) ? "pass" : "fail"].push(realized / implied1015);
+      }
+      const row = { index, ivOverVix: r, sessions, hours, pass, rate: hours ? pass / hours : NaN, sessionsWithPass: passDays.size, passDays: [...passDays], meanRatio: ratioSum / hours, expostPass: mean(expost.pass), nPass: expost.pass.length, expostFail: mean(expost.fail), nFail: expost.fail.length };
+      realJson.push(row);
+      realRows.push([index, r, row.sessions, r2(row.rate, 4), row.sessionsWithPass, r2(row.meanRatio, 3), r2(row.expostPass, 3), row.nPass, r2(row.expostFail, 3), row.nFail]);
+    }
+  }
+  console.log("\n## WP5 sensitivity: implied variance from the real option IV measured on exchange prices (k = 1)\n");
+  console.log(table(realRows));
+  out.gateRealIv = realJson;
 
   // Realized intraday variance relative to implied, and with the overnight gap added (definition check).
   const ratioRows: (string | number)[][] = [["index", "sessions", "first", "last", "mean Parkinson / implied", "median", "mean (overnight² + Parkinson) / implied", "share of sessions with Parkinson >= implied"]];
