@@ -9,6 +9,7 @@ import { atmStrike, nearestListedStrike } from "../instruments/instrumentMaster"
 import { syntheticQuote } from "../pricing/syntheticOptionPricer";
 import type { InstrumentProvider, OptionQuoteSource } from "../ports";
 import type { GateResult, IndexId, OptionContract, Quote, TradeSide } from "../types";
+import { minSessionsLeft } from "./rules";
 
 export async function chooseExpiry(index: IndexId, t: number, instruments: InstrumentProvider, calendar: TradingCalendar): Promise<string> {
   const today = istDate(t);
@@ -20,6 +21,25 @@ export async function chooseExpiry(index: IndexId, t: number, instruments: Instr
   return cal === today ? calendar.followingExpiry(index, cal) : cal;
 }
 
+// --- WP9b N4 (begin) ---
+/**
+ * The expiry to buy under the config: chooseExpiry, or with rules.n4 on the nearest weekly with at
+ * least minSessionsLeft sessions after today (the next week's contract on the day before an expiry),
+ * null when no listed contract qualifies (skip).
+ */
+export async function chooseExpiryFor(index: IndexId, t: number, instruments: InstrumentProvider, calendar: TradingCalendar, cfg: EngineConfig): Promise<string | null> {
+  const min = minSessionsLeft(cfg);
+  if (min <= 1) return chooseExpiry(index, t, instruments, calendar);
+  const today = istDate(t);
+  const enough = (e: string) => e > today && calendar.tradingDaysBetween(today, e) >= min;
+  const listed = (await instruments.expiries(index)).filter((e) => e >= today).sort();
+  if (listed.length > 0) return listed.find(enough) ?? null;
+  let e = calendar.nextExpiry(index, t);
+  for (let i = 0; i < 4 && !enough(e); i++) e = calendar.followingExpiry(index, e);
+  return enough(e) ? e : null;
+}
+// --- WP9b N4 (end) ---
+
 export async function chooseContract(
   index: IndexId,
   spot: number,
@@ -30,10 +50,19 @@ export async function chooseContract(
   cfg: EngineConfig,
 ): Promise<OptionContract | null> {
   if (!(spot > 0)) return null;
-  const expiry = await chooseExpiry(index, t, instruments, calendar);
+  const expiry = await chooseExpiryFor(index, t, instruments, calendar, cfg);
+  if (expiry === null) return null;
   const strikes = await instruments.strikes(index, expiry);
-  let strike = atmStrike(spot, cfg.indexSpecs[index].strikeStep);
+  const step = cfg.indexSpecs[index].strikeStep;
+  let strike = atmStrike(spot, step);
   if (strikes.length > 0 && !strikes.includes(strike)) strike = nearestListedStrike(strikes, spot) ?? strike;
+  // WP9b (off by default): selection.itmSteps strikes in the money (calls below, puts above the ATM strike).
+  const itm = cfg.selection.itmSteps ?? 0;
+  if (itm > 0) {
+    const ladder = strikeLadder(strikes, strike, side === "BULL" ? "BEAR" : "BULL", itm, step);
+    if (ladder.length <= itm) return null;
+    strike = ladder[itm];
+  }
   return instruments.resolve(index, expiry, strike, side === "BULL" ? "CE" : "PE");
 }
 
@@ -88,7 +117,8 @@ export async function choosePremiumBandContract(a: PremiumBandArgs): Promise<Pre
   const fail = (contract: OptionContract | null, detail: string): PremiumBandPick => ({ contract, quote: null, gate: { gate: "premium_band", label, passed: false, detail } });
   if (!(a.spot > 0)) return fail(null, "no spot price");
 
-  const expiry = await chooseExpiry(index, a.t, a.instruments, a.calendar);
+  const expiry = await chooseExpiryFor(index, a.t, a.instruments, a.calendar, cfg);
+  if (expiry === null) return fail(null, `no listed contract with at least ${minSessionsLeft(cfg)} sessions to expiry (N4)`);
   const listed = await a.instruments.strikes(index, expiry);
   const step = cfg.indexSpecs[index].strikeStep;
   let atm = atmStrike(a.spot, step);

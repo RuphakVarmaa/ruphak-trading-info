@@ -491,7 +491,7 @@ describe("helpers", () => {
 
 describe("the engine's own gate ids", () => {
   it("has a plain-language reason for every gate the engine emits", () => {
-    const files = ["src/engine/strategy/gates.ts", "src/engine/risk/limits.ts", "src/engine/strategy/planner.ts", "src/engine/strategy/optionSelect.ts"];
+    const files = ["src/engine/strategy/gates.ts", "src/engine/risk/limits.ts", "src/engine/strategy/planner.ts", "src/engine/strategy/optionSelect.ts", "src/engine/strategy/rules.ts"];
     const root = fileURLToPath(new URL("../../../", import.meta.url));
     const ids = new Set<string>();
     for (const f of files) for (const m of readFileSync(`${root}${f}`, "utf8").matchAll(/gate: "([a-z_]+)"/g)) ids.add(m[1]);

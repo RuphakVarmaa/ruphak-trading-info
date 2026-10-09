@@ -21,7 +21,7 @@ import {
   tradeDrawdown,
 } from "./metrics";
 import { summarizePlacebo, type PlaceboResult, type PlaceboTrade } from "./placebo";
-import { evaluateProtocol, formatProtocol, overallVerdict, PERTURB_PARAMS, perturbParams, PROTOCOL, type AccountRuns, type ProtocolContext } from "./protocol";
+import { defaultPerturbParams, evaluateProtocol, formatProtocol, overallVerdict, PERTURB_PARAMS, perturbParams, PROTOCOL, RULE_PERTURB_PARAMS, type AccountRuns, type ProtocolContext } from "./protocol";
 import type { BacktestOutput } from "./runBacktest";
 import { formatTrial, parseTrials, sharpeVariance, TrialLedger, type TrialRecord } from "./trials";
 
@@ -202,6 +202,31 @@ describe("perturbation driver", () => {
     expect(perturbParams("all")).toHaveLength(PERTURB_PARAMS.length);
     expect(perturbParams("stop,target").map((p) => p.name)).toEqual(["stop", "target"]);
     expect(() => perturbParams("lookback")).toThrow(/unknown/);
+  });
+
+  // WP9b: each enabled rule's own parameters join the set; inert conviction parameters leave it.
+  it("perturbs the default engine on its 18 parameters and a rule variant on the rule's own as well", () => {
+    expect(defaultPerturbParams(DEFAULT_CONFIG).map((p) => p.name)).toEqual(PERTURB_PARAMS.map((p) => p.name));
+    expect(perturbParams(undefined, DEFAULT_CONFIG)).toHaveLength(18);
+    const rules = withOverrides(DEFAULT_CONFIG, { rules: { n2: { enabled: true }, n3: { enabled: true }, n4: { enabled: true } } });
+    expect(defaultPerturbParams(rules).map((p) => p.name).slice(18)).toEqual(["n2-vix-5d", "n2-vix-day", "n2-vix-pctile", "n2-run", "n3-start", "n3-exit"]);
+    const fc = withOverrides(DEFAULT_CONFIG, { strategy: { mode: "FIRST_CANDLE" }, sizing: { maxOpenPerIndex: 1 } });
+    expect(defaultPerturbParams(fc).map((p) => p.name)).toEqual(["stop", "first-candle-body"]);
+    const na = withOverrides(DEFAULT_CONFIG, { strategy: { mode: "NOISE_AREA" }, sizing: { maxOpenPerIndex: 1 }, rules: { n3: { enabled: true } } });
+    expect(defaultPerturbParams(na).map((p) => p.name)).toEqual(["stop", "n3-start", "n3-exit", "noise-lookback", "noise-band", "noise-every"]);
+    for (const cfg of [rules, fc, na]) {
+      for (const p of defaultPerturbParams(cfg)) for (const f of [0.8, 1.2]) expect(() => withOverrides(cfg, p.patch(cfg, f))).not.toThrow();
+    }
+    const at = (cfg: typeof rules, name: string, f: number) => withOverrides(cfg, RULE_PERTURB_PARAMS.find((p) => p.name === name)!.patch(cfg, f));
+    expect(at(rules, "n3-exit", 0.8).rules.n3.exitByIst).toBe("10:51");
+    expect(at(rules, "n3-exit", 1.2).rules.n3.exitByIst).toBe("11:39");
+    expect(at(rules, "n3-start", 1.2).rules.n3.entryFromIst).toBe("09:33");
+    expect(at(rules, "n2-vix-pctile", 1.2).rules.n2.vixPctileAbove).toBeCloseTo(0.8, 9);
+    expect(at(fc, "first-candle-body", 0.8).strategy.firstCandle.minBodyPct).toBeCloseTo(0.192, 9);
+    expect(at(na, "noise-every", 0.8).strategy.noiseArea.decisionEveryMin).toBe(25);
+    expect(at(na, "noise-every", 1.2).strategy.noiseArea.decisionEveryMin).toBe(35);
+    expect(at(na, "noise-lookback", 1.2).strategy.noiseArea.lookbackSessions).toBe(17);
+    expect(perturbParams("n2-run,stop").map((p) => p.name)).toEqual(["n2-run", "stop"]);
   });
 });
 

@@ -10,7 +10,9 @@
  */
 import type { AccountId } from "../accounts";
 import { scheduleFor } from "../broker/charges";
-import { withOverrides, type DeepPartial, type EngineConfig } from "../config";
+import { SESSION, formatHHMM, parseHHMM } from "../clock";
+import { strategyMode, withOverrides, type DeepPartial, type EngineConfig } from "../config";
+import { n2Enabled, n3Enabled } from "../strategy/rules";
 import type { TradeRecord } from "../types";
 import { mean, stdev } from "../util/math";
 import {
@@ -114,17 +116,49 @@ export const PERTURB_PARAMS: readonly PerturbParam[] = [
   { name: "session-lookback", path: "features.sessionLookbackDays", patch: (c, f) => ({ features: { sessionLookbackDays: int(1)(c.features.sessionLookbackDays * f) } }) },
 ];
 
-/** Parameters by comma-separated name ("all" or empty: every one). Throws on an unknown name. */
-export function perturbParams(names: string | undefined): PerturbParam[] {
+// --- WP9b (begin): the buy-signal rules' own parameters ---
+/** A clock time moved to `f` times its distance from the 09:15 open (whole minutes). */
+function scaledFromOpen(hhmm: string, f: number): string {
+  return formatHHMM(SESSION.open + Math.round((parseHHMM(hhmm) - SESSION.open) * f));
+}
+
+/** Parameters of the plan's rules and the published rules, each perturbed only when that rule is on. */
+export const RULE_PERTURB_PARAMS: readonly (PerturbParam & { applies(cfg: EngineConfig): boolean })[] = [
+  { name: "n2-vix-5d", path: "rules.n2.vix5dJumpPct", applies: n2Enabled, patch: (c, f) => ({ rules: { n2: { vix5dJumpPct: c.rules.n2.vix5dJumpPct * f } } }) },
+  { name: "n2-vix-day", path: "rules.n2.vixDayJumpPct", applies: n2Enabled, patch: (c, f) => ({ rules: { n2: { vixDayJumpPct: c.rules.n2.vixDayJumpPct * f } } }) },
+  { name: "n2-vix-pctile", path: "rules.n2.vixPctileAbove", applies: n2Enabled, patch: (c, f) => ({ rules: { n2: { vixPctileAbove: Math.min(0.95, c.rules.n2.vixPctileAbove * f) } } }) },
+  { name: "n2-run", path: "rules.n2.run5dPct", applies: n2Enabled, patch: (c, f) => ({ rules: { n2: { run5dPct: c.rules.n2.run5dPct * f } } }) },
+  { name: "n3-start", path: "rules.n3.entryFromIst (minutes after 09:15)", applies: n3Enabled, patch: (c, f) => ({ rules: { n3: { entryFromIst: scaledFromOpen(c.rules.n3.entryFromIst, f) } } }) },
+  { name: "n3-exit", path: "rules.n3.exitByIst (minutes after 09:15)", applies: n3Enabled, patch: (c, f) => ({ rules: { n3: { exitByIst: scaledFromOpen(c.rules.n3.exitByIst, f) } } }) },
+  { name: "first-candle-body", path: "strategy.firstCandle.minBodyPct", applies: (c) => strategyMode(c) === "FIRST_CANDLE", patch: (c, f) => ({ strategy: { firstCandle: { minBodyPct: c.strategy.firstCandle.minBodyPct * f } } }) },
+  { name: "noise-lookback", path: "strategy.noiseArea.lookbackSessions", applies: (c) => strategyMode(c) === "NOISE_AREA", patch: (c, f) => ({ strategy: { noiseArea: { lookbackSessions: Math.max(2, Math.round(c.strategy.noiseArea.lookbackSessions * f)) } } }) },
+  { name: "noise-band", path: "strategy.noiseArea.bandMult", applies: (c) => strategyMode(c) === "NOISE_AREA", patch: (c, f) => ({ strategy: { noiseArea: { bandMult: c.strategy.noiseArea.bandMult * f } } }) },
+  { name: "noise-every", path: "strategy.noiseArea.decisionEveryMin (whole 5 minutes)", applies: (c) => strategyMode(c) === "NOISE_AREA", patch: (c, f) => ({ strategy: { noiseArea: { decisionEveryMin: Math.max(5, 5 * Math.round((c.strategy.noiseArea.decisionEveryMin * f) / 5)) } } }) },
+];
+
+/**
+ * The parameters a variant is perturbed on: the conviction engine's 18 (only the premium stop in a
+ * published mode, where the others do not act on entries or exits), plus every enabled rule's own.
+ * The default engine gets exactly PERTURB_PARAMS.
+ */
+export function defaultPerturbParams(cfg: EngineConfig): PerturbParam[] {
+  const engine = strategyMode(cfg) === "CONVICTION" ? [...PERTURB_PARAMS] : PERTURB_PARAMS.filter((p) => p.name === "stop");
+  return [...engine, ...RULE_PERTURB_PARAMS.filter((p) => p.applies(cfg))];
+}
+// --- WP9b (end) ---
+
+/** Parameters by comma-separated name ("all" or empty: every one, or the variant's set when `cfg` is given). Throws on an unknown name. */
+export function perturbParams(names: string | undefined, cfg?: EngineConfig): PerturbParam[] {
   const list = (names ?? "")
     .split(",")
     .map((s) => s.trim())
     .filter(Boolean);
-  if (list.length === 0 || list.includes("all")) return [...PERTURB_PARAMS];
+  if (list.length === 0 || list.includes("all")) return cfg ? defaultPerturbParams(cfg) : [...PERTURB_PARAMS];
+  const known: readonly PerturbParam[] = [...PERTURB_PARAMS, ...RULE_PERTURB_PARAMS];
   const out: PerturbParam[] = [];
   for (const name of list) {
-    const p = PERTURB_PARAMS.find((x) => x.name === name);
-    if (!p) throw new Error(`unknown perturbation parameter "${name}" (known: ${PERTURB_PARAMS.map((x) => x.name).join(", ")})`);
+    const p = known.find((x) => x.name === name);
+    if (!p) throw new Error(`unknown perturbation parameter "${name}" (known: ${known.map((x) => x.name).join(", ")})`);
     out.push(p);
   }
   return out;
@@ -154,7 +188,7 @@ export interface ProtocolRunInput {
   to: string;
   follower: { account: AccountId; cfg: EngineConfig } | null;
   copyDelay: CopyDelay;
-  placebo: { draws: number; seed: number; horizonMin?: number; sizing?: PlaceboSizing; window?: { from: string; to: string } };
+  placebo: { draws: number; seed: number; horizonMin?: number; sizing?: PlaceboSizing; window?: { from: string; to: string }; whenRuleFires?: boolean };
   /** Parameters perturbed ±fraction one at a time; null skips the robustness runs. */
   perturb: readonly PerturbParam[] | null;
   fraction: number;

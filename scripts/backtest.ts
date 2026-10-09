@@ -148,7 +148,9 @@ function publishedStrategyOverrides(): DeepPartial<EngineConfig> {
       gates: entry === "PUBLISHED" ? { noEntryBeforeIst: rangeEnd } : {},
     };
   }
-  return fail("--strategy must be noise-area, orb5 or conviction");
+  // WP9b: plan §6 E2(a), the first 15-minute candle (--fc-body 0.24 --fc-range-min 15).
+  if (name === "first-candle") return { strategy: { mode: "FIRST_CANDLE", firstCandle: { minBodyPct: opt("fc-body"), rangeMin: opt("fc-range-min") } }, sizing: { maxOpenPerIndex: 1 } };
+  return fail("--strategy must be noise-area, orb5, first-candle or conviction");
 }
 // --- WP3/WP4 published strategies: end ---
 const cfg = withOverrides(withOverrides(configForParams(DEFAULT_CONFIG, mainParams), {
@@ -178,6 +180,31 @@ const cfg = withOverrides(withOverrides(configForParams(DEFAULT_CONFIG, mainPara
   if (g.volCheapness.enabled) console.log(`Vol-cheapness gate: HAR-RV forecast >= ${g.volCheapness.k}× implied session variance.`);
 }
 // --- WP2/WP5 gate flags (end) ---
+// --- WP9b buy-signal rules (begin): additive; nothing changes unless a flag is given ---
+//   --n2  --n3  --n4            the plan's no-entry rules (config rules.*; reports/wp9b-buy-signals.md)
+//   --itm-steps 1               ATM mode: buy that many strikes in the money
+//   --iv-source vix|calibrated  synthetic IV (pricing.ivSource, WP6)
+//   --no-perf-overlay           no end-of-day per-source performance update (Kelly/decay off), as WP3 ran the published rules
+//   --placebo-any-time          published rules: placebo draws at any of the rule's decision times, not only when it enters
+const wp9bIvSource = str(args, "iv-source", undefined);
+if (wp9bIvSource !== undefined && wp9bIvSource !== "vix" && wp9bIvSource !== "calibrated") fail("--iv-source must be vix or calibrated");
+const wp9bOn = args.n2 === true || args.n3 === true || args.n4 === true || args["itm-steps"] !== undefined || wp9bIvSource !== undefined;
+{
+  const patched = withOverrides(cfg, {
+    rules: { n2: { enabled: args.n2 === true ? true : undefined }, n3: { enabled: args.n3 === true ? true : undefined }, n4: { enabled: args.n4 === true ? true : undefined } },
+    selection: { itmSteps: opt("itm-steps") },
+    pricing: { ivSource: wp9bIvSource as "vix" | "calibrated" | undefined },
+  });
+  cfg.rules = patched.rules;
+  cfg.selection = patched.selection;
+  cfg.pricing = patched.pricing;
+  const on = [cfg.rules.n2.enabled && "N2", cfg.rules.n3.enabled && `N3 (${cfg.rules.n3.entryFromIst}-${cfg.rules.n3.exitByIst})`, cfg.rules.n4.enabled && `N4 (>= ${cfg.rules.n4.minSessionsLeft} sessions left)`].filter(Boolean);
+  if (on.length) console.log(`Plan §4 rules on: ${on.join(", ")}.`);
+  if (cfg.selection.itmSteps > 0) console.log(`Strike: ${cfg.selection.itmSteps} in the money (ATM mode).`);
+  if (wp9bIvSource) console.log(`Synthetic IV source: ${cfg.pricing.ivSource}.`);
+}
+const wp9bNoOverlay = args["no-perf-overlay"] === true;
+// --- WP9b buy-signal rules (end) ---
 const band = str(args, "band", undefined);
 const bandMatch = band ? /^(\d+(?:\.\d+)?)-(\d+(?:\.\d+)?)$/.exec(band) : null;
 if (band && !bandMatch) fail("--band must look like 40-70");
@@ -316,7 +343,7 @@ const wp0PlaceboOpts = (() => {
   const w = str(args, "placebo-window", undefined);
   const m = w ? /^(\d{2}:\d{2})-(\d{2}:\d{2})$/.exec(w) : null;
   if (w && !m) fail("--placebo-window must look like 09:25-14:30 (bar-close times)");
-  return { horizonMin, sizing, window: m ? { from: m[1], to: m[2] } : undefined };
+  return { horizonMin, sizing, window: m ? { from: m[1], to: m[2] } : undefined, ...(args["placebo-any-time"] === true ? { whenRuleFires: false } : {}) };
 })();
 const wp0Seed = num(args, "seed", 7);
 /** Ledger path: --trial-ledger [path], always for --protocol. */
@@ -432,7 +459,7 @@ async function wp0Protocol(base: { candles: Record<string, Candle[]>; daily: Rec
   if (!(Number.isInteger(resamples) && resamples >= 1_000)) fail("--bootstrap must be an integer of at least 1000 (resamples)");
   let perturb: ReturnType<typeof perturbParams> | null = null;
   try {
-    perturb = args["no-perturb"] !== undefined ? null : perturbParams(str(args, "perturb", undefined));
+    perturb = args["no-perturb"] !== undefined ? null : perturbParams(str(args, "perturb", undefined), cfg);
   } catch (err) {
     fail(err instanceof Error ? err.message : String(err));
   }
@@ -479,6 +506,7 @@ async function wp0Protocol(base: { candles: Record<string, Candle[]>; daily: Rec
   const path = writeJson(str(args, "out", `reports/protocol-${from}-${to}.json`)!, {
     params,
     config: strategyOf(cfg),
+    wp9b: { strategy: cfg.strategy.mode === "CONVICTION" ? "CONVICTION" : cfg.strategy, rules: cfg.rules, itmSteps: cfg.selection.itmSteps, ivSource: cfg.pricing.ivSource, perfOverlay: !wp9bNoOverlay },
     history: source,
     data: dataId,
     ledger: stats,
@@ -499,7 +527,7 @@ async function main() {
   if (nifty.length === 0) fail("No NIFTY 5-minute history available.");
   console.log(`History source: ${history.source}; NIFTY 5m bars ${istDate(nifty[0].t)} .. ${istDate(nifty.at(-1)!.t)}`);
   const events = params.noEvents ? [] : loadEvents();
-  const base = { candles: history.candles, daily: history.daily, events };
+  const base = { candles: history.candles, daily: history.daily, events, ...(wp9bNoOverlay ? { perfOverlay: false } : {}) };
 
   if (args.protocol !== undefined) return wp0Protocol(base, history.source); // WP0 hook: the acceptance protocol
 
@@ -553,10 +581,14 @@ async function main() {
   // ---- end WP1 ----
   // --- WP3/WP4 published strategies: begin ---
   if (cfg.strategy.mode !== "CONVICTION") {
-    out.published = { ...cfg.strategy, entryWindow: [cfg.gates.noEntryBeforeIst, cfg.gates.noEntryAfterIst], maxOpenPerIndex: cfg.sizing.maxOpenPerIndex };
-    console.log(`Published strategy ${cfg.strategy.mode}: ${JSON.stringify(cfg.strategy.mode === "ORB5" ? cfg.strategy.orb5 : cfg.strategy.noiseArea)}; entry window ${cfg.gates.noEntryBeforeIst}-${cfg.gates.noEntryAfterIst}.`);
+    out.published = { ...cfg.strategy, entryWindow: [cfg.gates.noEntryBeforeIst, cfg.gates.noEntryAfterIst], maxOpenPerIndex: cfg.sizing.maxOpenPerIndex, ...(wp9bNoOverlay ? { perfOverlay: false } : {}) };
+    console.log(`Published strategy ${cfg.strategy.mode}: ${JSON.stringify(cfg.strategy.mode === "ORB5" ? cfg.strategy.orb5 : cfg.strategy.mode === "FIRST_CANDLE" ? cfg.strategy.firstCandle : cfg.strategy.noiseArea)}; entry window ${cfg.gates.noEntryBeforeIst}-${cfg.gates.noEntryAfterIst}.`);
   }
   // --- WP3/WP4 published strategies: end ---
+  // --- WP9b (begin): recorded only when used, so the default output stays byte-identical ---
+  if (wp9bOn) out.wp9b = { rules: cfg.rules, itmSteps: cfg.selection.itmSteps, ivSource: cfg.pricing.ivSource };
+  if (wp9bNoOverlay) out.perfOverlay = false;
+  // --- WP9b (end) ---
   const follower = runs.followers[account as keyof typeof runs.followers];
   if (followerCfg && follower) {
     report(accountSpec(account).label, follower);

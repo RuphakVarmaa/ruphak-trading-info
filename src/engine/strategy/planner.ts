@@ -27,10 +27,11 @@ import type {
 } from "../types";
 import { dailyLoss, riskGates } from "../risk/limits";
 import { attributionShares, dominantSource, findPerf } from "./conviction";
-import { convictionGate, edgeGates, evaluateEdge, eventFreshnessGate, liquidityGates, sessionGates, squareOffMs, volCheapnessGate, type EdgeResult } from "./gates";
+import { convictionGate, edgeGates, evaluateEdge, eventFreshnessGate, liquidityGates, sessionGates, volCheapnessGate, type EdgeResult } from "./gates";
 import { indicatorView } from "../market/features";
 import { sessionVolForecast } from "../market/volForecast";
 import { chooseContract, choosePremiumBandContract } from "./optionSelect";
+import { n2DailyFor, n2Enabled, n2Gate, n3Enabled, n3Gate, positionExitByMs } from "./rules";
 import { sizePosition } from "./sizing";
 
 export interface PlanContext {
@@ -83,6 +84,17 @@ export async function planEntry(a: PlanArgs, ctx: PlanContext): Promise<PlanDeci
     indicators: indicatorView(f),
   };
   const gates: GateResult[] = [convictionGate(c), ...sessionGates(f, t, ctx.calendar, cfg)];
+  // WP9b (off by default): plan §4 N3 (morning only) and N2 (no entry after a volatility jump or a big run).
+  if (n3Enabled(cfg)) gates.push(n3Gate(t, cfg));
+  if (n2Enabled(cfg)) {
+    let prev: string | null = null;
+    try {
+      prev = ctx.calendar.prevTradingDay(istDate(t));
+    } catch {
+      prev = null;
+    }
+    gates.push(n2Gate(await n2DailyFor(ctx.market, index, t, prev, cfg), f, cfg));
+  }
   const side = c.score >= 0 ? "BULL" : "BEAR";
   const dom = dominantSource(c);
   gates.push(eventFreshnessGate(dom, a.pressure, cfg));
@@ -170,7 +182,7 @@ export async function planEntry(a: PlanArgs, ctx: PlanContext): Promise<PlanDeci
       quoteSource = q.source;
       limitPrice = marketableLimit("BUY", q, contract.tickSize);
       gates.push(...liquidityGates(q, contract, cfg));
-      const horizonMin = Math.max(5, Math.min(cfg.exits.horizonMinByRegime[c.regime], Math.floor((squareOffMs(t, cfg) - t) / MINUTE_MS)));
+      const horizonMin = Math.max(5, Math.min(cfg.exits.horizonMinByRegime[c.regime], Math.floor((positionExitByMs(t, cfg) - t) / MINUTE_MS)));
       const vol = q.iv && q.iv > 0 ? q.iv / 100 : syntheticVol(index, f.vix, cfg);
       edge = evaluateEdge({ spot: f.spot, premium: q.ask, bid: q.bid, contract, tYears: yearsToExpiry(t, contract.expiry, ctx.calendar, cfg), vol, score: c.score, horizonMin, t }, cfg);
       gates.push(...edgeGates(edge, cfg));
@@ -218,7 +230,9 @@ export async function planEntry(a: PlanArgs, ctx: PlanContext): Promise<PlanDeci
     return decision;
   }
 
-  const horizonMin = Math.max(5, Math.min(cfg.exits.horizonMinByRegime[c.regime], Math.floor((squareOffMs(t, cfg) - t) / MINUTE_MS)));
+  // The square-off, or N3's morning exit when it is on (WP9b; positionExitByMs is squareOffMs otherwise).
+  const exitByMs = positionExitByMs(t, cfg);
+  const horizonMin = Math.max(5, Math.min(cfg.exits.horizonMinByRegime[c.regime], Math.floor((exitByMs - t) / MINUTE_MS)));
   const plan: TradePlan = {
     id: ctx.newId(),
     index,
@@ -242,7 +256,7 @@ export async function planEntry(a: PlanArgs, ctx: PlanContext): Promise<PlanDeci
       trailActivatePct: cfg.exits.trailActivatePct,
       trailGivebackPct: cfg.exits.trailGivebackPct,
       timeStopMs: t + horizonMin * MINUTE_MS,
-      squareOffMs: squareOffMs(t, cfg),
+      squareOffMs: exitByMs,
     },
     riskRupees: size.riskRupees,
     riskPct: size.riskPct,

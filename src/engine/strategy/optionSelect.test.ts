@@ -10,7 +10,7 @@ import { loadRiskState, newLedger } from "../pipeline/riskState";
 import { defaultSettings } from "../settings";
 import { syntheticInstruments } from "../testing/replayHarness";
 import type { OptionContract, Quote } from "../types";
-import { choosePremiumBandContract, strikeLadder, type PremiumBandArgs } from "./optionSelect";
+import { chooseContract, chooseExpiry, chooseExpiryFor, choosePremiumBandContract, strikeLadder, type PremiumBandArgs } from "./optionSelect";
 import { sizePosition } from "./sizing";
 
 const cfg = accountConfig(DEFAULT_CONFIG, "small10k");
@@ -204,5 +204,53 @@ describe("loadRiskState with current equity", () => {
     const main = await loadRiskState(repo, DEFAULT_CONFIG, await repo.settings.get(), T, "PAPER");
     expect(main.capitalRupees).toBe(DEFAULT_CONFIG.capitalRupees);
     expect(main.cashRupees).toBeUndefined();
+  });
+});
+
+// --- WP9b: N4 (sessions to expiry) and in-the-money strikes ---
+describe("N4: never a contract with one session or less left", () => {
+  const n4 = withOverrides(DEFAULT_CONFIG, { rules: { n4: { enabled: true } } });
+  const listed = syntheticInstruments(DEFAULT_CONFIG, defaultCalendar, "2026-10-01", "2026-10-30", { NIFTY: SPOT, SENSEX: 74_000 });
+  const pick = (index: "NIFTY" | "SENSEX", date: string, c = n4) => chooseExpiryFor(index, istAt(date, "10:00"), listed, defaultCalendar, c);
+
+  it("takes next week's NIFTY contract on Mondays and SENSEX's on Wednesdays", async () => {
+    expect(await chooseExpiry("NIFTY", istAt("2026-10-05", "10:00"), listed, defaultCalendar)).toBe("2026-10-06");
+    expect(await pick("NIFTY", "2026-10-05")).toBe("2026-10-13");
+    expect(await chooseExpiry("SENSEX", istAt("2026-10-07", "10:00"), listed, defaultCalendar)).toBe("2026-10-08");
+    expect(await pick("SENSEX", "2026-10-07")).toBe("2026-10-15");
+  });
+
+  it("keeps the engine's choice when two or more sessions are left, and is inert when off", async () => {
+    expect(await pick("NIFTY", "2026-10-06")).toBe("2026-10-13"); // expiry day: never today's contract
+    expect(await pick("NIFTY", "2026-10-09")).toBe("2026-10-13"); // Friday: Monday and Tuesday left
+    expect(await pick("NIFTY", "2026-10-05", DEFAULT_CONFIG)).toBe("2026-10-06");
+  });
+
+  it("counts sessions, not days: a holiday-shifted expiry one session away is skipped", async () => {
+    // 20 Oct (Tuesday) is a holiday, so that week's NIFTY contract expires on Monday the 19th.
+    expect(await chooseExpiry("NIFTY", istAt("2026-10-16", "10:00"), listed, defaultCalendar)).toBe("2026-10-19");
+    expect(await pick("NIFTY", "2026-10-16")).toBe("2026-10-27");
+  });
+
+  it("skips when no listed contract has enough sessions left, and the band search follows it", async () => {
+    const onlyNear = { expiries: async () => ["2026-10-06"], strikes: listed.strikes.bind(listed), resolve: listed.resolve.bind(listed) };
+    expect(await chooseExpiryFor("NIFTY", istAt("2026-10-05", "10:00"), onlyNear, defaultCalendar, n4)).toBeNull();
+    expect(await chooseContract("NIFTY", SPOT, "BULL", istAt("2026-10-05", "10:00"), onlyNear, defaultCalendar, n4)).toBeNull();
+    const band = await choosePremiumBandContract(args({ cfg: accountConfig(n4, "small10k"), instruments: onlyNear, t: istAt("2026-10-05", "10:00") }));
+    expect(band.gate).toMatchObject({ passed: false });
+    expect(band.gate.detail).toMatch(/N4/);
+  });
+});
+
+describe("in-the-money strikes (selection.itmSteps)", () => {
+  const at = istAt("2026-10-08", "11:00");
+  const itm = (n: number) => withOverrides(DEFAULT_CONFIG, { selection: { itmSteps: n } });
+  it("buys calls below and puts above the ATM strike", async () => {
+    expect((await chooseContract("NIFTY", SPOT, "BULL", at, instruments, defaultCalendar, DEFAULT_CONFIG))!.strike).toBe(22_300);
+    expect((await chooseContract("NIFTY", SPOT, "BULL", at, instruments, defaultCalendar, itm(1)))!.strike).toBe(22_250);
+    expect((await chooseContract("NIFTY", SPOT, "BEAR", at, instruments, defaultCalendar, itm(1)))!.strike).toBe(22_350);
+    expect((await chooseContract("NIFTY", SPOT, "BULL", at, instruments, defaultCalendar, itm(2)))!.strike).toBe(22_200);
+    const put = (await chooseContract("NIFTY", SPOT, "BEAR", at, instruments, defaultCalendar, itm(2)))!;
+    expect([put.strike, put.type]).toEqual([22_400, "PE"]);
   });
 });

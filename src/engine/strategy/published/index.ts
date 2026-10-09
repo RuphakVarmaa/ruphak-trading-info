@@ -22,7 +22,8 @@ import { strategyMode, type EngineConfig } from "../../config";
 import { isTradingDayCached, istDateOf, istMinuteOfDay } from "../../market/candles";
 import { clipWicks } from "../../market/features";
 import { MARKET_SYMBOLS, type Candle, type Conviction, type IndexId, type MarketSnapshot, type Regime, type SignalSource, type TradeSide } from "../../types";
-import { noiseAreaDecision, noiseParams, volTargetMultiplier } from "./noiseArea";
+import { firstCandleParams, firstCandleState } from "./firstCandle";
+import { isDecisionMinute, noiseAreaDecision, noiseParams, volTargetMultiplier } from "./noiseArea";
 import { orb5Params, orb5State } from "./orb5";
 
 /** Why a published strategy closes a position now; the reason is one the engine already books. */
@@ -34,7 +35,7 @@ export interface ExitVerdict {
 
 /** A published strategy's view of one index at one tick. */
 export interface PublishedSignal {
-  strategy: "NOISE_AREA" | "ORB5";
+  strategy: "NOISE_AREA" | "ORB5" | "FIRST_CANDLE";
   /** Variant label, e.g. "OPPOSITE_BAND", "BAND_VWAP", "PUBLISHED", "ENGINE_WINDOW". */
   variant: string;
   /** End time (epoch ms) of the closed bar this tick acts on, null when the strategy has nothing to decide now. */
@@ -144,6 +145,10 @@ function dailyClosesBefore(daily: Candle[], today: string): number[] {
 /** A signal that decides nothing (no entry, no exit). */
 export function idleSignal(cfg: EngineConfig, note: string): PublishedSignal {
   const mode = strategyMode(cfg);
+  if (mode === "FIRST_CANDLE") {
+    const fc = cfg.strategy.firstCandle;
+    return { strategy: "FIRST_CANDLE", variant: `${fc.rangeMin}min>${fc.minBodyPct}%`, decisionBarEndMs: null, level: null, entry: null, exitBull: null, exitBear: null, sizeMult: 1, levels: {}, note };
+  }
   return {
     strategy: mode === "ORB5" ? "ORB5" : "NOISE_AREA",
     variant: mode === "ORB5" ? cfg.strategy.orb5.entry : cfg.strategy.noiseArea.stop,
@@ -163,9 +168,10 @@ const BAR_MS = 5 * MINUTE_MS;
 /**
  * The published strategy's signal for `index` at `t` from a point-in-time snapshot of 5-minute bars.
  * Never throws: missing data yields an idle signal (no entries, no index exits; the premium stop and
- * square-off still run).
+ * square-off still run). `forceSide` (random-entry placebos only) makes ORB's stop and target those of
+ * that side; the other rules' exits are given for both sides anyway.
  */
-export function publishedSignal(index: IndexId, t: number, snap: MarketSnapshot, calendar: TradingCalendar, cfg: EngineConfig): PublishedSignal {
+export function publishedSignal(index: IndexId, t: number, snap: MarketSnapshot, calendar: TradingCalendar, cfg: EngineConfig, forceSide?: TradeSide): PublishedSignal {
   try {
     const mode = strategyMode(cfg);
     const candles = snap.candles[MARKET_SYMBOLS[index]] ?? [];
@@ -173,8 +179,15 @@ export function publishedSignal(index: IndexId, t: number, snap: MarketSnapshot,
     if (mode === "ORB5") {
       const { today: s } = sessionsAt(candles, calendar, t, BAR_MS, 0);
       if (!s) return idleSignal(cfg, "no bars yet today");
-      return orb5State(s.bars, istAt(today, SESSION.open), orb5Params(cfg), BAR_MS);
+      return orb5State(s.bars, istAt(today, SESSION.open), orb5Params(cfg), BAR_MS, forceSide);
     }
+    // --- WP9b: plan §6 E2(a), the first 15-minute candle (begin) ---
+    if (mode === "FIRST_CANDLE") {
+      const { today: s } = sessionsAt(candles, calendar, t, BAR_MS, 0);
+      if (!s) return idleSignal(cfg, "no bars yet today");
+      return firstCandleState(s.bars, istAt(today, SESSION.open), firstCandleParams(cfg), BAR_MS);
+    }
+    // --- WP9b (end) ---
     const p = noiseParams(cfg);
     const { today: s, history } = sessionsAt(candles, calendar, t, BAR_MS, p.lookbackSessions);
     if (!s || s.bars.length === 0) return idleSignal(cfg, "no bars yet today");
@@ -197,10 +210,36 @@ export function publishedSignal(index: IndexId, t: number, snap: MarketSnapshot,
   }
 }
 
+// --- WP9b (begin) ---
+/**
+ * The 5-minute bar-close minutes (IST minute of day) at which the published rule in `cfg` can enter,
+ * before the entry-window gates; null for the conviction model. For random-entry placebos.
+ */
+export function publishedEntrySlots(cfg: EngineConfig): number[] | null {
+  const mode = strategyMode(cfg);
+  if (mode === "CONVICTION") return null;
+  const barEnd = (m: number) => SESSION.open + 5 * Math.max(1, Math.ceil((m - SESSION.open) / 5));
+  if (mode === "NOISE_AREA") {
+    const p = noiseParams(cfg);
+    const out: number[] = [];
+    for (let m = SESSION.open + 5; m <= SESSION.close; m += 5) if (isDecisionMinute(m, p)) out.push(m);
+    return out;
+  }
+  if (mode === "ORB5") {
+    const p = orb5Params(cfg);
+    const rangeEnd = SESSION.open + p.rangeMin;
+    return [barEnd(p.entry === "PUBLISHED" ? rangeEnd : Math.max(rangeEnd, p.windowStartMin))];
+  }
+  const p = firstCandleParams(cfg);
+  return [barEnd(Math.max(SESSION.open + p.rangeMin, p.windowStartMin))];
+}
+// --- WP9b (end) ---
+
 /** The conviction that carries a published signal: score +1 (calls), -1 (puts) or 0, threshold 1. */
 export function publishedConviction(index: IndexId, t: number, sig: PublishedSignal, regime: Regime, cfg: EngineConfig): Conviction {
   const score = sig.entry === "BULL" ? 1 : sig.entry === "BEAR" ? -1 : 0;
-  const source: SignalSource = sig.strategy === "ORB5" ? "ORB" : "MOMENTUM";
+  // The opening-range rules (ORB, the first candle) book as ORB, the noise area as MOMENTUM.
+  const source: SignalSource = sig.strategy === "NOISE_AREA" ? "MOMENTUM" : "ORB";
   const toSquareOff = Math.max(0, Math.round((istAt(istDate(t), cfg.exits.squareOffIst) - t) / MINUTE_MS));
   return {
     index,
@@ -220,3 +259,4 @@ export function publishedConviction(index: IndexId, t: number, sig: PublishedSig
 
 export { noiseAreaDecision, noiseParams, noiseSigma, volTargetMultiplier } from "./noiseArea";
 export { orb5Params, orb5Plan, orb5State } from "./orb5";
+export { firstCandleParams, firstCandlePlan, firstCandleState } from "./firstCandle";

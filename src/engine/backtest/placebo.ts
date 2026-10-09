@@ -13,20 +13,30 @@
  * Ported from the planning script (PLAN §1.2, random_baseline.ts). With sizing "uncapped", a fixed
  * 90-minute horizon and slots 09:25–14:30 it reproduces that script draw for draw; the defaults
  * follow the engine instead (settings cap of one lot per order, entry-window gate, regime horizon).
+ *
+ * WP9b: the placebo follows the rules the variant trades under. N4 and selection.itmSteps reach it
+ * through the contract choice; N3 limits the slots to its morning window and closes every draw at its
+ * exit time; N2 redraws a draw its gate would block. For a published rule (strategy.mode other than
+ * CONVICTION) the slots are the rule's own decision times, a draw counts only when the rule enters
+ * at that time (on either side; `whenRuleFires`, default on), and the draw is managed by the rule's
+ * exits for its random side (no premium target, trail or time stop; the premium stop stays).
  */
 import { TradingCalendar } from "../calendar/calendar";
 import { MINUTE_MS, addDays, istAt, istDate, parseHHMM } from "../clock";
-import type { EngineConfig } from "../config";
+import { strategyMode, type EngineConfig } from "../config";
 import { computeCharges, roundTripChargesPerUnit } from "../broker/charges";
 import { limitFill, marketFill, marketableLimit, quoteProblem, type FillParams } from "../broker/fillModel";
-import { YAHOO_LAG_MS } from "../market/replayMarketData";
+import { computeFeatures } from "../market/features";
+import { ReplayMarketDataSource, YAHOO_LAG_MS } from "../market/replayMarketData";
 import { defaultSettings } from "../settings";
 import { evaluateExits, markPosition } from "../strategy/exits";
-import { liquidityGates, squareOffMs } from "../strategy/gates";
+import { liquidityGates } from "../strategy/gates";
 import { chooseContract, choosePremiumBandContract } from "../strategy/optionSelect";
+import { publishedConviction, publishedEntrySlots, publishedSignal, type PublishedSignal } from "../strategy/published";
+import { n2Blocks, n2Daily, n2Enabled, n3Enabled, positionExitByMs } from "../strategy/rules";
 import { sizePosition } from "../strategy/sizing";
 import { createReplayDeps, type ReplayDeps } from "../testing/replayHarness";
-import { MARKET_SYMBOLS, type Candle, type IndexId, type OptionContract, type OrderReason, type Position, type Quote, type Regime, type TradeSide } from "../types";
+import { MARKET_SYMBOLS, type Candle, type Conviction, type IndexId, type OptionContract, type OrderReason, type Position, type Quote, type Regime, type TradeSide } from "../types";
 import { mean, stdev } from "../util/math";
 import { clusteredSe, profitFactor, seededRandom } from "./metrics";
 import { ClosedBars, CopyDelayQuotes, copyDelayOf, describeCopyDelay, type SignalTapeEntry } from "./runBacktest";
@@ -61,6 +71,8 @@ export interface RandomPlaceboInput {
   /** Copy-delay penalty, as in BacktestInput (fills only; exit triggers use the engine's view). */
   fillDelayBars?: number;
   extraTicks?: number;
+  /** Published rules only: draw only at times the rule enters (default true); false draws any of its decision times. */
+  whenRuleFires?: boolean;
 }
 
 export interface PlaceboTrade {
@@ -147,6 +159,9 @@ export function entrySlots(cfg: EngineConfig, lagMs: number, stepMs = 5 * MINUTE
   const step = Math.max(1, Math.round(stepMs / MINUTE_MS));
   const before = parseHHMM(cfg.gates.noEntryBeforeIst);
   const after = parseHHMM(cfg.gates.noEntryAfterIst);
+  // WP9b: N3's morning window [entryFrom, exitBy), and a published rule's own decision times.
+  const morning = n3Enabled(cfg) ? { from: parseHHMM(cfg.rules.n3.entryFromIst), to: parseHHMM(cfg.rules.n3.exitByIst) } : null;
+  const ruleSlots = publishedEntrySlots(cfg);
   const out: number[] = [];
   for (let m = parseHHMM("09:15"); m <= parseHHMM("15:30"); m += step) {
     if (window) {
@@ -154,7 +169,10 @@ export function entrySlots(cfg: EngineConfig, lagMs: number, stepMs = 5 * MINUTE
       continue;
     }
     const decision = Math.floor(m + lagMs / MINUTE_MS);
-    if (decision >= before && decision <= after) out.push(m);
+    if (!(decision >= before && decision <= after)) continue;
+    if (morning && !(decision >= morning.from && decision < morning.to)) continue;
+    if (ruleSlots && !ruleSlots.includes(m)) continue;
+    out.push(m);
   }
   return out;
 }
@@ -187,6 +205,54 @@ interface DrawContext {
   sizing: PlaceboSizing;
   horizonMin?: number;
   regimeAt?: (index: IndexId, t: number) => Regime | null;
+  /** WP9b: the published rule's view (null for the conviction model) and N2's check. */
+  rule: RuleView | null;
+  n2: ((index: IndexId, t: number) => string[]) | null;
+}
+
+/** A published rule's signals for random-side draws, point in time and cached per index, time and side. */
+interface RuleView {
+  whenFires: boolean;
+  signal(index: IndexId, t: number, side: TradeSide): PublishedSignal;
+}
+
+function ruleView(cfg: EngineConfig, candles: Record<string, Candle[]>, daily: Record<string, Candle[]> | undefined, calendar: TradingCalendar, lagMs: number, whenFires: boolean): RuleView | null {
+  if (strategyMode(cfg) === "CONVICTION") return null;
+  // Only the traded indices' bars: the rules read nothing else, and the snapshots stay small.
+  const pick = (src: Record<string, Candle[]> | undefined) => Object.fromEntries(cfg.indices.map((i) => [MARKET_SYMBOLS[i], src?.[MARKET_SYMBOLS[i]] ?? []]));
+  const market = new ReplayMarketDataSource({ candles: pick(candles), daily: daily ? pick(daily) : undefined }, { lagMs });
+  const cache = new Map<string, PublishedSignal>();
+  const sideMatters = strategyMode(cfg) === "ORB5";
+  return {
+    whenFires,
+    signal(index, t, side) {
+      const key = `${index}|${t}|${sideMatters ? side : ""}`;
+      let s = cache.get(key);
+      if (!s) {
+        s = publishedSignal(index, t, market.snapshotSync(t), calendar, cfg, sideMatters ? side : undefined);
+        cache.set(key, s);
+      }
+      return s;
+    },
+  };
+}
+
+/** N2's blocking conditions for a draw, from the engine's own features and daily bars (cached). */
+function n2Check(cfg: EngineConfig, deps: ReplayDeps, calendar: TradingCalendar): ((index: IndexId, t: number) => string[]) | null {
+  if (!n2Enabled(cfg)) return null;
+  const daily = new Map<string, ReturnType<typeof n2Daily>>();
+  const vixChange = new Map<string, number>();
+  return (index, t) => {
+    const date = istDate(t);
+    const dKey = `${index}|${date}`;
+    const fKey = `${index}|${t}`;
+    if (!daily.has(dKey) || !vixChange.has(fKey)) {
+      const snap = deps.market.snapshotSync(t);
+      if (!daily.has(dKey)) daily.set(dKey, n2Daily(snap.daily[MARKET_SYMBOLS.INDIAVIX] ?? [], snap.daily[MARKET_SYMBOLS[index]] ?? [], date, cfg));
+      if (!vixChange.has(fKey)) vixChange.set(fKey, computeFeatures(index, snap, calendar, cfg).vixChangePct);
+    }
+    return n2Blocks(daily.get(dKey) ?? null, vixChange.get(fKey) ?? 0, cfg);
+  };
 }
 
 /** One random entry managed to its exit, or the reason it could not be traded. */
@@ -199,6 +265,9 @@ async function simulateDraw(x: DrawContext, day: string, index: IndexId, side: T
   if (spot0 === null || vix0 === null) return "no market data";
   // The engine's expiry-day cutoff (the other session gates hold by construction of the slots).
   if (calendar.isExpiryDay(index, day) && (calendar.closeMs(day) - t0) / MINUTE_MS <= cfg.gates.expiryDayNoEntryMinBeforeClose) return "expiry-day cutoff";
+  // WP9b: a published rule must enter here (on either side), and N2 must not block the decision.
+  if (x.rule?.whenFires && x.rule.signal(index, t0, side).entry === null) return "no rule entry";
+  if (x.n2 && x.n2(index, t0).length > 0) return "N2 blocks";
 
   const fp = (c: OptionContract): FillParams => ({
     tickSize: c.tickSize,
@@ -267,10 +336,11 @@ async function simulateDraw(x: DrawContext, day: string, index: IndexId, side: T
   }
   const entryCharges = computeCharges("BUY", entryPx, qty, contract.exchange, day).total;
 
-  // Planned horizon exactly as the planner sets it: the regime's horizon, capped by the square-off.
+  // Planned horizon exactly as the planner sets it: the regime's horizon, capped by the square-off
+  // (or N3's morning exit, which the planner also uses as the position's square-off).
   const regime = x.horizonMin === undefined ? (x.regimeAt?.(index, t0) ?? null) : null;
   const planned = x.horizonMin ?? cfg.exits.horizonMinByRegime[regime ?? "RANGE"];
-  const squareOff = squareOffMs(t0, cfg);
+  const squareOff = positionExitByMs(t0, cfg);
   const horizonMin = Math.max(5, Math.min(planned, Math.floor((squareOff - t0) / MINUTE_MS)));
   let pos: Position = {
     id: "placebo",
@@ -314,7 +384,9 @@ async function simulateDraw(x: DrawContext, day: string, index: IndexId, side: T
     const ctx = { t, spot, vix: bars.closeAt(MARKET_SYMBOLS.INDIAVIX, t) ?? vix0 };
     const q = await deps.optionQuotes.quote(contract, ctx);
     pos = markPosition(pos, q, t);
-    const d = evaluateExits(pos, q, { nowMs: t }, cfg);
+    // A published rule's exits for this draw's side (its index-level rule, no target, trail or time stop).
+    const conviction: Conviction | undefined = x.rule ? publishedConviction(index, t, { ...x.rule.signal(index, t, side), entry: null }, "RANGE", cfg) : undefined;
+    const d = evaluateExits(pos, q, { nowMs: t, conviction }, cfg);
     if (!d) continue;
     let exitPx: number;
     if (x.fillQuotes) exitPx = marketFill("SELL", qty, await x.fillQuotes.quote(contract, ctx), fp(contract)).avgPrice;
@@ -412,11 +484,14 @@ export async function randomEntryPlacebo(input: RandomPlaceboInput): Promise<Pla
     sizing,
     horizonMin: input.horizonMin,
     regimeAt: input.regimeAt,
+    rule: ruleView(cfg, input.candles, input.daily, calendar, lagMs, input.whenRuleFires !== false),
+    n2: n2Check(cfg, deps, calendar),
   };
   const rnd = seededRandom(input.seed);
   const trades: PlaceboTrade[] = [];
   const rejected: Record<string, number> = {};
-  const maxAttempts = Math.max(1_000, input.draws * 20);
+  // A published rule (draws only when it enters) and N2 reject many draws by design.
+  const maxAttempts = Math.max(1_000, input.draws * (x.rule || x.n2 ? 200 : 20));
   let attempts = 0;
   while (trades.length < input.draws) {
     if (attempts >= maxAttempts) throw new Error(`random-entry placebo: only ${trades.length} of ${input.draws} draws tradable after ${attempts} attempts (${JSON.stringify(rejected)})`);
@@ -436,7 +511,9 @@ export async function randomEntryPlacebo(input: RandomPlaceboInput): Promise<Pla
       draws: input.draws,
       seed: input.seed,
       sizing,
-      horizon: input.horizonMin !== undefined ? `fixed ${input.horizonMin} min` : input.regimeAt ? "the regime's horizon at entry (signal tape)" : `RANGE ${e.horizonMinByRegime.RANGE} min (no signal tape)`,
+      horizon: x.rule
+        ? `the ${strategyMode(cfg)} rule's exits for the drawn side (premium stop, rule's index exits, ${n3Enabled(cfg) ? `N3 exit ${cfg.rules.n3.exitByIst}` : `square-off ${e.squareOffIst}`}; no target, trail or time stop); draws ${x.rule.whenFires ? "only when the rule enters" : "at any of its decision times"}${x.n2 ? "; N2-blocked draws redrawn" : ""}`
+        : `${input.horizonMin !== undefined ? `fixed ${input.horizonMin} min` : input.regimeAt ? "the regime's horizon at entry (signal tape)" : `RANGE ${e.horizonMinByRegime.RANGE} min (no signal tape)`}${n3Enabled(cfg) ? `, out by ${cfg.rules.n3.exitByIst} (N3)` : ""}${x.n2 ? "; N2-blocked draws redrawn" : ""}`,
       window: `bar closes ${hhmm(slots[0])}–${hhmm(slots[slots.length - 1])} (${slots.length} slots, decisions ${Math.round(lagMs / 1000)} s later)`,
       copyDelay: describeCopyDelay(copy),
       sessions: days.length,

@@ -394,6 +394,9 @@ export const GATE_RANK: Readonly<Record<string, number>> = {
   edge_calibrated: 64,
   move_calibrated: 65,
   vol_cheapness: 66,
+  // WP9b plan §4 rules (off by default; engine/strategy/rules.ts).
+  morning_only: 25,
+  vol_jump: 26,
 };
 
 const UNKNOWN_RANK = 90;
@@ -513,6 +516,12 @@ export function gateBlock(g: GateResult, s: SignalView, entryFrom: string, entry
       return block(`Measured expected move too small next to the realized move: ${detail}`, "Only if the measured link between the signal and later moves gets stronger.");
     case "vol_cheapness":
       return block(`Options are rich: forecast volatility below the option's implied volatility (${detail})`, "On a day whose forecast volatility is at least the implied volatility.");
+    // WP9b plan §4 rules (off by default).
+    case "morning_only":
+      if (/early/i.test(detail)) return block(`Morning-only rule: new entries start later (${g.label.replace(/^N3: /, "")})`, null);
+      return block(`Morning-only rule: no new entries after the morning window (${g.label.replace(/^N3: /, "")})`, NONE_TODAY);
+    case "vol_jump":
+      return block(`Options are rich after a volatility jump or a big run: ${detail}`, "On a later day without a VIX jump, a top-third VIX or a 2% five-day run.");
     default:
       return block(detail ? `${g.label}: ${detail}` : g.label, null);
   }
