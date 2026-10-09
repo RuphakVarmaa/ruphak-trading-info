@@ -64,8 +64,12 @@ function noTrade(reason: string, skipped: boolean, extra: Partial<OrbPlan> = {})
   return { side: null, reason, pending: false, skipped, rangeHigh: null, rangeLow: null, entryBarT: null, entryLevel: null, stop: null, target: null, r: null, ...extra };
 }
 
-/** The day's trade from today's closed bars (ascending) of length `barMs`, session open at `openMs`. */
-export function orb5Plan(bars: Candle[], openMs: number, p: Orb5Params, barMs: number): OrbPlan {
+/**
+ * The day's trade from today's closed bars (ascending) of length `barMs`, session open at `openMs`.
+ * `forceSide` (placebo runs only) takes that side instead of the first candle's, with the same rule
+ * for the stop (the range's other extreme), R and target.
+ */
+export function orb5Plan(bars: Candle[], openMs: number, p: Orb5Params, barMs: number, forceSide?: TradeSide): OrbPlan {
   const rangeEnd = openMs + p.rangeMin * MINUTE_MS;
   const need = Math.round((p.rangeMin * MINUTE_MS) / barMs);
   const rangeBars = bars.filter((b) => b.t >= openMs && b.t < rangeEnd);
@@ -75,7 +79,7 @@ export function orb5Plan(bars: Candle[], openMs: number, p: Orb5Params, barMs: n
   const rangeHigh = Math.max(...rangeBars.map((b) => b.h));
   const rangeLow = Math.min(...rangeBars.map((b) => b.l));
   if (round2(open) === round2(close)) return noTrade(`doji first candle (open = close = ${fmt(close)})`, true, { rangeHigh, rangeLow });
-  const side: TradeSide = close > open ? "BULL" : "BEAR";
+  const side: TradeSide = forceSide ?? (close > open ? "BULL" : "BEAR");
   const stop = side === "BULL" ? rangeLow : rangeHigh;
   const lastRangeBar = rangeBars[rangeBars.length - 1];
   const rangeEndMin = istMinuteOfDay(rangeEnd);
@@ -102,8 +106,8 @@ export function orb5Plan(bars: Candle[], openMs: number, p: Orb5Params, barMs: n
 }
 
 /** The ORB signal at the latest of today's closed bars: the entry on the entry bar, then stop/target exits. */
-export function orb5State(bars: Candle[], openMs: number, p: Orb5Params, barMs: number): PublishedSignal {
-  const plan = orb5Plan(bars, openMs, p, barMs);
+export function orb5State(bars: Candle[], openMs: number, p: Orb5Params, barMs: number, forceSide?: TradeSide): PublishedSignal {
+  const plan = orb5Plan(bars, openMs, p, barMs, forceSide);
   const last = bars[bars.length - 1];
   const levels: Record<string, number> = {};
   for (const k of ["rangeHigh", "rangeLow", "entryLevel", "stop", "target", "r"] as const) {
