@@ -58,7 +58,11 @@ describe("globalMoves", () => {
     expect(m.USDINR).toBeCloseTo(-0.0337070917030724, 9);
     expect(m.US10Y).toBeCloseTo(-4.199981689453125, 6);
     for (const k of ["NQ", "CL", "GC", "DXY", "VIXUS", "N225", "HSI", "SSE"] as GlobalKey[]) expect(m[k]).toBeNull();
-    expect(expectedGapPct(m, DEFAULT_CONFIG.features.gapBetas)).toBeCloseTo(0.294804422192102, 6);
+    // Reference value from the same scan with the earlier hand-set betas.
+    const handSet = { ES: 0.45, NQ: 0.1, CL: -0.08, DXY: -0.15, USDINR: -1.5, US10Y: -0.01, N225: 0.1, HSI: 0.1, SSE: 0.05 };
+    expect(expectedGapPct(m, handSet)).toBeCloseTo(0.294804422192102, 6);
+    const b = DEFAULT_CONFIG.features.gapBetas;
+    expect(expectedGapPct(m, b)).toBeCloseTo(b.ES * 0.4494310394288048 + b.USDINR * -0.0337070917030724 + b.US10Y * -4.199981689453125, 6);
   });
 
   it("only uses 5m bars closed by the requested time", () => {
