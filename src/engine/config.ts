@@ -375,14 +375,15 @@ export const DEFAULT_CONFIG: EngineConfig = {
   },
   features: {
     // Fitted with fitGapBetas (ridge; the penalty chosen by time-ordered validation came out 0) on the
-    // opening gaps of NIFTY and SENSEX over 437 sessions, 2024-10-09..2026-07-22, with the overnight
-    // moves from 15:30 IST to the open taken from Yahoo 1-hour bars (the window live trading sees).
-    // Refit and out-of-sample check: scripts/research/fit-gap-betas.ts (reports/gap-betas.md).
-    // Walk-forward over 371 sessions these predict the gap with MAE 0.30% and calibration slope 1.02;
-    // the hand-set values used before (ES 0.45, USDINR -1.5, ...) gave MAE 0.49% and slope 0.50, i.e.
-    // about twice the real gap. NQ is negative because it nearly duplicates ES. The fit ends before
-    // 2026-07-23 so backtests from that date stay out of sample. Backtests whose cross-asset history is
-    // daily bars only see daily-close windows, which these betas were not fitted for (see the report).
+    // opening gaps of NIFTY and SENSEX over 437 sessions, 2024-10-09..2026-07-22, with the moves from the
+    // 15:30 IST close to the open taken from Yahoo 1-hour bars (close to the window live trading sees).
+    // Refit and checks: scripts/research/fit-gap-betas.ts, reports/gap-betas.md. On the sessions after
+    // the fit window they cut the gap's mean absolute error from 0.42% to 0.28% (1-hour windows) and from
+    // 0.46% to 0.26% (5-minute windows) against the hand-set values used before (ES 0.45, USDINR -1.5,
+    // ...), which overstated the gap about twice (calibration slope 0.50 walk-forward over 371 sessions,
+    // 1.02 when refitted). NQ is negative because it nearly duplicates ES. The fit ends before 2026-07-23
+    // so backtests from that date stay out of sample; backtests whose cross-asset history is daily bars
+    // only see daily-close windows, which these betas were not fitted for (see the report).
     gapBetas: { ES: 0.368, NQ: -0.147, CL: -0.042, DXY: -0.038, USDINR: -0.91, US10Y: -0.0005, N225: 0.083, HSI: 0.067, SSE: 0.044 },
     rvBars: 24,
     divergenceBars: 6,

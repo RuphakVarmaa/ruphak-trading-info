@@ -8,12 +8,15 @@
  *        [--betas <sets.json>] [--md <out.md>] [--out <out.json>] [--ledger reports/trials.jsonl | --no-ledger]
  *        [--ledger-note "..."]
  *
- * --betas holds named sets, {"name": {"ES": 0.3, ...}}; each replaces features.gapBetas whole.
- * Each differing trade gets a cause read from the decisions the two replays made at the same time:
- * "signal" when the GLOBAL_BETA view differs there (the only input the betas move), "perf" when the
- * signal views are equal but source weights differ (the performance record already differs after an
- * earlier difference), "book" when only book gates differ (open positions, the day's entries, a
- * cooldown, a loss cap) or the size changed: knock-ons of an earlier difference.
+ * --betas holds named sets, {"name": {"ES": 0.3, ...}}; each replaces features.gapBetas whole (a set
+ * equal to one already replayed is skipped). Each differing trade gets a cause read from the decisions
+ * the two replays made at the same time. For a trade only one replay took, the other replay's gates say
+ * why: a signal gate (conviction, edge, ...) is "signal" (the score moved; GLOBAL_BETA's view is the
+ * only input the betas change), or "perf" when the signal views are equal and only source weights
+ * differ (the performance record differs after an earlier difference); book gates alone (open
+ * positions, the day's entries, a loss streak, size) are "book", a knock-on of an earlier difference
+ * the same day, which is named. A trade both took that exits differently is "signal" when the views
+ * differ at the earlier exit; a different size or contract is "book".
  *
  * Two checks that do not go through the trade list:
  * - the net P&L difference with a 90% interval from resampling sessions (daily P&L differences);
@@ -55,7 +58,11 @@ if (JSON.stringify(configured) !== JSON.stringify(HAND_SET_BETAS)) sets.push({ n
 const extraPath = str(args, "betas", undefined);
 if (extraPath) {
   const extra = readJson<Record<string, Record<string, number>>>(extraPath) ?? fail(`No beta sets at ${extraPath}.`);
-  for (const [name, betas] of Object.entries(extra)) sets.push({ name, betas });
+  for (const [name, betas] of Object.entries(extra)) {
+    const same = sets.find((s) => JSON.stringify(s.betas) === JSON.stringify(betas));
+    if (same) console.log(`--betas "${name}" equals "${same.name}": not replayed twice.`);
+    else sets.push({ name, betas });
+  }
 }
 
 /** The config `npm run backtest -- --from F --to T --no-events --prod-limits` builds, with `betas` as the whole gap-beta set. */
@@ -197,12 +204,12 @@ function diffTrades(base: Replay, v: Replay): TradeDiff[] {
       cause = comp.global || comp.values.length ? "signal" : comp.weights.length ? "perf" : "book";
       why = `exit ${ta!.exitReason}@${hhmm(ta!.exitMs)} vs ${tb!.exitReason}@${hhmm(tb!.exitMs)}`;
     } else {
+      // The replay without the trade: a signal gate (conviction, edge, ...) means the score moved; book
+      // gates alone (positions, entries, losses, size) mean an earlier difference changed the book.
       const blocked = kind === "removed" ? db : da;
       const failed = (blocked?.gates ?? []).filter((g) => g.passed === false).map((g) => g.gate);
       const signalGates = failed.filter((g) => !BOOK_GATES.has(g));
-      if (comp.global || (signalGates.length > 0 && comp.values.length > 0)) cause = "signal";
-      else if (signalGates.length > 0 && comp.weights.length > 0) cause = "perf";
-      else if (signalGates.length > 0 || failed.length === 0) cause = "signal";
+      if (signalGates.length > 0 || failed.length === 0) cause = !comp.global && comp.values.length === 0 && comp.weights.length > 0 ? "perf" : "signal";
       else cause = "book";
       why = `${kind === "removed" ? "variant" : "baseline"} blocked by ${failed.join(", ") || (blocked?.noPlanReason ?? "no decision")}`;
     }
@@ -223,6 +230,13 @@ function diffTrades(base: Replay, v: Replay): TradeDiff[] {
       variantDecision: decisionText(db),
       otherChanges: [...comp.values.filter((x) => !x.startsWith("GLOBAL_BETA")), ...comp.weights].join("; "),
     });
+  }
+  // A book knock-on follows an earlier difference the same day in the replay that lacks the trade.
+  for (const d of out) {
+    if (d.cause !== "book" || d.kind === "changed") continue;
+    const missingIn = d.kind === "removed" ? "variant" : "base";
+    const earlier = out.filter((e) => e !== d && istDate(e.entryMs) === istDate(d.entryMs) && e.entryMs <= d.entryMs && e[missingIn] !== null);
+    if (earlier.length) d.why += ` (after #${earlier.map((e) => e.n).join(", #")})`;
   }
   return out;
 }
