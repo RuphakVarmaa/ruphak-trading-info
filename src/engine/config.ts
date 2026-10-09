@@ -183,6 +183,20 @@ export interface EngineConfig {
     /** Multiplier on VIX-implied vol for short intraday horizons. */
     intradayVolFactor: number;
     stopOutCooldownMin: number;
+    // --- WP2/WP5 gate flags (begin): tightening only; the defaults keep the legacy behaviour ---
+    /**
+     * "legacy": the edge gates as above. "calibrated": the legacy gates plus the same two checks
+     * re-run with measured inputs (realizedVolFactor, scoreMoveBeta; see strategy/gates.ts), so it
+     * can only block entries the legacy gates would take.
+     */
+    expectedMoveModel: "legacy" | "calibrated";
+    /** Calibrated model: realized 1-sigma move over the horizon as a multiple of the option's implied sigma. */
+    realizedVolFactor: number;
+    /** Calibrated model: slope of the realized signed move (in realized-sigma units) on |conviction|. */
+    scoreMoveBeta: number;
+    /** HAR-RV vol-cheapness gate: buy only when forecast session RV ≥ k × the implied session variance. */
+    volCheapness: { enabled: boolean; k: number };
+    // --- WP2/WP5 gate flags (end) ---
   };
   sizing: {
     defaultRiskPct: number;
@@ -404,6 +418,15 @@ export const DEFAULT_CONFIG: EngineConfig = {
     kEM: 1.0,
     intradayVolFactor: 1.1,
     stopOutCooldownMin: 30,
+    // --- WP2/WP5 gate flags (begin) ---
+    expectedMoveModel: "legacy",
+    // Only used when "calibrated". Estimated on every entry-window decision of 2026-07-23..10-08 (both
+    // indices, 5-minute bars; reports/wp2-wp5-gates.md): f = 0.54, beta = -0.10 (SE 0.26). In-sample for
+    // backtests of that period (pass per-fold values with --realized-vol-factor / --move-beta there).
+    realizedVolFactor: 0.54,
+    scoreMoveBeta: -0.1,
+    volCheapness: { enabled: false, k: 1 },
+    // --- WP2/WP5 gate flags (end) ---
   },
   sizing: {
     defaultRiskPct: 0.75,
@@ -586,6 +609,13 @@ export function validateConfig(cfg: EngineConfig): string[] {
   if (!HHMM.test(cfg.exits.squareOffIst)) p.push("exits.squareOffIst must be HH:MM");
   if (cfg.gates.noEntryBeforeIst >= cfg.gates.noEntryAfterIst) p.push("gates.noEntryBeforeIst must be before noEntryAfterIst");
   if (cfg.gates.noEntryAfterIst >= cfg.exits.squareOffIst) p.push("gates.noEntryAfterIst must be before exits.squareOffIst");
+  // --- WP2/WP5 gate flags (begin) ---
+  if (cfg.gates.expectedMoveModel !== "legacy" && cfg.gates.expectedMoveModel !== "calibrated") p.push("gates.expectedMoveModel must be legacy or calibrated");
+  pos("gates.realizedVolFactor", cfg.gates.realizedVolFactor);
+  if (!Number.isFinite(cfg.gates.scoreMoveBeta)) p.push("gates.scoreMoveBeta must be a finite number");
+  if (typeof cfg.gates.volCheapness?.enabled !== "boolean") p.push("gates.volCheapness.enabled must be true or false");
+  pos("gates.volCheapness.k", cfg.gates.volCheapness?.k);
+  // --- WP2/WP5 gate flags (end) ---
   if (!(cfg.exits.stopPct < 0 && cfg.exits.stopPct > -100)) p.push("exits.stopPct must be within (-100, 0)");
   pos("exits.targetPct", cfg.exits.targetPct);
   if (!(cfg.exits.trailGivebackPct > 0 && cfg.exits.trailGivebackPct < 100)) p.push("exits.trailGivebackPct must be within (0, 100)");

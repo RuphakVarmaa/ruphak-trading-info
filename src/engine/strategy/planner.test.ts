@@ -1,13 +1,13 @@
 import { describe, expect, it } from "vitest";
 import { accountConfig } from "../accounts";
 import { roundTripChargesPerUnit } from "../broker/charges";
-import { istAt, istDate } from "../clock";
-import { makeConfig, premiumBand } from "../config";
+import { addDays, istAt, istDate, weekdayOf } from "../clock";
+import { makeConfig, premiumBand, withOverrides, type EngineConfig } from "../config";
 import { computeFeatures } from "../market/features";
 import { loadRiskState } from "../pipeline/riskState";
 import { loadMarketFixtures } from "../testing/fixtures";
 import { createReplayDeps } from "../testing/replayHarness";
-import type { Conviction, IndexId, PlanDecision, Position, RiskState, TradeSide } from "../types";
+import { MARKET_SYMBOLS, type Conviction, type IndexId, type PlanDecision, type Position, type RiskState, type TradeSide } from "../types";
 import { planEntry } from "./planner";
 
 const fixtures = loadMarketFixtures();
@@ -137,5 +137,60 @@ describe("₹5k account entry planning", () => {
     });
     expect(d.plan).toBeNull();
     expect(gate(d, "max_positions")).toMatchObject({ passed: false, detail: "1 of 1" });
+  });
+});
+
+describe("WP2/WP5 gates in the planner (main account)", () => {
+  // Market gates opened except the edge checks, which keep their default thresholds' shape.
+  const open = makeConfig({ gates: { minEdgeRatio: -0.5, maxDataAgeSec: 100_000, minOi: 0, maxSpreadPct: 100 } });
+  const NEW_ROWS = ["edge_calibrated", "move_calibrated", "vol_cheapness"];
+
+  async function planMain(c: EngineConfig, daily = fixtures.daily): Promise<PlanDecision> {
+    const deps = createReplayDeps({ cfg: c, startMs: T, candles: fixtures.candles, daily });
+    const snap = await deps.market.snapshot(T);
+    const features = computeFeatures("NIFTY", snap, deps.calendar, c);
+    const risk = await loadRiskState(deps.repo, c, await deps.repo.settings.get(), T, "BACKTEST");
+    return planEntry({ index: "NIFTY", t: T, features, pressure: null, conviction: conviction("NIFTY", "BULL"), risk, perf: [] }, deps);
+  }
+
+  it("by default adds no rows and plans as before", async () => {
+    const d = await planMain(open);
+    expect(d.plan, d.noPlanReason ?? "").not.toBeNull();
+    expect(d.gates.filter((g) => NEW_ROWS.includes(g.gate))).toEqual([]);
+  });
+
+  it("the calibrated model keeps the legacy rows and can only block", async () => {
+    const legacy = await planMain(open);
+    const cal = await planMain(withOverrides(open, { gates: { expectedMoveModel: "calibrated", realizedVolFactor: 0.54, scoreMoveBeta: -0.1 } }));
+    const legacyRows = legacy.gates.filter((g) => g.gate === "edge_ratio" || g.gate === "expected_vs_implied");
+    expect(cal.gates.filter((g) => g.gate === "edge_ratio" || g.gate === "expected_vs_implied")).toEqual(legacyRows);
+    expect(cal.plan).toBeNull();
+    expect(gate(cal, "move_calibrated")?.passed).toBe(false);
+    expect(cal.noPlanReason).toMatch(/Edge with measured move|Measured expected move/);
+    // The numbers the plan and copy ticket carry stay the legacy ones.
+    expect(cal.expectedMovePct).toBe(legacy.expectedMovePct);
+    expect(cal.edgeRatio).toBe(legacy.edgeRatio);
+  });
+
+  it("the vol-cheapness gate fails closed without enough daily history", async () => {
+    // The fixtures hold three months of daily bars: too few sessions for a HAR fit.
+    const d = await planMain(withOverrides(open, { gates: { volCheapness: { enabled: true, k: 1 } } }));
+    expect(d.plan).toBeNull();
+    expect(gate(d, "vol_cheapness")).toMatchObject({ passed: false });
+    expect(gate(d, "vol_cheapness")?.detail).toMatch(/no HAR-RV forecast/);
+  });
+
+  it("the vol-cheapness gate passes when the forecast exceeds the implied session variance, and blocks at a higher k", async () => {
+    // 150 prior sessions of 3% daily ranges (Parkinson about 3.2 %² against about 0.6 %² implied).
+    const days: string[] = [];
+    for (let d = addDays(istDate(T), -1); days.length < 150; d = addDays(d, -1)) if (weekdayOf(d) <= 5) days.unshift(d);
+    const wide = days.map((d) => ({ t: istAt(d, "09:15"), o: 25_000, h: 25_000 * Math.exp(0.015), l: 25_000 * Math.exp(-0.015), c: 25_000, v: 0 }));
+    const daily = { ...fixtures.daily, [MARKET_SYMBOLS.NIFTY]: wide };
+    const ok = await planMain(withOverrides(open, { gates: { volCheapness: { enabled: true, k: 1 } } }), daily);
+    expect(gate(ok, "vol_cheapness")?.passed, gate(ok, "vol_cheapness")?.detail).toBe(true);
+    expect(ok.plan).not.toBeNull();
+    const strict = await planMain(withOverrides(open, { gates: { volCheapness: { enabled: true, k: 20 } } }), daily);
+    expect(gate(strict, "vol_cheapness")?.passed).toBe(false);
+    expect(strict.plan).toBeNull();
   });
 });
