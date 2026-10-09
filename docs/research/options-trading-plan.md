@@ -158,8 +158,9 @@ The 8 Oct example: FIIs sold ₹12,943.58 crore (NSE provisional; the depository
 | 09:00–09:12 | NSE pre-open indicative open | The open, almost exactly |
 | 09:15–09:30 | **No trades.** Watch the first 15-minute candle and IV settling | E2 |
 | 09:30–10:45 | Entries only when E1–E5 hold (once a trigger passes §12); decisions at half-hour marks | Entry |
-| 11:15–14:30 | No new entries; manage open trades | — |
-| During the trade | Index-level stop, premium stop, 45-minute time stop if the index goes nowhere | Exit |
+| 11:15 | Exit any open long option (N3: the index moves less than the decay until about 14:15) | Exit |
+| 11:15–14:30 | No new entries | — |
+| During the trade | Index-level stop, premium stop, 45-minute time stop if the index goes nowhere, hard exit by 11:15 | Exit |
 | 15:05 | Square off everything (no overnight) | — |
 | Weekly | Review paper results against the random-entry baseline | Kill or keep |
 
