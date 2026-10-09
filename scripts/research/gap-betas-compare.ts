@@ -14,6 +14,13 @@
  * signal views are equal but source weights differ (the performance record already differs after an
  * earlier difference), "book" when only book gates differ (open positions, the day's entries, a
  * cooldown, a loss cap) or the size changed: knock-ons of an earlier difference.
+ *
+ * Two checks that do not go through the trade list:
+ * - the net P&L difference with a 90% interval from resampling sessions (daily P&L differences);
+ * - GLOBAL_BETA as a forecast, threshold-free: at every decision point before 11:45 IST where it votes,
+ *   its value against the index's log move over the next 90 minutes (its horizon; to the 15:30 close at
+ *   most), from the snapshot's 5-minute closes: correlation, sign hit rate and the mean move in the
+ *   signal's direction (bp), with 90% session-bootstrap intervals.
  */
 import { appendFileSync, mkdirSync, writeFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
@@ -21,10 +28,13 @@ import type { BacktestParams } from "../../src/engine/api-types";
 import type { MarketHistory } from "../../src/engine/backtest/history";
 import { attribution } from "../../src/engine/backtest/metrics";
 import { BacktestRun, configForParams, type BacktestOutput } from "../../src/engine/backtest/runBacktest";
-import { addDays, istAt, istDate, istIso } from "../../src/engine/clock";
+import { addDays, istAt, istDate, istIso, MINUTE_MS, SESSION } from "../../src/engine/clock";
 import { DEFAULT_CONFIG, withOverrides, type EngineConfig } from "../../src/engine/config";
+import { istMinuteOfDay, lastIndexAtOrBefore } from "../../src/engine/market/candles";
+import { sessionBootstrap } from "../../src/engine/market/gapFit";
 import type { ReplayDeps } from "../../src/engine/testing/replayHarness";
-import type { IndexId, PlanDecision, SignalComponent, TradeRecord } from "../../src/engine/types";
+import { MARKET_SYMBOLS, type Candle, type IndexId, type PlanDecision, type SignalComponent, type TradeRecord } from "../../src/engine/types";
+import { quantile } from "../../src/engine/util/math";
 import { fail, parseArgs, readJson, ROOT, str, writeJson } from "../lib/node";
 
 /** The hand-set betas in config.ts before the refit (never fitted). */
@@ -240,6 +250,88 @@ function scope(base: Replay, v: Replay): { points: number; globalDiffers: number
   return { points, globalDiffers, stance, plan, days: days.size };
 }
 
+const DRAWS = 2000;
+const interval = (xs: number[]): [number, number] => [quantile(xs, 0.05), quantile(xs, 0.95)];
+
+/** Net P&L difference (variant − baseline) with a 90% interval from resampling sessions. */
+function pnlDifference(base: Replay, v: Replay): { diff: number; lo: number; hi: number; sessionsDiffering: number } {
+  const byDay = new Map<string, number>(base.out.days.map((d) => [d, 0]));
+  for (const t of v.out.trades) byDay.set(istDate(t.entryMs), (byDay.get(istDate(t.entryMs)) ?? 0) + t.pnl);
+  for (const t of base.out.trades) byDay.set(istDate(t.entryMs), (byDay.get(istDate(t.entryMs)) ?? 0) - t.pnl);
+  const rows = [...byDay].map(([date, d]) => ({ date, d }));
+  const sums = sessionBootstrap(rows, (s) => s.reduce((a, r) => a + r.d, 0), DRAWS, 1);
+  const [lo, hi] = interval(sums);
+  return { diff: r2(rows.reduce((a, r) => a + r.d, 0)), lo: r2(lo), hi: r2(hi), sessionsDiffering: rows.filter((r) => Math.abs(r.d) > 0.005).length };
+}
+
+/** Close of the last 5-minute bar closed by `t` on the same IST date, or null. */
+function closeAt(bars: Candle[], t: number): number | null {
+  const i = lastIndexAtOrBefore(bars, t - 5 * MINUTE_MS);
+  return i >= 0 && istDate(bars[i].t) === istDate(t) ? bars[i].c : null;
+}
+
+interface SignalStats {
+  points: number;
+  votes: number;
+  ic: number;
+  icLo: number;
+  icHi: number;
+  hitRate: number;
+  hitN: number;
+  meanBp: number;
+  meanLo: number;
+  meanHi: number;
+}
+
+/** GLOBAL_BETA's value against the index's next-90-minute log move, at decision points before 11:45 IST. */
+function globalSignalStats(r: Replay): SignalStats {
+  const pts: { date: string; v: number; fwd: number }[] = [];
+  let points = 0;
+  for (const d of r.decisions.values()) {
+    const g = globalOf(d);
+    const m = istMinuteOfDay(d.t);
+    if (!g || m < SESSION.open || m >= SESSION.open + 150) continue;
+    points++;
+    if (g.abstain || g.value === 0) continue;
+    const bars = history.candles[MARKET_SYMBOLS[d.index]] ?? [];
+    const p0 = closeAt(bars, d.t);
+    const p1 = closeAt(bars, Math.min(d.t + 90 * MINUTE_MS, istAt(istDate(d.t), "15:30")));
+    if (p0 === null || p1 === null || !(p0 > 0) || !(p1 > 0)) continue;
+    pts.push({ date: istDate(d.t), v: g.value, fwd: Math.log(p1 / p0) * 1e4 });
+  }
+  const corr = (s: typeof pts) => {
+    const n = s.length;
+    if (n < 3) return NaN;
+    const mv = s.reduce((a, p) => a + p.v, 0) / n;
+    const mf = s.reduce((a, p) => a + p.fwd, 0) / n;
+    let sxy = 0;
+    let sxx = 0;
+    let syy = 0;
+    for (const p of s) {
+      sxy += (p.v - mv) * (p.fwd - mf);
+      sxx += (p.v - mv) ** 2;
+      syy += (p.fwd - mf) ** 2;
+    }
+    return sxx > 0 && syy > 0 ? sxy / Math.sqrt(sxx * syy) : NaN;
+  };
+  const signedMean = (s: typeof pts) => (s.length ? s.reduce((a, p) => a + Math.sign(p.v) * p.fwd, 0) / s.length : NaN);
+  const hits = pts.filter((p) => p.fwd !== 0);
+  const [icLo, icHi] = interval(sessionBootstrap(pts, corr, DRAWS, 1).filter(Number.isFinite));
+  const [meanLo, meanHi] = interval(sessionBootstrap(pts, signedMean, DRAWS, 1).filter(Number.isFinite));
+  return {
+    points,
+    votes: pts.length,
+    ic: corr(pts),
+    icLo,
+    icHi,
+    hitRate: hits.length ? hits.filter((p) => Math.sign(p.v) === Math.sign(p.fwd)).length / hits.length : NaN,
+    hitN: hits.length,
+    meanBp: signedMean(pts),
+    meanLo,
+    meanHi,
+  };
+}
+
 function tradeCell(t: TradeRecord | null): string {
   if (!t) return "—";
   return `${t.tradingSymbol} ×${t.qty}, exit ${hhmm(t.exitMs)} ${t.exitReason}, ₹${r2(t.pnl)}`;
@@ -272,7 +364,34 @@ async function main() {
       }),
     ]),
   );
-  const json: Record<string, unknown> = { data: dataLabel, from, to, sets, summaries: Object.fromEntries(replays.map((r) => [r.name, { ...r.out.summary, globalBetaAttributed: globalAttributed(r) }])), variants: {} };
+  const pnlDiffs = replays.slice(1).map((v) => ({ name: v.name, ...pnlDifference(base, v) }));
+  md.push("");
+  md.push(`Net P&L difference against ${base.name}, with a 90% interval from resampling the ${base.out.days.length} sessions (${DRAWS} draws):`);
+  md.push("");
+  md.push(mdTable([["run", "Δ net ₹", "90% interval ₹", "sessions with a difference"], ...pnlDiffs.map((d) => [d.name, d.diff, `${d.lo} .. ${d.hi}`, d.sessionsDiffering])]));
+  const stats = replays.map((r) => ({ name: r.name, ...globalSignalStats(r) }));
+  const f = (x: number, n = 3) => (Number.isFinite(x) ? x.toFixed(n) : "—");
+  md.push("");
+  md.push(
+    "GLOBAL_BETA as a forecast (no thresholds, no trades): at decision points before 11:45 IST where it votes, its value against the index's log move over the next 90 minutes; 90% intervals from resampling sessions.",
+  );
+  md.push("");
+  md.push(
+    mdTable([
+      ["run", "points before 11:45", "votes", "corr with next 90 min [90%]", "sign hit", "mean move in its direction, bp [90%]"],
+      ...stats.map((s) => [s.name, s.points, s.votes, `${f(s.ic)} [${f(s.icLo)}, ${f(s.icHi)}]`, `${f(s.hitRate * 100, 1)}% (${s.hitN})`, `${f(s.meanBp, 1)} [${f(s.meanLo, 1)}, ${f(s.meanHi, 1)}]`]),
+    ]),
+  );
+  const json: Record<string, unknown> = {
+    data: dataLabel,
+    from,
+    to,
+    sets,
+    summaries: Object.fromEntries(replays.map((r) => [r.name, { ...r.out.summary, globalBetaAttributed: globalAttributed(r) }])),
+    pnlDifferences: pnlDiffs,
+    globalBetaForecast: stats,
+    variants: {},
+  };
   for (const v of replays.slice(1)) {
     const diffs = diffTrades(base, v);
     const sc = scope(base, v);
