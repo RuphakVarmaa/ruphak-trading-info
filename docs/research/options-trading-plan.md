@@ -7,7 +7,7 @@ Prepared Friday 9 October 2026 (IST) from four web-research notes, two studies o
 ## 1. The short answer
 
 1. **Most people lose because buying options is the losing side of a game that is zero-sum before costs.** SEBI's August 2026 studies: 87.7% of individual F&O traders lost money in FY26 (₹91,685 crore); 92% of the losses came from options; 97% of individuals are mostly option *buyers*; the median option-only buyer lost 114% of the capital they used in the year. The other side is algorithmic prop desks and foreign funds: 99% of their profit came from entities that trade by algorithm, mostly as market makers and net option sellers. [R1]
-2. **Our engine is doing the same thing today.** Over 23 Jul–8 Oct it lost ₹188 per trade; random entries with the same rules lose ₹402 per trade. The difference is inside the noise: the current signals are statistically indistinguishable from random entry. [PLAN §1]
+2. **Our engine is doing the same thing today.** Over 23 Jul–8 Oct it lost ₹188 per trade; random entries with the engine's own contract choice, one-lot sizing, entry window and exits lose about ₹378 per trade (±₹50). The engine's advantage over random (₹190 a trade, ₹265 with the copy delay) is inside the noise: the evaluation protocol needs +₹885 to call it real, and the bootstrap 95% interval for the engine's own result runs from −₹884 to +₹849 per trade. The current signals are statistically indistinguishable from random entry. [PLAN §1, WP0]
 3. **There is no published example of a reliably profitable strategy that buys index options intraday, and real NSE prices agree.** Bhat, Pandey & Rao (2024, NSE 2017–2020) found intraday long-option returns of about zero before costs; our replication on exchange prices is worse for buyers: an at-the-money straddle bought at the first trade and valued at the official closing price lost 3.1% a day before costs on NIFTY (2019–2026, t −5.7) and 5.5% on SENSEX (2023–2026, t −6.9), or 4.5% and 6.9% after charges and spreads [WP6]. On real exchange prices for 2024–2026, an at-the-money NIFTY weekly bought at the open lost ₹547 per lot on average when sold at the close (37% of trades profitable) and ₹1,153 when held to expiry (33% profitable; half expired worthless). With perfect hindsight on direction the same option made +₹3,027: **direction is everything, and nothing we tested predicts it.** [PLAN §2, Q1]
 4. **What the evidence does support is a short list of rules** that remove the most expensive trades. **What it does not yet give us is a validated way to pick direction** — every candidate entry trigger we checked was a coin flip once measured from the moment a trader could actually enter (§6). So the plan is: trade far less, pay less for each trade, ignore folklore signals, test the published candidates properly, and risk no real money until one passes.
 
@@ -203,6 +203,24 @@ Until a variant clears §12, **copying trades with real money has negative expec
 
 ---
 
+## 15. What the work packages found (Fri 9 Oct, after the close)
+
+Every package was built behind a switch that is off by default; with all switches off the reference backtest is byte-identical (51 trades, −₹9,595.92). Reports are in [`reports/`](../../reports/); every run is logged in `reports/trials.jsonl` (362 runs so far, which raises the bar for any later claim).
+
+| Package | What it found | State |
+|---|---|---|
+| **WP0** evaluation harness | The current engine **fails** the §12 bar on the ₹5 lakh and ₹10k accounts. It beats matched random entry by ₹265 a trade with the copy delay, against ₹885 needed (₹10k: ₹78 against ₹352); bootstrap 95% interval −₹884 to +₹849 per trade; 4 of 36 ±20% parameter changes come out positive on main, 3 of them only by loosening the edge gate, and 0 of 36 on ₹10k; p = 0.61 against 0.05/116 tries; deflated Sharpe 0.05. Copying a few minutes late made no consistent difference (noise at ~50 trades). | Tooling merged |
+| **WP1** closing-auction bars | The bug is real: since 3 Aug NIFTY's 15:15 bar was flat on 37 of 47 days and its 15:20 bar on 46 of 46, and SENSEX's 15:20 bar printed up to 1.27% off. Leaving bars from 15:15 out of the indicators changes 16 of 51 trades: 50 trades, −₹19,401 (vs −₹9,596), a −1.25 standard-error difference, i.e. noise. The "body clip" alternative is not a clean fix (it fakes a NIFTY–Bank Nifty divergence). | Merged, off; owner decides |
+| **WP2 + WP5** honest gates | Over the holding horizon the index moved 0.54× what the option's implied volatility charged (the gate assumed 1.1×), and the conviction score's slope on the next move was −0.10 ± 0.26 (keeping even one of the 51 trades needs ≥ 0.70). Either gate blocks all 51 trades. The HAR-RV forecast of the session's variance averaged 0.47–0.50× what the options charged and passed 0 of 4,085 decision hours over 20 months. | Merged, off; switching on = pausing buying |
+| **WP3 + WP4** published rules | Noise-area momentum and the 5-minute opening-range breakout, built exactly as published, lose on our instrument: −₹226 to −₹546 a trade on 60 days of 5-minute data, −₹240 to −₹308 a trade over 2 years of hourly data (≈ 700 trades). Noise-area does move the index the right way (+4–5 basis points a trade, t ≈ 2.2), but that is worth ≈ ₹400 a lot against ≈ ₹650–700 of option costs. No variant beats its random-entry placebo by 2 standard errors; every ±20% change is negative. | Merged, dormant |
+| **WP6** real option prices | Exchange files: NSE 2019–2026, BSE 2023–2026. The straddle buyer loses during the session (NIFTY −3.1% a day, SENSEX −5.5%, before costs) and roughly breaks even overnight. Our model prices fail the real-range check (39% in range; 67–70% calibrated; bar 90%). | Merged, `pricing.ivSource` off |
+| **WP7** overnight iron fly | Can't be priced honestly from end-of-day files; even the favourable reading is flat or negative in 2024–26. | No-go |
+| Gap model weights | Being re-fitted and tested out of sample (the built-in weights overstate the gap ≈ 2.1×). | In progress |
+
+**What this means.** Nothing we built or found gives an option *buyer* an edge on NIFTY or SENSEX after costs: not our signals, not the published rules, not a volatility filter. The one consistent premium in the data is on the *selling* side during the session, which needs margin, defined-risk structures and intraday option quotes to test honestly (end-of-day files can't time the entry, as WP7 showed). Until something passes §12, the choice is between keeping the paper engine running purely to measure, or switching on the honest gate (WP2), which stops it buying. Either way, §13 stands: no real money.
+
+---
+
 ## Notes and sources
 
 - [R1 — why retail loses, who wins, SEBI studies, Jane Street case](notes/r1-why-retail-loses.md)
@@ -214,3 +232,7 @@ Until a variant clears §12, **copying trades with real money has negative expec
 - [Q1 — premium timing, volatility premium and holding period on real prices](notes/q1-premium-timing.md)
 - [WP6 — exchange option prices: calibration, the real-price check, the day/night straddle split](../../reports/wp6-real-prices.md)
 - [WP7 — overnight short-volatility study (no-go)](overnight-short-vol.md)
+- [WP0 — evaluation harness and the current engine's verdict](../../reports/wp0-harness.md)
+- [WP1 — closing-auction cleaning](../../reports/wp1-cleaning.md)
+- [WP2 + WP5 — honest edge gate and HAR-RV gate](../../reports/wp2-wp5-gates.md)
+- [WP3 + WP4 — published strategies](../../reports/wp3-wp4-published.md)
