@@ -384,7 +384,7 @@ export function evaluateProtocol(r: AccountRuns, label: string, ctx: ProtocolCon
   const costOk = copy.fillDelayBars >= th.copyDelay.fillDelayBars && copy.extraTicks >= th.copyDelay.extraTicks;
   add(4, "Costs (charges, spread, slippage, copy delay)", costOk ? "PASS" : "FAIL", costOk ? `evaluated with every cost; copy delay: ${describeCopyDelay(copy)}` : `copy delay below the §5.4 penalty (${describeCopyDelay(copy)})`, [
     `Charges ${rs(ev.chargesPerTrade)}/trade (dated schedule from ${sched.effectiveFrom}: STT ${sched.sttSellPct}% on sells, brokerage ₹${sched.brokeragePerOrder}/order); synthetic spread max(${r.cfg.pricing.spreadModel.minTicks} tick, ${r.cfg.pricing.spreadModel.pctOfPremium}% of premium); market orders pay ${r.cfg.broker.slippageTicksMarket} ticks beyond visible depth.`,
-    `Copy delay costs the strategy ${rs(nd.mean - ev.mean)}/trade (${rs(nd.mean, 0)} → ${rs(ev.mean, 0)}; ${nd.trades} → ${ev.trades} trades, the trade list can change) and the placebo ${rs(plNd.mean - pl.mean)}/trade on the same ${pl.n} draws (${rs(plNd.mean)} → ${rs(pl.mean)}).`,
+    `Copy delay changes the strategy by ${pm(ev.mean - nd.mean)}/trade (${rs(nd.mean, 0)} → ${rs(ev.mean, 0)}; ${nd.trades} → ${ev.trades} trades, the trade list can change) and the placebo by ${pm(pl.mean - plNd.mean)}/trade on the same ${pl.n} draws (${rs(plNd.mean)} → ${rs(pl.mean)}).`,
   ]);
 
   // 5. Beats the random-entry placebo with the same exits, costs and horizon.
