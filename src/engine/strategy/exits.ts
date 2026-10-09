@@ -1,4 +1,5 @@
 /** Exit rules for an open long option position, evaluated in strict priority order. */
+import { istAt, istDate } from "../clock";
 import { strategyMode, type EngineConfig } from "../config";
 import type { Conviction, ExitDecision, Position, Quote, ScoredEvent } from "../types";
 import type { PublishedSignal } from "./published";
@@ -69,7 +70,11 @@ export function publishedIndexExit(p: Position, q: Quote, ctx: ExitContext, cfg:
 export function evaluateExits(p: Position, q: Quote, ctx: ExitContext, cfg: EngineConfig): ExitDecision | null {
   const mark = q.bid > 0 ? q.bid : q.ltp;
   if (ctx.haltReason) return { reason: ctx.haltReason.reason, orderType: "MARKET", detail: ctx.haltReason.detail };
-  if (ctx.nowMs >= p.stops.squareOffMs) return { reason: "SQUARE_OFF", orderType: "MARKET", detail: "intraday square-off time" };
+  if (ctx.nowMs >= p.stops.squareOffMs) {
+    // WP9b: a plan made with N3 on carries its morning exit time as the square-off.
+    const early = p.stops.squareOffMs < istAt(istDate(p.entryMs), cfg.exits.squareOffIst);
+    return { reason: "SQUARE_OFF", orderType: "MARKET", detail: early ? "morning-only exit (N3)" : "intraday square-off time" };
+  }
   if (mark <= stopPrice(p)) return { reason: "STOP", orderType: "MARKET", detail: `premium ${mark.toFixed(2)} at or below stop ${stopPrice(p).toFixed(2)}` };
   // --- WP3/WP4 published strategies: begin ---
   const indexExit = publishedIndexExit(p, q, ctx, cfg);

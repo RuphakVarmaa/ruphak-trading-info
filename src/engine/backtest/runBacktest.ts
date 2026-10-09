@@ -56,6 +56,11 @@ export interface BacktestInput {
   extraTicks?: number;
   /** Keep the regime and conviction each index had at every decision (for the random-entry placebo). */
   recordSignals?: boolean;
+  /**
+   * WP9b: false skips main's end-of-day per-source performance update, so Kelly sizing and the decay
+   * monitor never act and a published rule trades unconditionally (as WP3 ran them). Default true.
+   */
+  perfOverlay?: boolean;
 }
 
 /** What the engine saw for one index at one decision time. */
@@ -340,7 +345,7 @@ export class BacktestRun {
       for (const f of this.followerDeps.values()) await runPositionCycle(f, { convictions: r.convictions, events });
     }
     deps.clock.set(istAt(day, "16:00"));
-    await runEndOfDay(deps);
+    await runEndOfDay(deps, this.input.perfOverlay === false ? { performance: false } : {});
     for (const f of this.followerDeps.values()) await runEndOfDay(f, { grade: false, performance: false });
     return day;
   }

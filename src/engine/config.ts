@@ -241,6 +241,13 @@ export interface EngineConfig {
     maxQuotes: number;
     /** Per-index band (lot sizes differ, so the same rupees per lot means a different premium). */
     byIndex: Partial<Record<IndexId, PremiumBand>>;
+    // --- WP9b buy-signal rules (begin) ---
+    /**
+     * ATM mode only: buy this many strikes in the money (calls below, puts above the ATM strike).
+     * 0 (default) keeps the ATM strike. Plan §7: ATM or one strike in the money (delta 0.5-0.7).
+     */
+    itmSteps: number;
+    // --- WP9b buy-signal rules (end) ---
   };
   exits: {
     stopPct: number;
@@ -302,7 +309,40 @@ export interface EngineConfig {
   /** Which rule makes the entry decisions. CONVICTION (the default) is the engine's own model, unchanged. */
   strategy: StrategyConfig;
   // --- WP3/WP4 published strategies: end ---
+  // --- WP9b buy-signal rules: begin ---
+  /** The plan's no-entry rules N2-N4 (docs/research/options-trading-plan.md §4), each off by default. */
+  rules: BuyRulesConfig;
+  // --- WP9b buy-signal rules: end ---
 }
+
+// --- WP9b buy-signal rules: begin ---
+/**
+ * Plan §4 rules that remove trades (none adds one). Research switches: each is off by default and
+ * tightening only (reports/wp9b-buy-signals.md has the protocol verdicts). Thresholds are the plan's,
+ * with the definitions of the evidence behind them (docs/research/notes/q1-premium-timing.md §6:
+ * every condition uses data up to the previous close).
+ */
+export interface BuyRulesConfig {
+  /** N2: no entry after a volatility jump or a big run. Any one condition blocks the index for the decision. */
+  n2: {
+    enabled: boolean;
+    /** India VIX's previous close more than this % above its close 5 sessions before that. */
+    vix5dJumpPct: number;
+    /** India VIX now more than this % above the previous close ("on the day"; the EVENT regime's own measure). */
+    vixDayJumpPct: number;
+    /** Previous VIX close's percentile rank among the closes of the prior year above this (2/3: the top third). */
+    vixPctileAbove: number;
+    /** Closes in the percentile window, the current one included (252: a year; at least 120 needed). */
+    vixPctileSessions: number;
+    /** |ln(index close(D-1) / close(D-6))| above this % (a run of more than 2% over 5 sessions). */
+    run5dPct: number;
+  };
+  /** N3: morning only. New entries from entryFromIst until (not at) exitByIst; every position is closed at exitByIst. */
+  n3: { enabled: boolean; entryFromIst: string; exitByIst: string };
+  /** N4: never buy a contract with fewer than minSessionsLeft sessions to expiry (2: never one session or less); take the next weekly instead. */
+  n4: { enabled: boolean; minSessionsLeft: number };
+}
+// --- WP9b buy-signal rules: end ---
 
 // --- WP3/WP4 published strategies: begin ---
 /**
@@ -310,8 +350,8 @@ export interface EngineConfig {
  * are published intraday rules implemented exactly as published (src/engine/strategy/published/),
  * for paper replays and research only; every risk gate, loss cap and the premium stop still apply.
  */
-export type StrategyMode = "CONVICTION" | "NOISE_AREA" | "ORB5";
-export const STRATEGY_MODES: readonly StrategyMode[] = ["CONVICTION", "NOISE_AREA", "ORB5"];
+export type StrategyMode = "CONVICTION" | "NOISE_AREA" | "ORB5" | "FIRST_CANDLE";
+export const STRATEGY_MODES: readonly StrategyMode[] = ["CONVICTION", "NOISE_AREA", "ORB5", "FIRST_CANDLE"];
 
 export interface StrategyConfig {
   mode: StrategyMode;
@@ -347,6 +387,16 @@ export interface StrategyConfig {
      */
     entry: "PUBLISHED" | "ENGINE_WINDOW";
   };
+  // --- WP9b buy-signal rules (begin) ---
+  /**
+   * Plan §6 E2(a): a first candle of `rangeMin` minutes from 09:15 whose body (close / open - 1) is
+   * larger than minBodyPct enters in its direction after the candle closes, at the first decision
+   * inside the entry window; one entry per index a day, held to the square-off (or N3's exit) with
+   * the premium stop as a disaster stop. The trade is measured from its entry: the candle's own move
+   * is never counted. Threshold 0.24% from the 15-minute study cited in docs/research/notes/r4-preopen-gaps.md.
+   */
+  firstCandle: { rangeMin: number; minBodyPct: number };
+  // --- WP9b buy-signal rules (end) ---
 }
 // --- WP3/WP4 published strategies: end ---
 
@@ -541,6 +591,9 @@ export const DEFAULT_CONFIG: EngineConfig = {
     maxOtmSteps: 8,
     maxQuotes: 4,
     byIndex: {},
+    // --- WP9b (begin) ---
+    itmSteps: 0,
+    // --- WP9b (end) ---
   },
   exits: {
     stopPct: -30,
@@ -591,8 +644,19 @@ export const DEFAULT_CONFIG: EngineConfig = {
     mode: "CONVICTION",
     noiseArea: { lookbackSessions: 14, bandMult: 1, decisionEveryMin: 30, stop: "OPPOSITE_BAND", sizing: "ENGINE", volTargetPct: 2, maxLeverage: 4 },
     orb5: { rangeMin: 5, targetR: 10, entry: "ENGINE_WINDOW" },
+    // --- WP9b (begin) ---
+    firstCandle: { rangeMin: 15, minBodyPct: 0.24 },
+    // --- WP9b (end) ---
   },
   // --- WP3/WP4 published strategies: end ---
+  // --- WP9b buy-signal rules: begin ---
+  // All off. Thresholds are the plan's (§4); see BuyRulesConfig and reports/wp9b-buy-signals.md.
+  rules: {
+    n2: { enabled: false, vix5dJumpPct: 10, vixDayJumpPct: 8, vixPctileAbove: 2 / 3, vixPctileSessions: 252, run5dPct: 2 },
+    n3: { enabled: false, entryFromIst: "09:30", exitByIst: "11:15" },
+    n4: { enabled: false, minSessionsLeft: 2 },
+  },
+  // --- WP9b buy-signal rules: end ---
 };
 
 export type DeepPartial<T> = {
@@ -770,8 +834,42 @@ export function validateConfig(cfg: EngineConfig): string[] {
   // --- WP3/WP4 published strategies: begin ---
   p.push(...strategyProblems(cfg));
   // --- WP3/WP4 published strategies: end ---
+  // --- WP9b buy-signal rules: begin ---
+  p.push(...buyRuleProblems(cfg));
+  // --- WP9b buy-signal rules: end ---
   return p;
 }
+
+// --- WP9b buy-signal rules: begin ---
+function buyRuleProblems(cfg: EngineConfig): string[] {
+  const p: string[] = [];
+  const itm: unknown = cfg.selection.itmSteps;
+  if (itm !== undefined && !(Number.isInteger(itm) && (itm as number) >= 0 && (itm as number) <= 4)) p.push("selection.itmSteps must be an integer 0-4");
+  const r = cfg.rules;
+  if (!r) return p;
+  const flag = (name: string, v: unknown) => {
+    if (typeof v !== "boolean") p.push(`${name} must be true or false`);
+  };
+  const posNum = (name: string, v: number) => {
+    if (!(Number.isFinite(v) && v > 0)) p.push(`${name} must be > 0 (got ${v})`);
+  };
+  flag("rules.n2.enabled", r.n2?.enabled);
+  posNum("rules.n2.vix5dJumpPct", r.n2?.vix5dJumpPct);
+  posNum("rules.n2.vixDayJumpPct", r.n2?.vixDayJumpPct);
+  posNum("rules.n2.run5dPct", r.n2?.run5dPct);
+  if (!(r.n2?.vixPctileAbove > 0 && r.n2?.vixPctileAbove < 1)) p.push("rules.n2.vixPctileAbove must be within (0, 1)");
+  if (!(Number.isInteger(r.n2?.vixPctileSessions) && r.n2.vixPctileSessions >= 120 && r.n2.vixPctileSessions <= 1000)) p.push("rules.n2.vixPctileSessions must be an integer 120-1000");
+  flag("rules.n3.enabled", r.n3?.enabled);
+  const from = r.n3?.entryFromIst;
+  const to = r.n3?.exitByIst;
+  if (!HHMM.test(from ?? "") || !HHMM.test(to ?? "")) p.push("rules.n3.entryFromIst and exitByIst must be HH:MM");
+  else if (!(from < to)) p.push("rules.n3.entryFromIst must be before exitByIst");
+  else if (to > cfg.exits.squareOffIst) p.push("rules.n3.exitByIst must not be after exits.squareOffIst");
+  flag("rules.n4.enabled", r.n4?.enabled);
+  if (!(Number.isInteger(r.n4?.minSessionsLeft) && r.n4.minSessionsLeft >= 1 && r.n4.minSessionsLeft <= 5)) p.push("rules.n4.minSessionsLeft must be an integer 1-5");
+  return p;
+}
+// --- WP9b buy-signal rules: end ---
 
 // --- WP3/WP4 published strategies: begin ---
 /** The entry rule in use (CONVICTION when the config predates the strategy block). */
@@ -799,6 +897,13 @@ function strategyProblems(cfg: EngineConfig): string[] {
   intIn("strategy.orb5.rangeMin", o.rangeMin, 5, 60, 5);
   if (!(Number.isFinite(o.targetR) && o.targetR > 0)) p.push("strategy.orb5.targetR must be > 0");
   if (o.entry !== "PUBLISHED" && o.entry !== "ENGINE_WINDOW") p.push("strategy.orb5.entry must be PUBLISHED or ENGINE_WINDOW");
+  // --- WP9b (begin) ---
+  const fc = s.firstCandle;
+  if (fc) {
+    intIn("strategy.firstCandle.rangeMin", fc.rangeMin, 5, 60, 5);
+    if (!(Number.isFinite(fc.minBodyPct) && fc.minBodyPct > 0 && fc.minBodyPct < 5)) p.push("strategy.firstCandle.minBodyPct must be within (0, 5)");
+  } else if (s.mode === "FIRST_CANDLE") p.push("strategy.firstCandle is required in FIRST_CANDLE mode");
+  // --- WP9b (end) ---
   // The published rules are flat, long or short on an index, never two positions on one index.
   if (s.mode !== "CONVICTION" && cfg.sizing.maxOpenPerIndex !== 1) p.push(`strategy.mode ${s.mode} holds at most one position per index: sizing.maxOpenPerIndex must be 1`);
   if (s.mode === "ORB5" && o.entry === "PUBLISHED" && HHMM.test(cfg.gates.noEntryBeforeIst)) {
