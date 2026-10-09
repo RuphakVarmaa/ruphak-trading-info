@@ -283,6 +283,18 @@ describe("acceptance protocol verdicts", () => {
     expect(v[9]).toBe("INSUFFICIENT");
   });
 
+  it("cannot decide multiple testing once the Bonferroni level is below the bootstrap's smallest p-value", () => {
+    const runs = fakeAccountRuns({ trades: 400, days: 200, perTrade: (i) => 1500 + ((i * 7919) % 1000) - 500, placeboMean: -364, perturbNet: Array(36).fill(500_000) });
+    const ledger = (n: number) => ({ path: "mem", n, valid: n, invalid: 0, byKind: { strategy: n }, srVariance: null, srTrials: 0 });
+    const verdict9 = (n: number, resamples: number) => evaluateProtocol(runs, "Main account", ctx({ frozen: "x", ledger: ledger(n), bootstrap: { resamples, seed: 7 } })).criteria.find((c) => c.id === 9)!;
+    // 10,000 resamples resolve p down to 1/10,001: enough for 0.05/500, not for 0.05/501.
+    expect(verdict9(500, 10_000).verdict).toBe("PASS");
+    const c = verdict9(501, 10_000);
+    expect(c.verdict).toBe("INSUFFICIENT");
+    expect(c.summary).toMatch(/--bootstrap 10020 or more/);
+    expect(verdict9(501, 10_020).verdict).toBe("PASS");
+  });
+
   it("combines verdicts", () => {
     expect(overallVerdict(["PASS", "PASS"])).toBe("PASS");
     expect(overallVerdict(["PASS", "N/A"])).toBe("INSUFFICIENT");

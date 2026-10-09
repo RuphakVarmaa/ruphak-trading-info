@@ -450,7 +450,13 @@ export function evaluateProtocol(r: AccountRuns, label: string, ctx: ProtocolCon
     const p = Math.max(boot.perTrade.p, boot.perSession.p);
     dsr = deflatedSharpe(sessionReturns(sessionPnls(r.delayed.trades, days), capital), n, ctx.ledger.srVariance);
     const vSource = ctx.ledger.srVariance !== null ? `variance of ${ctx.ledger.srTrials} logged strategy trials` : "null sampling variance 1/(T−1) (fewer than 2 logged Sharpe ratios)";
-    add(9, "Multiple-testing control", p < level ? "PASS" : "FAIL", `bootstrap p = ${pval(p)} vs Bonferroni ${th.alpha}/${n} = ${pval(level)}; deflated Sharpe ratio ${dsr.dsr.toFixed(3)}`, [
+    // The bootstrap cannot report a p-value below 1/(R+1): once the Bonferroni level falls under that
+    // floor, even a strategy that won every resample would fail, so the run cannot decide.
+    const pFloor = 1 / (1 + boot.resamples);
+    const unresolved = pFloor >= level;
+    const verdict: Verdict = unresolved ? "INSUFFICIENT" : p < level ? "PASS" : "FAIL";
+    const floorNote = unresolved ? ` (${boot.resamples.toLocaleString("en-IN")} resamples cannot resolve p below ${pval(pFloor)}; rerun with --bootstrap ${Math.ceil(n / th.alpha)} or more)` : "";
+    add(9, "Multiple-testing control", verdict, `bootstrap p = ${pval(p)} vs Bonferroni ${th.alpha}/${n} = ${pval(level)}${floorNote}; deflated Sharpe ratio ${dsr.dsr.toFixed(3)}`, [
       `N_trials = ${n} lines in ${ctx.ledger.path} (${Object.entries(ctx.ledger.byKind).map(([k, v]) => `${k} ${v}`).join(", ")}${ctx.ledger.invalid ? `, ${ctx.ledger.invalid} unreadable` : ""}); p is the larger of the per-trade and per-session bootstrap p-values.`,
       `DSR (Bailey & López de Prado 2014) on net P&L per session: SR ${dsr.sr.toFixed(3)}/session (${(dsr.sr * Math.sqrt(252)).toFixed(2)} annualized), T ${dsr.T}, skew ${dsr.skew.toFixed(2)}, kurtosis ${dsr.kurtosis.toFixed(2)}; SR₀ ${dsr.sr0.toFixed(3)} from N ${dsr.nTrials} and V[SR] ${dsr.srVariance.toExponential(2)} (${vSource}); PSR(0) ${dsr.psr.toFixed(3)}. DSR ≥ 0.95 would be significant at 5%.`,
     ]);

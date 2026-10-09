@@ -167,7 +167,9 @@ export class YahooMarketDataSource implements MarketDataSource {
     }
 
     let freshest = -Infinity;
-    // When each traded index was last observed: its broker LTP fetch, else its newest bar / trade time.
+    // When each traded index's bars were last observed: the newest bar's close, capped by Yahoo's trade
+    // time. A broker LTP refreshes the spot but not the bars every indicator is computed from, so it
+    // does not count here: a live LTP must not let a frozen bar series pass the per-index data_fresh gate.
     const observed: Partial<Record<FeatureIndexId, number>> = {};
     if (this.ltp) {
       try {
@@ -177,10 +179,7 @@ export class YahooMarketDataSource implements MarketDataSource {
           if (typeof v === "number" && Number.isFinite(v) && v > 0) {
             ltp[id] = v;
             asOfMs[INDEX_SYMBOL[id]] = now;
-            if (FRESHNESS_INDICES.includes(id)) {
-              freshest = now;
-              observed[id] = now;
-            }
+            if (FRESHNESS_INDICES.includes(id)) freshest = now;
           }
         }
       } catch (err) {
@@ -197,7 +196,7 @@ export class YahooMarketDataSource implements MarketDataSource {
       if (mt !== undefined && mt >= last.t) obs = Math.min(obs, mt);
       obs = Math.min(obs, now);
       if (obs > freshest) freshest = obs;
-      if (observed[id] === undefined || obs > observed[id]!) observed[id] = obs;
+      observed[id] = obs;
     }
     const dataAgeSec = Number.isFinite(freshest) ? Math.max(0, (now - freshest) / 1000) : NO_DATA_AGE_SEC;
     const dataAgeSecByIndex: Partial<Record<FeatureIndexId, number>> = {};

@@ -334,3 +334,51 @@ describe("a daily chart that lags the previous session", () => {
     expect(s.dailyCalls()).toBe(3);
   });
 });
+
+describe("per-index data age", () => {
+  const t = istAt("2026-10-07", "11:00") + 20_000;
+  // 9 Oct 2026: Yahoo kept serving SENSEX's previous-session 5-minute bars into the next session.
+  const frozenBars: Candle[] = [
+    { t: istAt("2026-10-06", "15:20"), o: 81_000, h: 81_050, l: 80_990, c: 81_020, v: 0 },
+    { t: istAt("2026-10-06", "15:25"), o: 81_020, h: 81_060, l: 81_000, c: 81_040, v: 0 },
+  ];
+  const frozenTraded = istAt("2026-10-06", "15:30") + 31_000;
+  const frozenSensex = () => fakeYahoo({ override: (c) => (c.interval === "5m" && c.symbol === "^BSESN" ? chartBody(c.symbol, frozenBars, frozenTraded / 1000) : null) });
+
+  it("marks a frozen SENSEX stale while NIFTY stays fresh", async () => {
+    const src = new YahooMarketDataSource({ calendar: cal, fetchImpl: frozenSensex().fetchImpl, now: () => t });
+    const snap = await src.snapshot(t);
+    expect(snap.dataAgeSecByIndex?.NIFTY).toBeLessThanOrEqual(300);
+    expect(snap.dataAgeSecByIndex?.SENSEX).toBeGreaterThan(17 * 3600);
+    // The snapshot-wide age still reports the freshest index.
+    expect(snap.dataAgeSec).toBe(snap.dataAgeSecByIndex?.NIFTY);
+  });
+
+  it("does not let a broker LTP make frozen SENSEX bars look fresh", async () => {
+    const src = new YahooMarketDataSource({ calendar: cal, fetchImpl: frozenSensex().fetchImpl, now: () => t, ltp: async () => ({ NIFTY: 25_000, SENSEX: 82_000 }) });
+    const snap = await src.snapshot(t);
+    expect(snap.ltp.SENSEX).toBe(82_000); // the spot still comes from the broker
+    expect(snap.dataAgeSec).toBe(0);
+    expect(snap.dataAgeSecByIndex?.SENSEX).toBeGreaterThan(17 * 3600);
+    expect(snap.dataAgeSecByIndex?.NIFTY).toBeLessThanOrEqual(300);
+  });
+
+  it("ages an index whose fetch starts failing, and only that index", async () => {
+    const c = clock(t);
+    const fail = new Set<string>();
+    const sensexUpTo = (now: number): Candle[] => {
+      const out: Candle[] = [];
+      for (let b = istAt("2026-10-07", "09:15"); b <= now; b += 5 * 60_000) out.push({ t: b, o: 82_000, h: 82_010, l: 81_990, c: 82_005, v: 0 });
+      return out;
+    };
+    const yahoo = fakeYahoo({ fail, override: (q) => (q.interval === "5m" && q.symbol === "^BSESN" ? chartBody(q.symbol, sensexUpTo(c.now()), (c.now() - 20_000) / 1000) : null) });
+    const src = new YahooMarketDataSource({ calendar: cal, fetchImpl: yahoo.fetchImpl, now: c.now });
+    const before = await src.snapshot(t);
+    expect(before.dataAgeSecByIndex?.SENSEX).toBe(20);
+    fail.add("^BSESN");
+    const later = c.advance(10 * 60_000);
+    const after = await src.snapshot(later);
+    expect(after.dataAgeSecByIndex?.SENSEX).toBe(620); // last trade 11:00:00, now 11:10:20
+    expect(after.dataAgeSecByIndex?.NIFTY).toBeLessThanOrEqual(300);
+  });
+});
