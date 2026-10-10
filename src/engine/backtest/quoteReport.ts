@@ -1,12 +1,13 @@
 /**
- * What the recorded Groww quotes (D1 `option_quotes`, src/engine/market/quoteRecorder.ts) say about
+ * What the recorded option quotes (D1 `option_quotes`, src/engine/market/quoteRecorder.ts: the Groww Trade
+ * API or Upstox's Market Data API, by each row's `source`) say about
  * selling the at-the-money straddle at the open: the question WP11 left open (reports/wp11-real-intraday.md
  * §9). `npm run quotes-report` reads the table and prints; every number is computed here. Research only:
  * nothing in the engine imports this, and nothing here places an order.
  *
  * Per session and index, for convention B (the nearest expiry that is not today's, the engine's rule) and A
  * (the contract expiring today on its expiry day, otherwise the same as B):
- * - the straddle is the listed strike nearest the snapshot's Groww spot (a tie goes to the lower strike)
+ * - the straddle is the listed strike nearest the snapshot's recorded spot (a tie goes to the lower strike)
  *   whose call and put both have a bid and an ask;
  * - entries: each snapshot in 09:15:15-09:16:30 (the first is the trade), the first snapshot in the 09:20
  *   and 09:30 minutes, and the 11:15 slot. The SELL value is the two bids; it is compared with the two
@@ -149,7 +150,7 @@ export function atmStraddle(c: ChainSnapshot): StraddleQuote | null {
 
 export interface MinuteTrade {
   price: number;
-  /** Exchange time of that trade (null when Groww sent no last-trade time and the price is the LTP of the minute's last quote). */
+  /** Exchange time of that trade (null when the source sent no last-trade time and the price is the LTP of the minute's last quote). */
   tradeMs: number | null;
   /** True when a quote fetched after the minute ended still showed this trade: it is the minute's last trade. */
   exact: boolean;
@@ -530,7 +531,15 @@ export interface QuoteReport {
   slippage: { index: IndexId | "both"; convention: Convention; entry: EntryId; stat: ReturnType<typeof clusteredMean>; vsLtp: ReturnType<typeof clusteredMean> }[];
   /** Null until MIN_SESSIONS sessions exist. */
   stats: VariantStats[] | null;
-  dataQuality: { quotes: number; withBidAsk: number; withLastTradeTime: number; snapshots: number; openSnapshotsPerSession: number | null };
+  dataQuality: {
+    quotes: number;
+    withBidAsk: number;
+    withLastTradeTime: number;
+    snapshots: number;
+    openSnapshotsPerSession: number | null;
+    /** Recorded rows by `source` (the Groww Trade API, Upstox). */
+    bySource: Record<string, number>;
+  };
 }
 
 export function buildQuoteReport(rows: readonly QuoteRow[], o: StatsOptions & { minSessions?: number }): QuoteReport {
@@ -605,6 +614,7 @@ export function buildQuoteReport(rows: readonly QuoteRow[], o: StatsOptions & { 
       withLastTradeTime: recorded.filter((r) => r.lastTradeMs !== null).length,
       snapshots: new Set(recorded.map((r) => r.snapshotMs)).size,
       openSnapshotsPerSession: openCounts.length > 0 ? quantile(openCounts, 0.5) : null,
+      bySource: recorded.reduce<Record<string, number>>((m, r) => ((m[r.source] = (m[r.source] ?? 0) + 1), m), {}),
     },
   };
 }
@@ -619,7 +629,7 @@ export function trialRecords(stats: readonly VariantStats[], o: { ts: string; da
     data: o.data,
     trades: s.trades,
     net: Math.round(s.net * 100) / 100,
-    notes: `recorded Groww quotes; ${inr(s.boot.perSession.estimate)} a session; verdict ${s.verdict}`,
+    notes: `recorded option quotes; ${inr(s.boot.perSession.estimate)} a session; verdict ${s.verdict}`,
     kind: "strategy",
     sessions: s.sessions,
     meanPerTrade: s.trades > 0 ? Math.round((s.net / s.trades) * 100) / 100 : 0,

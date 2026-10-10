@@ -1,5 +1,5 @@
 /**
- * What the recorded Groww option quotes (D1 `option_quotes`) say about selling the at-the-money straddle at
+ * What the recorded option quotes (D1 `option_quotes`: Groww Trade API or Upstox) say about selling the at-the-money straddle at
  * the open: the question WP11 left open (reports/wp11-real-intraday.md §9; docs/DATA.md). Read-only: it
  * reads D1 and prints. Definitions and math: src/engine/backtest/quoteReport.ts.
  *
@@ -210,9 +210,10 @@ async function main(): Promise<void> {
   const share = (n: number) => (dq.quotes > 0 ? `${((n / dq.quotes) * 100).toFixed(1)}%` : "–");
   console.log(`\n${r.rows.toLocaleString("en-IN")} rows, ${r.sessions.length} session(s)${r.sessions.length > 0 ? ` (${r.sessions[0]} .. ${r.sessions.at(-1)})` : ""}, ${dq.snapshots.toLocaleString("en-IN")} snapshots (manual ones left out).`);
   if (r.rows === 0) {
-    console.log("No recorded quotes yet: the trading DO records them on trading days once GROWW_API_KEY and GROWW_TOTP_SECRET are set (docs/DATA.md).");
+    console.log("No recorded quotes yet: the trading DO records them on trading days once a quote source is set: the free UPSTOX_ANALYTICS_TOKEN or the Groww Trade API keys (docs/DATA.md).");
   } else {
-    console.log(`Quotes with a bid and an ask: ${share(dq.withBidAsk)}; with Groww's last-trade time: ${share(dq.withLastTradeTime)}; median open-window snapshots a session: ${dq.openSnapshotsPerSession ?? "–"}.`);
+    console.log(`Quotes with a bid and an ask: ${share(dq.withBidAsk)}; with the exchange's last-trade time: ${share(dq.withLastTradeTime)}; median open-window snapshots a session: ${dq.openSnapshotsPerSession ?? "–"}.`);
+    console.log(`Sources: ${Object.entries(dq.bySource).map(([src, n]) => `${src} ${share(n)}`).join("; ")}.`);
     if (args["no-sessions"] !== true) printSessions(r);
     printSpreads(r);
     printSummary(r);

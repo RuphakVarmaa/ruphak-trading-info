@@ -5,8 +5,9 @@
  * (features -> conviction -> gates -> plan -> entry) in the current entry mode, then position
  * cycles for every mode with open positions, polling exits twice more while positioned.
  * Off hours it refreshes a market snapshot hourly and sleeps until 09:00 IST.
- * After a tick (never inside it) the read-only quote recorder may take a snapshot of Groww option quotes
- * for the 09:15 straddle study (workers/engine/src/quoteRecorder.ts); it places no orders.
+ * After a tick (never inside it) the read-only quote recorder may take a snapshot of option quotes (the
+ * Groww Trade API, or Upstox's free read-only token) for the 09:15 straddle study
+ * (workers/engine/src/quoteRecorder.ts); it places no orders.
  *
  * Live orders need three keys here (LIVE_TRADING var, settings.mode LIVE, an unexpired arm)
  * plus RELAY_LIVE on the relay; otherwise every order is simulated by the PaperBroker.
@@ -49,7 +50,7 @@ import { runBarArchive, type BarArchiveOptions, type BarArchiveStatus } from "..
 import { sendEntryAlert, sendExitAlert, sendTrailAlerts, type CopyAlertContext } from "../copyAlerts";
 import { CachedInstruments } from "../instruments";
 import { QUOTE_RECORDER_STATE_KEY, QuoteRecorder, type QuoteRecorderStatus, type RecorderState } from "../quoteRecorder";
-import { accountRuntime, accountViews, enabledAccounts, errorMessage, growwDataClient, growwRecorderClient, makeRuntime, relayClient, type AccountRuntime, type Runtime } from "../runtime";
+import { accountRuntime, accountViews, enabledAccounts, errorMessage, growwDataClient, makeRuntime, recorderQuoteSource, relayClient, type AccountRuntime, type Runtime } from "../runtime";
 import { Alerts } from "../telegram";
 
 const LOOP_MS = 30_000;
@@ -175,6 +176,8 @@ export class TradingEngineDO extends DurableObject<Env> {
       allowSynthetic: () => this.entryModeNow === "PAPER",
     });
     this.alerts = new Alerts(env, repo.state, logger);
+    // Groww Trade API when its keys are set, else the free read-only Upstox token, else none (runtime.ts).
+    const recorderSource = recorderQuoteSource(env, this.tokens);
     this.quoteRecorder = new QuoteRecorder({
       db: env.DB,
       kv: env.KV,
@@ -184,7 +187,8 @@ export class TradingEngineDO extends DurableObject<Env> {
           await ctx.storage.put(QUOTE_RECORDER_STATE_KEY, s);
         },
       },
-      source: growwRecorderClient(env, this.tokens),
+      source: recorderSource.source,
+      disabledReason: recorderSource.reason ?? undefined,
       // Its own copy of the real instrument master: never synthetic contracts.
       instruments: new CachedInstruments({ env, cfg, calendar, marketContext: this.marketContext, logger, allowSynthetic: () => false }),
       calendar: async () => this.calendarFor(await repo.settings.get()),

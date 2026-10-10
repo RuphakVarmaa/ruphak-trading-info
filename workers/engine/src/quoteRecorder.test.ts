@@ -13,8 +13,9 @@ import { DEFAULT_CONFIG } from "../../../src/engine/config";
 import { InstrumentMaster } from "../../../src/engine/instruments/instrumentMaster";
 import { syntheticInstrumentRows } from "../../../src/engine/instruments/syntheticInstruments";
 import { quoteRowFromDb, type QuoteRow } from "../../../src/engine/market/quoteRecorder";
+import { UPSTOX_QUOTE_SOURCE, UpstoxQuotes } from "../../../src/engine/market/upstoxQuotes";
 import type { Logger } from "../../../src/engine/ports";
-import { QUOTE_RECORDER_STATUS_KEY, QuoteRecorder, writeQuoteRows, type QuoteRecorderDeps, type QuoteRecorderStatus, type RecorderState } from "./quoteRecorder";
+import { NO_SOURCE_REASON, QUOTE_RECORDER_STATUS_KEY, QuoteRecorder, writeQuoteRows, type QuoteRecorderDeps, type QuoteRecorderStatus, type RecorderState } from "./quoteRecorder";
 
 type Proxy = Awaited<ReturnType<typeof getPlatformProxy<{ DB: D1Database; KV: KVNamespace }>>>;
 let proxy: Proxy;
@@ -273,18 +274,22 @@ describe("QuoteRecorder (read-only snapshots of Groww quotes)", () => {
     expect(s3.rowsWritten).toBe(20); // the bundled holiday calendar is used instead
   });
 
-  it("without a Groww client records nothing and says why, once a day (and on a manual call)", async () => {
+  it("without a quote source records nothing and says why, once a day (and on a manual call)", async () => {
     const h = harness(istAt(MON, "09:15") + 10_000);
     const rec = new QuoteRecorder(h.deps({ source: null }));
     const s = (await rec.run())!;
-    expect(s).toMatchObject({ ok: true, configured: false, slot: "open", rowsWritten: 0, requests: 0 });
-    expect(s.skipped).toMatch(/^Groww is not configured \(GROWW_API_KEY and GROWW_TOTP_SECRET are not set\)/);
+    expect(s).toMatchObject({ ok: true, configured: false, source: null, slot: "open", rowsWritten: 0, requests: 0 });
+    expect(s.skipped).toBe(`${NO_SOURCE_REASON}: nothing recorded`);
+    expect(s.skipped).toMatch(/^no quote source: set the free Upstox Analytics Token \(Worker secret UPSTOX_ANALYTICS_TOKEN\) or the Groww Trade API keys/);
     expect(await kvStatus()).toEqual(s);
     h.g.t += 30_000;
     expect(await rec.run()).toBeNull();
-    expect((await rec.run({ manual: true }))?.skipped).toMatch(/not configured/);
+    expect((await rec.run({ manual: true }))?.skipped).toMatch(/^no quote source/);
     expect(await rows()).toEqual([]);
     expect(h.g.calls).toEqual([]);
+    // The runtime's reason, when it gives one, is shown instead.
+    const off = await new QuoteRecorder(h.deps({ source: null, disabledReason: "the quote recorder is switched off (QUOTE_SOURCE=off)" })).run({ manual: true });
+    expect(off?.skipped).toBe("the quote recorder is switched off (QUOTE_SOURCE=off): nothing recorded");
   });
 
   it("does nothing on holidays or between slots", async () => {
@@ -310,6 +315,13 @@ describe("QuoteRecorder (read-only snapshots of Groww quotes)", () => {
     expect(s.consecutiveFailures).toBe(0);
   });
 
+  it("names the Groww Trade API as the source of its rows and status", async () => {
+    const h = harness(istAt(MON, "09:24"));
+    const s = (await new QuoteRecorder(h.deps()).run())!;
+    expect(s.source).toBe("groww:live-data/quote");
+    expect(new Set((await rows()).map((r) => r.source))).toEqual(new Set(["groww:live-data/quote"]));
+  });
+
   it("runs one snapshot at a time: concurrent calls share it", async () => {
     const h = harness(istAt(MON, "09:29"));
     const rec = new QuoteRecorder(h.deps());
@@ -320,5 +332,82 @@ describe("QuoteRecorder (read-only snapshots of Groww quotes)", () => {
     await a;
     expect(await rows()).toHaveLength(20);
     expect(rec.wants(h.g.t)).toBe(true);
+  });
+});
+
+
+/** The real UpstoxQuotes over a fake fetch: depth and last trades priced like the fake Groww above. */
+function upstoxSource(h: ReturnType<typeof harness>, o: { status?: number; drop?: Set<string> } = {}) {
+  const byKey = new Map(instrumentRows.map((r) => [`${r.exchange === "BSE" ? "BSE_FO" : "NSE_FO"}|${r.exchangeToken}`, r]));
+  const calls: { keys: string[]; auth: string | null; at: number }[] = [];
+  const fetch = async (url: string, init: RequestInit): Promise<Response> => {
+    const keys = (new URL(url).searchParams.get("instrument_key") ?? "").split(",");
+    calls.push({ keys, auth: new Headers(init.headers).get("authorization"), at: h.g.t });
+    h.g.t += 120;
+    if (o.status) return new Response(JSON.stringify({ status: "error", errors: [{ errorCode: "UDAPI100050", message: "Invalid token used to access API" }] }), { status: o.status });
+    const data: Record<string, unknown> = {};
+    for (const k of keys) {
+      if (k === "NSE_INDEX|Nifty 50") data["NSE_INDEX:Nifty 50"] = { instrument_token: k, last_price: h.g.spot.NIFTY };
+      else if (k === "BSE_INDEX|SENSEX") data["BSE_INDEX:SENSEX"] = { instrument_token: k, last_price: h.g.spot.SENSEX };
+      const c = byKey.get(k);
+      if (!c || o.drop?.has(c.tradingSymbol)) continue;
+      const spot = h.g.spot[c.underlyingSymbol];
+      const price = Math.round((Math.max(0, c.instrumentType === "CE" ? spot - c.strikePrice : c.strikePrice - spot) + 100) * 20) / 20;
+      data[`${k.split("|")[0]}:${c.tradingSymbol}`] = {
+        instrument_token: k,
+        last_price: price,
+        volume: 7_729_502,
+        oi: 152_284,
+        last_trade_time: String(h.g.t - 900),
+        depth: {
+          buy: [{ quantity: 1_300, price: price - 0.3, orders: 4 }, { quantity: 0, price: 0, orders: 0 }],
+          sell: [{ quantity: 455, price: price + 0.3, orders: 2 }, { quantity: 0, price: 0, orders: 0 }],
+        },
+      };
+    }
+    return new Response(JSON.stringify({ status: "success", data }), { status: 200 });
+  };
+  return { source: new UpstoxQuotes({ token: "test-analytics-token", fetch, now: () => h.g.t }), calls };
+}
+
+describe("QuoteRecorder with Upstox's free read-only token (one batch call per snapshot)", () => {
+  it("records the same contracts as with Groww, in two calls, with Upstox named as the source", async () => {
+    const h = harness(istAt(MON, "09:15") + 20_000);
+    const up = upstoxSource(h);
+    const started = h.g.t;
+    const s = (await new QuoteRecorder(h.deps({ source: up.source })).run())!;
+    expect(s).toMatchObject({ ok: true, configured: true, source: UPSTOX_QUOTE_SOURCE, slot: "open", snapshotMs: started, planned: 20, quotes: 20, rowsWritten: 20, requests: 2, errors: [] });
+    expect(s.spot).toEqual({ NIFTY: 24_512.3, SENSEX: 81_049.5 });
+    expect(up.calls).toHaveLength(2);
+    expect(up.calls[0].keys).toEqual(["NSE_INDEX|Nifty 50", "BSE_INDEX|SENSEX"]);
+    expect(up.calls[1].keys).toHaveLength(20);
+    expect(up.calls.every((c) => c.auth === "Bearer test-analytics-token")).toBe(true);
+    expect(h.g.calls).toEqual([]); // Groww is never asked
+    const got = await rows();
+    expect(got).toHaveLength(20);
+    expect(new Set(got.map((r) => r.source))).toEqual(new Set([UPSTOX_QUOTE_SOURCE]));
+    const ce = got.find((r) => r.tradingSymbol === "NIFTY26O1324500CE")!;
+    expect(ce).toMatchObject({ expiryKind: "next", bid: 112, ask: 112.6, ltp: 112.3, bidQty: 1_300, askQty: 455, volume: 7_729_502, oi: 152_284, spot: 24_512.3, lotSize: 65 });
+    expect(ce.lastTradeMs).toBe(ce.fetchedMs - 900); // the fake last trade, 0.9 s before the response
+    expect(JSON.parse(ce.depth!)).toEqual({ b: [[112, 1_300]], a: [[112.6, 455]] });
+  });
+
+  it("lists a contract Upstox did not return and keeps the rest", async () => {
+    const h = harness(istAt(MON, "09:21"));
+    const up = upstoxSource(h, { drop: new Set(["SENSEX26O1581000PE"]) });
+    const s = (await new QuoteRecorder(h.deps({ source: up.source })).run())!;
+    expect(s).toMatchObject({ ok: false, planned: 20, quotes: 19, rowsWritten: 19, consecutiveFailures: 0 });
+    expect(s.errors).toEqual([`SENSEX26O1581000PE: not returned by ${UPSTOX_QUOTE_SOURCE}`]);
+  });
+
+  it("fails the snapshot on an expired or wrong token, without the token in the status", async () => {
+    const h = harness(istAt(MON, "09:22"));
+    const up = upstoxSource(h, { status: 401 });
+    const s = (await new QuoteRecorder(h.deps({ source: up.source })).run())!;
+    expect(s).toMatchObject({ ok: false, quotes: 0, rowsWritten: 0, requests: 1, consecutiveFailures: 1 });
+    expect(s.errors.join(" ")).toContain("HTTP 401 UDAPI100050");
+    expect(JSON.stringify(s)).not.toContain("test-analytics-token");
+    expect(up.calls).toHaveLength(1);
+    expect(await rows()).toEqual([]);
   });
 });

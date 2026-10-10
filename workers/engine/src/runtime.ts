@@ -12,9 +12,12 @@ import { DEFAULT_WORKERS_AI_MODEL, WorkersAiLlmClient, type ResponseFormatMode }
 import type { LlmClient, Logger, Repository } from "../../../src/engine/ports";
 import { accountRepository } from "../../../src/engine/repo/accountRepo";
 import { GrowwDataClient, GrowwHttp, RelayClient, type GrowwTransport, type TokenSource } from "../../../src/engine/broker/groww";
+import { QUOTE_SOURCE } from "../../../src/engine/market/quoteRecorder";
+import { UPSTOX_QUOTE_SOURCE, UpstoxQuotes } from "../../../src/engine/market/upstoxQuotes";
 import { D1Repository } from "./db/d1Repository";
+import type { QuoteSource } from "./quoteRecorder";
 
-export const ENGINE_VERSION = "2026.10.10-1";
+export const ENGINE_VERSION = "2026.10.10-2";
 
 export interface Runtime {
   env: Env;
@@ -150,6 +153,43 @@ export function growwDataClient(env: Env, tokens: TokenSource | null, http: { ti
  */
 export function growwRecorderClient(env: Env, tokens: TokenSource | null): GrowwDataClient | null {
   return growwDataClient(env, tokens, { timeoutMs: 5_000 });
+}
+
+/** Worker var QUOTE_SOURCE: which source the quote recorder reads. Anything else (or unset) is "auto". */
+export type QuoteSourceChoice = "auto" | "groww" | "upstox" | "off";
+
+export function parseQuoteSourceChoice(raw: string | undefined): QuoteSourceChoice {
+  const t = (raw ?? "").trim().toLowerCase();
+  return t === "groww" || t === "upstox" || t === "off" ? t : "auto";
+}
+
+/**
+ * The quote recorder's source, read-only either way. "auto": the Groww Trade API when its keys are set
+ * (a paid live-data plan), otherwise Upstox's official Market Data API when the free read-only Analytics
+ * Token is set (Worker secret UPSTOX_ANALYTICS_TOKEN). "groww" or "upstox" forces one; "off" records
+ * nothing. Without a source the reason goes to /ops/quotes-status (null: the recorder's own text).
+ */
+export function recorderQuoteSource(env: Env, tokens: TokenSource | null): { source: QuoteSource | null; reason: string | null } {
+  const choice = parseQuoteSourceChoice(env.QUOTE_SOURCE);
+  if (choice === "off") return { source: null, reason: "the quote recorder is switched off (QUOTE_SOURCE=off)" };
+  const groww = choice === "upstox" ? null : growwRecorderClient(env, tokens);
+  if (groww) return { source: groww, reason: null };
+  const token = env.UPSTOX_ANALYTICS_TOKEN?.trim();
+  if (choice !== "groww" && token) return { source: new UpstoxQuotes({ token }), reason: null };
+  if (choice === "groww") return { source: null, reason: "QUOTE_SOURCE=groww but the Groww Trade API keys (GROWW_API_KEY and GROWW_TOTP_SECRET) are not set" };
+  if (choice === "upstox") return { source: null, reason: "QUOTE_SOURCE=upstox but the Worker secret UPSTOX_ANALYTICS_TOKEN is not set" };
+  return { source: null, reason: null };
+}
+
+/** For /ops/quotes-status before the first run: whether a source is configured, and which (no network). */
+export function quoteSourceSummary(env: Env): { configured: boolean; source: string | null } {
+  const choice = parseQuoteSourceChoice(env.QUOTE_SOURCE);
+  if (choice === "off") return { configured: false, source: null };
+  // The same conditions as growwDataClient: the relay's data proxy, or the Groww keys.
+  const growwReady = env.GROWW_DATA_VIA_RELAY === "true" ? Boolean(env.RELAY_URL && env.RELAY_HMAC_SECRET) : Boolean(env.GROWW_API_KEY && env.GROWW_TOTP_SECRET);
+  if (choice !== "upstox" && growwReady) return { configured: true, source: QUOTE_SOURCE };
+  if (choice !== "groww" && env.UPSTOX_ANALYTICS_TOKEN?.trim()) return { configured: true, source: UPSTOX_QUOTE_SOURCE };
+  return { configured: false, source: null };
 }
 
 export function llmClient(env: Env, logger?: Logger, opts: { mode?: ResponseFormatMode } = {}): LlmClient | null {

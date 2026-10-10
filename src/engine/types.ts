@@ -67,7 +67,8 @@ export interface Quote {
   iv?: number;
   oi?: number;
   volume?: number;
-  source: "groww" | "synthetic" | "groww-historical" | "replay";
+  /** "upstox": the quote recorder's read-only Upstox source (src/engine/market/upstoxQuotes.ts); never used to trade. */
+  source: "groww" | "synthetic" | "groww-historical" | "replay" | "upstox";
 }
 
 export interface OptionContract {

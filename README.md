@@ -180,7 +180,7 @@ It creates the resources and fills in their IDs, migrates D1, deploys the engine
 2. Set the engine secrets. Only `ADMIN_TOKEN` is required for paper trading.
 
    ```bash
-   for s in ADMIN_TOKEN GNEWS_API_KEY GROWW_API_KEY GROWW_TOTP_SECRET TELEGRAM_BOT_TOKEN TELEGRAM_CHAT_ID TELEGRAM_WEBHOOK_SECRET; do
+   for s in ADMIN_TOKEN GNEWS_API_KEY GROWW_API_KEY GROWW_TOTP_SECRET UPSTOX_ANALYTICS_TOKEN TELEGRAM_BOT_TOKEN TELEGRAM_CHAT_ID TELEGRAM_WEBHOOK_SECRET; do
      npx wrangler secret put $s --config workers/engine/wrangler.jsonc
    done
    npx wrangler secret put ADMIN_TOKEN    # dashboard Worker, same value
@@ -212,7 +212,7 @@ It creates the resources and fills in their IDs, migrates D1, deploys the engine
 | 16:15 | `45 10 * * MON-FRI` | Bar archive: appends the day's settled 5-minute bars to D1 `bars_5m` ([docs/DATA.md](docs/DATA.md)) |
 | 20:00 | `30 14 * * *` | Prune old D1 rows |
 
-The option-quote recorder has no cron of its own. With the Groww secrets set, the trading DO records Groww quotes after its ticks: every tick from 09:15 to 09:31, then at 09:45, 10:15, 11:15, 15:00 and 15:20. It is recording only, with no orders, and writes to D1 `option_quotes` ([docs/DATA.md](docs/DATA.md#live-option-quotes-option_quotes-recording-only)). `npm run quotes-report` reads it.
+The option-quote recorder has no cron of its own. With a quote source set (the free, read-only `UPSTOX_ANALYTICS_TOKEN`, or the Groww secrets), the trading DO records option quotes after its ticks: every tick from 09:15 to 09:31, then at 09:45, 10:15, 11:15, 15:00 and 15:20. It is recording only, with no orders, and writes to D1 `option_quotes` ([docs/DATA.md](docs/DATA.md#live-option-quotes-option_quotes-recording-only)). `npm run quotes-report` reads it.
 
 ## Going live with Groww (only after the go/no-go below)
 
@@ -391,6 +391,7 @@ Limits worth knowing before copying with real money:
 | News scoring, GLM-5.3 on Workers AI | $1.40 per million input tokens and $4.40 per million output tokens, billed to the Cloudflare account. The default daily caps limit spend to about $8.60 a day; reasoning tokens count as output. |
 | News scoring with Claude (optional) | Roughly $200–280 a month on Opus 5.5 at about 200 calls a day; set `LLM_PROVIDER=anthropic`. |
 | Groww Trade API | ₹499 + GST a month (live data and live trading; the quote recorder's ≈ 940 calls a trading day are included) |
+| Upstox Analytics Token | free (read-only market data for the quote recorder: ≈ 75 calls a trading day) |
 | Relay VPS | ₹300–800 a month (live only) |
 | Yahoo, publisher RSS, Bing News, Google News, GDELT, Telegram | free |
 

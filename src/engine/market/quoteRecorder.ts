@@ -24,7 +24,7 @@ import type { IndexId, Level, OptionContract, OptionType, Quote } from "../types
 
 export const QUOTES_TABLE = "option_quotes";
 export const QUOTE_SCHEMA_VERSION = 1;
-/** `source` of the rows the trading DO writes. */
+/** `source` of the rows recorded from the Groww Trade API (another quote source names its own rows). */
 export const QUOTE_SOURCE = "groww:live-data/quote";
 
 export const OPEN_SLOT = "open";
@@ -306,7 +306,7 @@ export function compactDepth(depth: { buy: Level[]; sell: Level[] } | undefined,
   return b.length > 0 || a.length > 0 ? JSON.stringify({ b, a }) : null;
 }
 
-export function toQuoteRow(o: { snapshotMs: number; slot: QuoteSlot; planned: PlannedContract; quote: Quote; lastTradeMs: number | null; spot: number | null }): QuoteRow {
+export function toQuoteRow(o: { snapshotMs: number; slot: QuoteSlot; planned: PlannedContract; quote: Quote; lastTradeMs: number | null; spot: number | null; source?: string }): QuoteRow {
   const { contract } = o.planned;
   const q = o.quote;
   return {
@@ -330,7 +330,7 @@ export function toQuoteRow(o: { snapshotMs: number; slot: QuoteSlot; planned: Pl
     depth: compactDepth(q.depth),
     spot: positive(o.spot),
     fetchedMs: q.t,
-    source: QUOTE_SOURCE,
+    source: o.source ?? QUOTE_SOURCE,
     schemaV: QUOTE_SCHEMA_VERSION,
   };
 }

@@ -1,28 +1,31 @@
 /**
- * The live option-quote recorder inside the trading DO. Recording only: it reads Groww quotes and writes
- * D1; it never places, sizes or changes an order. The slots and contracts are in
- * src/engine/market/quoteRecorder.ts; docs/DATA.md explains what is recorded and why.
+ * The live option-quote recorder inside the trading DO. Recording only: it reads quotes and writes D1; it
+ * never places, sizes or changes an order. The slots and contracts are in
+ * src/engine/market/quoteRecorder.ts; docs/DATA.md explains what is recorded and why. The quotes come from
+ * the Groww Trade API when its keys are set, otherwise from Upstox's official Market Data API with the
+ * free read-only Analytics Token (runtime.ts recorderQuoteSource); each row's `source` says which.
  *
  * After each trading tick, once the tick's own work is done, the DO asks `wants(now)` (clock only, no I/O)
  * and, when a slot may be due, starts `run()` in the background, so a snapshot never delays a tick:
- * 1. one Groww index-LTP call for the spots, then one /live-data/quote call per contract in fetch order,
- *    started at least MIN_GAP_MS apart on the recorder's own Groww client (its own pacing, the trading
- *    DO's token manager), and no new call after BUDGET_MS;
+ * 1. one index-LTP call for the spots, then the quotes: with Groww one /live-data/quote call per contract
+ *    in fetch order, started at least MIN_GAP_MS apart on the recorder's own Groww client (its own pacing,
+ *    the trading DO's token manager), and no new call after BUDGET_MS; with Upstox one batch call for
+ *    every contract;
  * 2. INSERT OR IGNORE into D1 `option_quotes`, 4 rows per statement in one batch: a snapshot written
  *    twice adds nothing;
  * 3. the day's slots and entry strikes in the DO's storage; the outcome in KV (QUOTE_RECORDER_STATUS_KEY,
  *    POST /ops/quotes-status), with the recorder's own counters.
  * A failed quote is skipped and counted. Anything else ends that snapshot and is counted and logged. It
  * never throws and never touches the engine's error count, so it cannot slow trading or mark the engine
- * DEGRADED. Without a Groww client it records nothing and the status says why.
+ * DEGRADED. Without a quote source it records nothing and the status says why.
  */
 import { defaultCalendar } from "../../../src/engine/calendar/calendar";
 import { istDate, istIso } from "../../../src/engine/clock";
-import { isGrowwError } from "../../../src/engine/broker/groww";
 import {
   EXIT_SLOTS,
   MANUAL_SLOT,
   QUOTE_ROWS_PER_STATEMENT,
+  QUOTE_SOURCE,
   afterSnapshot,
   dueSlot,
   fetchOrder,
@@ -38,7 +41,7 @@ import {
   type RecorderDay,
 } from "../../../src/engine/market/quoteRecorder";
 import type { InstrumentProvider, Logger } from "../../../src/engine/ports";
-import type { Exchange, FeatureIndexId, IndexId, Quote } from "../../../src/engine/types";
+import type { Exchange, FeatureIndexId, IndexId, OptionContract, Quote } from "../../../src/engine/types";
 
 export const QUOTE_RECORDER_STATUS_KEY = "quotes:option_quotes:status";
 /** Key of the recorder's state in the trading DO's storage. */
@@ -54,11 +57,21 @@ const MAX_FAILURES_IN_A_ROW = 3;
 const ALERT_AFTER_FAILURES = 3;
 const MAX_ERRORS_KEPT = 10;
 const STATEMENTS_PER_BATCH = 50;
+/** The status text without a quote source, unless the deps give a reason. */
+export const NO_SOURCE_REASON =
+  "no quote source: set the free Upstox Analytics Token (Worker secret UPSTOX_ANALYTICS_TOKEN) or the Groww Trade API keys (GROWW_API_KEY and GROWW_TOTP_SECRET)";
 
-/** What the recorder needs from Groww (GrowwDataClient). */
+/**
+ * What the recorder needs from a quote source: the Groww Trade API (GrowwDataClient, one quote a call) or
+ * Upstox's Market Data API (UpstoxQuotes, every contract in one batch). Both are read-only here.
+ */
 export interface QuoteSource {
+  /** Written to each row's `source` (default QUOTE_SOURCE, the Groww Trade API). */
+  readonly name?: string;
   indexLtp(): Promise<Partial<Record<FeatureIndexId, number>>>;
-  quoteDetail(exchange: Exchange, segment: "FNO", tradingSymbol: string): Promise<{ quote: Quote; lastTradeMs: number | null }>;
+  quoteDetail?(exchange: Exchange, segment: "FNO", tradingSymbol: string): Promise<{ quote: Quote; lastTradeMs: number | null }>;
+  /** Every contract at once; a contract missing from the map was not returned. */
+  quoteBatch?(contracts: readonly OptionContract[]): Promise<{ quotes: Map<string, { quote: Quote; lastTradeMs: number | null }>; requests: number }>;
 }
 
 export type StatusStore = Pick<KVNamespace, "get" | "put">;
@@ -95,15 +108,17 @@ export interface QuoteRecorderStatus {
   v: 1;
   /** The run finished without any error (a skip counts as ok). */
   ok: boolean;
-  /** A Groww client exists (GROWW_API_KEY and GROWW_TOTP_SECRET are set). */
+  /** A quote source exists (the Groww Trade API keys, or UPSTOX_ANALYTICS_TOKEN). */
   configured: boolean;
+  /** The quote source's name (each row's `source`), or null without one. */
+  source: string | null;
   ranAt: string;
   date: string;
   slot: string | null;
-  /** Why the run recorded nothing on purpose (e.g. Groww not configured). */
+  /** Why the run recorded nothing on purpose (e.g. no quote source configured). */
   skipped: string | null;
   snapshotMs: number | null;
-  /** Groww's index LTP at the start of the snapshot. */
+  /** The source's index LTP at the start of the snapshot. */
   spot: Partial<Record<IndexId, number>>;
   /** Contracts in the snapshot's plan. */
   planned: number;
@@ -130,8 +145,10 @@ export interface QuoteRecorderDeps {
   /** Where the status for /ops goes (the engine's KV); null keeps it in the logs only. */
   kv: StatusStore | null;
   state: StateStore;
-  /** Null without Groww credentials: nothing is recorded and the status says why. */
+  /** Null without a configured source: nothing is recorded and the status says why (`disabledReason`). */
   source: QuoteSource | null;
+  /** Why there is no source (shown in the status); a generic text by default. */
+  disabledReason?: string;
   /** The real instrument master only (never synthetic contracts). */
   instruments: InstrumentProvider;
   /** Trading days with the dashboard's holiday overrides; the bundled calendar is used if it fails. */
@@ -155,9 +172,10 @@ function freshState(date: string): RecorderState {
   return { v: 1, day: freshDay(date), today: emptyCounts(date), consecutiveFailures: 0, lastError: null, lastOkAt: null, disabledNotedDate: null, alertedDate: null };
 }
 
-/** Auth, permission and rate-limit failures: every other call of the snapshot would fail the same way. */
+/** Auth, permission and rate-limit failures (GrowwError or UpstoxError): every other call of the snapshot would fail the same way. */
 function stopsSnapshot(err: unknown): boolean {
-  return isGrowwError(err) && (err.kind === "auth" || err.kind === "forbidden" || err.kind === "rate_limited");
+  const kind = err instanceof Error ? (err as Error & { kind?: unknown }).kind : undefined;
+  return kind === "auth" || kind === "forbidden" || kind === "rate_limited";
 }
 
 /** INSERT OR IGNORE of the rows; returns the rows D1 inserted. */
@@ -247,6 +265,7 @@ export class QuoteRecorder {
       v: 1,
       ok: true,
       configured: this.d.source !== null,
+      source: this.d.source ? (this.d.source.name ?? QUOTE_SOURCE) : null,
       ranAt: istIso(startedMs),
       date: istDate(startedMs),
       slot,
@@ -287,7 +306,7 @@ export class QuoteRecorder {
     if (!this.d.source) {
       if (!manual && st.disabledNotedDate === date) return null;
       const status = this.baseStatus(st, started, slot);
-      status.skipped = "Groww is not configured (GROWW_API_KEY and GROWW_TOTP_SECRET are not set): nothing recorded";
+      status.skipped = `${this.d.disabledReason ?? NO_SOURCE_REASON}: nothing recorded`;
       st.disabledNotedDate = date;
       await this.saveState(st);
       await this.writeStatus(status);
@@ -308,6 +327,7 @@ export class QuoteRecorder {
     const gap = this.d.minGapMs ?? MIN_GAP_MS;
     const budget = this.d.budgetMs ?? BUDGET_MS;
     const sleep = this.d.sleep ?? ((ms: number) => new Promise<void>((r) => setTimeout(r, ms)));
+    const sourceName = source.name ?? QUOTE_SOURCE;
     try {
       status.requests++;
       const spots = await source.indexLtp();
@@ -315,7 +335,7 @@ export class QuoteRecorder {
       for (const index of this.d.indices) {
         const spot = spots[index];
         if (typeof spot !== "number" || !(spot > 0)) {
-          errors.push(`${index}: no index LTP from Groww`);
+          errors.push(`${index}: no index LTP from ${sourceName}`);
           continue;
         }
         status.spot[index] = spot;
@@ -327,8 +347,26 @@ export class QuoteRecorder {
       const order = fetchOrder(plans);
       status.planned = order.length;
       if (order.length === 0) throw new Error(`no contracts to record${errors.length > 0 ? "" : " (instrument master empty?)"}`);
+      if (source.quoteBatch) {
+        // Every contract in one call (Upstox: up to 500 a request); a failure ends the snapshot.
+        const batch = await source.quoteBatch(order.map((p) => p.contract)).catch((err: unknown) => {
+          status.requests++;
+          throw err;
+        });
+        status.requests += batch.requests;
+        for (const p of order) {
+          const got = batch.quotes.get(p.contract.tradingSymbol);
+          if (!got) {
+            errors.push(`${p.contract.tradingSymbol}: not returned by ${sourceName}`);
+            continue;
+          }
+          rows.push(toQuoteRow({ snapshotMs: started, slot, planned: p, quote: got.quote, lastTradeMs: got.lastTradeMs, spot: status.spot[p.contract.index] ?? null, source: sourceName }));
+        }
+      }
+      const quoteDetail = source.quoteBatch ? undefined : source.quoteDetail?.bind(source);
+      if (!source.quoteBatch && !quoteDetail) throw new Error(`${sourceName} has no quote call`);
       let failuresInARow = 0;
-      for (let i = 0; i < order.length; i++) {
+      for (let i = 0; quoteDetail && i < order.length; i++) {
         if (this.now() - started >= budget) {
           errors.push(`time budget of ${Math.round(budget / 1000)} s reached: ${order.length - i} contract(s) not quoted`);
           break;
@@ -339,8 +377,8 @@ export class QuoteRecorder {
         const p = order[i];
         status.requests++;
         try {
-          const { quote, lastTradeMs } = await source.quoteDetail(p.contract.exchange, "FNO", p.contract.tradingSymbol);
-          rows.push(toQuoteRow({ snapshotMs: started, slot, planned: p, quote, lastTradeMs, spot: status.spot[p.contract.index] ?? null }));
+          const { quote, lastTradeMs } = await quoteDetail(p.contract.exchange, "FNO", p.contract.tradingSymbol);
+          rows.push(toQuoteRow({ snapshotMs: started, slot, planned: p, quote, lastTradeMs, spot: status.spot[p.contract.index] ?? null, source: sourceName }));
           failuresInARow = 0;
         } catch (err) {
           errors.push(`${p.contract.tradingSymbol}: ${errorText(err)}`);

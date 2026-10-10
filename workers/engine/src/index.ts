@@ -8,8 +8,8 @@ import { timingSafeEqual } from "../../../src/engine/util/hash";
 import { BAR_ARCHIVE_STATUS_KEY, recordBarArchiveFailure } from "./barArchive";
 import type { ScoreMessage } from "./do/IngestDO";
 import { refreshInstruments } from "./instruments";
-import { QUOTE_RECORDER_STATUS_KEY } from "./quoteRecorder";
-import { ENGINE_VERSION, errorMessage, makeRuntime } from "./runtime";
+import { NO_SOURCE_REASON, QUOTE_RECORDER_STATUS_KEY } from "./quoteRecorder";
+import { ENGINE_VERSION, errorMessage, makeRuntime, quoteSourceSummary } from "./runtime";
 import { consumeScoreBatch } from "./scoring";
 import { Alerts, parseTelegramUpdate, sendTelegram } from "./telegram";
 
@@ -151,11 +151,11 @@ async function handleFetch(req: Request, env: Env): Promise<Response> {
         case "/ops/quotes-status":
           // The read-only option-quote recorder (docs/DATA.md): last run, rows written, errors, last error.
           return Response.json(
-            (await env.KV.get(QUOTE_RECORDER_STATUS_KEY, "json")) ?? {
-              ok: false,
-              configured: rt.growwConfigured,
-              error: rt.growwConfigured ? "no quote snapshot recorded yet" : "Groww is not configured (GROWW_API_KEY and GROWW_TOTP_SECRET are not set): nothing is recorded",
-            },
+            (await env.KV.get(QUOTE_RECORDER_STATUS_KEY, "json")) ??
+              (() => {
+                const q = quoteSourceSummary(env);
+                return { ok: false, configured: q.configured, source: q.source, error: q.configured ? "no quote snapshot recorded yet" : `${NO_SOURCE_REASON}: nothing is recorded` };
+              })(),
           );
         case "/ops/quotes-snapshot":
           // One snapshot now, labelled "manual" (left out of the report): checks the credentials and the table.

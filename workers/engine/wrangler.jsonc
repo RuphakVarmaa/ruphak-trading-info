@@ -96,6 +96,11 @@
     // pauses buying until a signal earns its decay and costs (owner's decision, 9 Oct 2026).
     // "legacy" (or unset) restores the original gate.
     "EDGE_GATE": "calibrated",
+    // Quote recorder source (read-only, no orders; docs/DATA.md): "auto" uses the Groww Trade API when
+    // GROWW_API_KEY/GROWW_TOTP_SECRET are set (a paid live-data plan), otherwise Upstox's official Market
+    // Data API when the free one-year read-only Analytics Token is set as the secret UPSTOX_ANALYTICS_TOKEN.
+    // "groww" or "upstox" forces one; "off" records nothing.
+    "QUOTE_SOURCE": "auto",
     // Dashboard base URL for the links in copy-trade alerts (empty: no links).
     "DASHBOARD_URL": "https://ruphak-dashboard.sanjaysenthilkumar.workers.dev"
   },
@@ -117,6 +122,7 @@
         "MAX_TRADES_PER_DAY": "4",
         "ACCOUNTS": "main,small10k,small5k",
         "EDGE_GATE": "calibrated",
+        "QUOTE_SOURCE": "auto",
         "DASHBOARD_URL": ""
       },
       "d1_databases": [
