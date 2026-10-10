@@ -291,9 +291,9 @@ for sym in ("NIFTY", "SENSEX"):
         strikes = sorted({k for (k, y) in cd if y == "C" and (k, "P") in cd})
         pc = prev_close(sym, d)
         k_ = kind(d, e)
-        for entry in ENTRY_B + (C_IN,):
+        for entry in sorted(set(ENTRY_B) | {C_IN}):
             lm = last_upto(idx[d], entry - 1)
-            if lm is None:
+            if lm is None or not strikes:
                 continue
             level = idx[d][lm][1]
             atm = min(strikes, key=lambda z: (abs(z - level), z))
