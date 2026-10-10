@@ -4,12 +4,13 @@ import { FixedClock } from "../../clock";
 import { DEFAULT_CONFIG } from "../../config";
 import { silentLogger, sequentialIds } from "../../ports";
 import { InMemoryRepository } from "../../repo/memory";
-import type { OptionContract, OrderRequest } from "../../types";
+import type { OptionContract, OrderRequest, Quote } from "../../types";
 import { GrowwTokenManager, mintTotpToken, nextTokenExpiry, parseGrowwExpiry } from "./auth";
 import { parseGrowwTime, parseHistoricalCandles, parseOptionChain, parsePositions, parseQuote, GrowwDataClient } from "./data";
 import { GrowwError, classifyGrowwFailure } from "./errors";
 import { GrowwBroker, toRelayOrder, type OrderRelay } from "./growwBroker";
 import { GrowwHttp, buildQuery, unwrapEnvelope } from "./http";
+import { FallbackOptionQuotes, GrowwOptionQuotes, unusableQuote } from "./optionQuotes";
 import { canonicalString, signRelayRequest, requestTarget, RelayClient, type RelayCreateResult, type RelayOrderStatus, type RelayTrade } from "./relayClient";
 import { mapGrowwStatus } from "./status";
 import { base32Decode, totp } from "./totp";
@@ -96,6 +97,40 @@ describe("Groww token handling", () => {
     now = IST("2026-10-08T05:57:00"); // under 5 minutes of life left
     expect(await tm.token()).toBe("t3");
   });
+
+  it("backs off after a failed mint instead of minting on every data call (5 min doubling to 30 min); force tries anyway", async () => {
+    let now = IST("2026-10-07T08:00:00");
+    let attempts = 0;
+    let accept = false;
+    const tm = new GrowwTokenManager({
+      now: () => now,
+      mint: async () => {
+        attempts++;
+        if (!accept) throw new GrowwError("Groww token: approve the API key in the app", "auth", 401);
+        return { token: `t${attempts}`, expiryMs: nextTokenExpiry(now), mintedMs: now };
+      },
+    });
+    await expect(tm.token()).rejects.toThrow(/approve the API key/);
+    // Every data call during the backoff fails at once, without another token request.
+    for (let i = 0; i < 20; i++) await expect(tm.token()).rejects.toThrow(/minting paused for 300 s after 1 failed attempt\(s\): Groww token: approve/);
+    expect(attempts).toBe(1);
+    now += 5 * 60_000;
+    await expect(tm.token()).rejects.toThrow(/approve/);
+    expect(attempts).toBe(2);
+    expect(tm.status()).toMatchObject({ valid: false, failures: 2, retryAtMs: now + 10 * 60_000 });
+    now += 10 * 60_000;
+    await expect(tm.token()).rejects.toThrow(/approve/);
+    now += 20 * 60_000;
+    await expect(tm.token()).rejects.toThrow(/approve/);
+    expect(tm.status().retryAtMs).toBe(now + 30 * 60_000); // capped at 30 min
+    expect(attempts).toBe(4);
+    // The owner approves the key; the 08:00 job (or POST /ops/token) forces an attempt at once.
+    accept = true;
+    await expect(tm.token()).rejects.toThrow(/minting paused/);
+    expect((await tm.refresh({ force: true })).token).toBe("t5");
+    expect(await tm.token()).toBe("t5");
+    expect(tm.status()).toMatchObject({ valid: true, failures: 0, retryAtMs: null });
+  });
 });
 
 describe("Groww HTTP envelope", () => {
@@ -154,7 +189,9 @@ describe("Groww payload parsers", () => {
       1_000,
     );
     expect(q).toMatchObject({ ltp: 142.5, bid: 142.3, ask: 142.7, bidQty: 650, askQty: 1300, oi: 1_250_000, source: "groww", t: 1_000 });
-    expect(q.iv).toBeCloseTo(0.132);
+    // Percent, like synthetic quotes: the planner divides Quote.iv by 100.
+    expect(q.iv).toBeCloseTo(13.2);
+    expect(parseQuote("X", { implied_volatility: 0.132 }, 1).iv).toBeCloseTo(13.2);
     expect(q.depth?.sell).toHaveLength(2);
   });
 
@@ -201,6 +238,84 @@ describe("Groww payload parsers", () => {
     expect(mapGrowwStatus("REJECTED", 0, 65)).toBe("REJECTED");
     expect(mapGrowwStatus("CANCELLED", 65, 130)).toBe("CANCELLED");
     expect(mapGrowwStatus("SOMETHING_NEW", 0, 65)).toBe("UNKNOWN");
+  });
+});
+
+describe("paper quotes on Groww (the fallback to synthetic quotes)", () => {
+  const leg: OptionContract = {
+    index: "NIFTY",
+    exchange: "NSE",
+    tradingSymbol: "NIFTY26O1324500CE",
+    growwSymbol: "NSE-NIFTY-13Oct26-24500-CE",
+    exchangeToken: "1",
+    expiry: "2026-10-13",
+    strike: 24_500,
+    type: "CE",
+    lotSize: 65,
+    tickSize: 0.05,
+  };
+  const ctx = { t: 1, spot: 24_500, vix: 14 };
+  const synthetic = { kind: "synthetic" as const, quote: async (): Promise<Quote> => ({ symbol: leg.tradingSymbol, t: 1, ltp: 100, bid: 99.8, ask: 100.2, bidQty: 650, askQty: 650, source: "synthetic" }) };
+
+  /** A Groww data client over a fake transport: `reply` decides each /live-data/quote answer. */
+  function groww(reply: () => unknown) {
+    let calls = 0;
+    const transport = {
+      request: async <T,>(): Promise<T> => {
+        calls++;
+        const r = reply();
+        if (r instanceof Error) throw r;
+        return r as T;
+      },
+    };
+    return { data: new GrowwDataClient(transport), calls: () => calls };
+  }
+
+  it("uses a real two-sided quote as it is", async () => {
+    const g = groww(() => ({ last_price: 101, bid_price: 100.9, offer_price: 101.1 }));
+    const q = await new FallbackOptionQuotes(new GrowwOptionQuotes(g.data, DEFAULT_CONFIG), synthetic).quote(leg, ctx);
+    expect(q).toMatchObject({ source: "groww", bid: 100.9, ask: 101.1 });
+  });
+
+  it("falls back when Groww's answer cannot price a fill or an exit: empty, one-sided or crossed", async () => {
+    expect(unusableQuote({ symbol: "x", t: 1, ltp: 0, bid: 0, ask: 0, bidQty: 0, askQty: 0, source: "groww" })).toMatch(/no two-sided quote/);
+    for (const payload of [{}, { last_price: 101, bid_price: 100.9, offer_price: 0 }, { last_price: 101, bid_price: 0, offer_price: 101.1 }, { bid_price: 102, offer_price: 101 }]) {
+      const seen: unknown[] = [];
+      const q = await new FallbackOptionQuotes(new GrowwOptionQuotes(groww(() => payload).data, DEFAULT_CONFIG), synthetic, (e) => seen.push(e)).quote(leg, ctx);
+      expect(q.source).toBe("synthetic");
+      expect(String(seen[0])).toMatch(/groww quote for NIFTY26O1324500CE unusable: (no two-sided|crossed) quote/);
+    }
+  });
+
+  it("pauses Groww for paper after a failure that is not about the symbol, so later quotes skip the wait", async () => {
+    let now = 1_000_000;
+    let fail: Error | null = new GrowwError("Groww GET /live-data/quote: The operation timed out", "transient", 0);
+    const g = groww(() => fail ?? { last_price: 101, bid_price: 100.9, offer_price: 101.1 });
+    const paper = new GrowwOptionQuotes(g.data, DEFAULT_CONFIG, { pauseAfterErrorMs: 30_000, cacheMs: 0, now: () => now });
+    const fb = new FallbackOptionQuotes(paper, synthetic);
+    expect((await fb.quote(leg, ctx)).source).toBe("synthetic");
+    fail = null;
+    for (let i = 0; i < 5; i++) expect((await fb.quote(leg, ctx)).source).toBe("synthetic");
+    expect(g.calls()).toBe(1); // no Groww call during the pause
+    await expect(paper.quote(leg)).rejects.toThrow(/paused for 30 s after: Groww GET \/live-data\/quote: The operation timed out/);
+    now += 30_000;
+    expect((await fb.quote(leg, ctx)).source).toBe("groww");
+    expect(g.calls()).toBe(2);
+    // A bad symbol is not a reason to stop quoting the others.
+    fail = new GrowwError("Groww GET /live-data/quote: invalid symbol (GA001)", "bad_request", 400);
+    await expect(paper.quote({ ...leg, tradingSymbol: "BAD" })).rejects.toThrow(/invalid symbol/);
+    fail = null;
+    expect((await paper.quote({ ...leg, tradingSymbol: "OTHER" })).source).toBe("groww");
+  });
+
+  it("never pauses the LIVE instance (no pause option)", async () => {
+    let fail = true;
+    const g = groww(() => (fail ? new GrowwError("Groww: 503", "transient", 503) : { last_price: 101, bid_price: 100.9, offer_price: 101.1 }));
+    const live = new GrowwOptionQuotes(g.data, DEFAULT_CONFIG, { cacheMs: 0 });
+    await expect(live.quote(leg)).rejects.toThrow(/503/);
+    fail = false;
+    expect((await live.quote(leg)).bid).toBe(100.9);
+    expect(g.calls()).toBe(2);
   });
 });
 

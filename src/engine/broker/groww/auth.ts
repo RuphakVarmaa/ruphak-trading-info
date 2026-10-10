@@ -2,8 +2,9 @@
  * Groww access tokens from an API key of type TOTP (no daily approval needed):
  * POST /token/api/access {key_type: "totp", totp} with the API key as bearer.
  * The response is NOT wrapped in the usual envelope: {token, tokenRefId, sessionName, expiry, isActive}.
- * Tokens expire every day at 06:00 IST; Groww allows ~150 token calls per 24 h, so tokens are cached
- * and re-minted at most once per `minRemintGapMs` after a 401.
+ * Tokens expire every day at 06:00 IST; Groww allows ~150 token calls per 24 h, so tokens are cached,
+ * re-minted at most once per `minRemintGapMs` after a 401, and a failed mint is retried only after a
+ * backoff (5 min doubling to 30 min) instead of on every data call.
  */
 import { DAY_MS, istAt, istDate } from "../../clock";
 import { fetchWithTimeout, type FetchLike } from "../../util/http";
@@ -110,7 +111,17 @@ export interface TokenManagerOptions {
   minRemainingMs?: number;
   /** After a 401, re-mint at most this often (default 5 min) to protect the daily token quota. */
   minRemintGapMs?: number;
+  /**
+   * After a failed mint, the next attempt waits this long (default 5 min), doubling with each failure in a
+   * row up to `maxMintBackoffMs` (default 30 min). Until then token() fails at once without a request, so
+   * a rejected key (or one waiting for approval) costs no token quota and no time in the trading tick.
+   */
+  mintBackoffMs?: number;
+  maxMintBackoffMs?: number;
 }
+
+export const DEFAULT_MINT_BACKOFF_MS = 5 * 60_000;
+export const DEFAULT_MAX_MINT_BACKOFF_MS = 30 * 60_000;
 
 /** Single-flight token cache (one instance per Durable Object / process). */
 export class GrowwTokenManager implements TokenSource {
@@ -118,6 +129,9 @@ export class GrowwTokenManager implements TokenSource {
   private inflight: Promise<GrowwToken> | null = null;
   private lastMintMs = -Infinity;
   private invalidated = new Set<string>();
+  private failures = 0;
+  private retryAtMs = -Infinity;
+  private lastFailure = "";
 
   constructor(private readonly o: TokenManagerOptions) {}
 
@@ -137,17 +151,41 @@ export class GrowwTokenManager implements TokenSource {
     return (await this.refresh()).token;
   }
 
-  /** Mints a new token (shared by concurrent callers). */
-  refresh(): Promise<GrowwToken> {
+  /**
+   * Mints a new token (shared by concurrent callers). After a failed mint it refuses without a request
+   * until the backoff ends; `force` (the 08:00 job and POST /ops/token) tries anyway.
+   */
+  refresh(opts: { force?: boolean } = {}): Promise<GrowwToken> {
     if (!this.inflight) {
       this.inflight = (async () => {
+        const now = this.o.now();
+        if (!opts.force && now < this.retryAtMs) {
+          throw new GrowwError(
+            `Groww token: minting paused for ${Math.ceil((this.retryAtMs - now) / 1000)} s after ${this.failures} failed attempt(s): ${this.lastFailure}`,
+            "auth",
+            0,
+          );
+        }
         const gap = this.o.minRemintGapMs ?? 5 * 60_000;
-        const since = this.o.now() - this.lastMintMs;
+        const since = now - this.lastMintMs;
         if (since < gap && this.current && !this.usable(this.current)) {
           throw new GrowwError(`Groww token: re-mint throttled (last mint ${Math.round(since / 1000)} s ago)`, "auth", 401);
         }
-        this.lastMintMs = this.o.now();
-        const t = await this.o.mint();
+        this.lastMintMs = now;
+        let t: GrowwToken;
+        try {
+          t = await this.o.mint();
+        } catch (err) {
+          this.failures++;
+          const base = this.o.mintBackoffMs ?? DEFAULT_MINT_BACKOFF_MS;
+          const cap = this.o.maxMintBackoffMs ?? DEFAULT_MAX_MINT_BACKOFF_MS;
+          this.retryAtMs = this.o.now() + Math.min(cap, base * 2 ** Math.min(this.failures - 1, 20));
+          this.lastFailure = (err instanceof Error ? err.message : String(err)).slice(0, 200);
+          throw err;
+        }
+        this.failures = 0;
+        this.retryAtMs = -Infinity;
+        this.lastFailure = "";
         this.current = t;
         this.invalidated.clear();
         if (this.o.cache) await this.o.cache.set(t);
@@ -163,7 +201,13 @@ export class GrowwTokenManager implements TokenSource {
     this.invalidated.add(token);
   }
 
-  status(): { valid: boolean; expiryMs: number | null; mintedMs: number | null } {
-    return { valid: this.usable(this.current), expiryMs: this.current?.expiryMs ?? null, mintedMs: this.current?.mintedMs ?? null };
+  status(): { valid: boolean; expiryMs: number | null; mintedMs: number | null; failures: number; retryAtMs: number | null } {
+    return {
+      valid: this.usable(this.current),
+      expiryMs: this.current?.expiryMs ?? null,
+      mintedMs: this.current?.mintedMs ?? null,
+      failures: this.failures,
+      retryAtMs: Number.isFinite(this.retryAtMs) ? this.retryAtMs : null,
+    };
   }
 }

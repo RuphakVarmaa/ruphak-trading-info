@@ -52,7 +52,11 @@ function levels(v: unknown): Level[] {
   return out;
 }
 
-/** Maps /live-data/quote's payload to an engine Quote. `t` is the fetch time: bid/ask are current. */
+/**
+ * Maps /live-data/quote's payload to an engine Quote. `t` is the fetch time: bid/ask are current.
+ * `iv` is in percent, like every Quote (the planner divides it by 100): Groww's implied_volatility is
+ * read as percent above 3 and as a decimal at or below it.
+ */
 export function parseQuote(symbol: string, payload: unknown, fetchedMs: number): Quote {
   const p = rec(payload) ?? {};
   const depth = rec(p.depth);
@@ -72,7 +76,7 @@ export function parseQuote(symbol: string, payload: unknown, fetchedMs: number):
     source: "groww",
   };
   if (buy.length > 0 || sell.length > 0) q.depth = { buy, sell };
-  if (ivRaw !== null && ivRaw > 0) q.iv = ivRaw > 3 ? ivRaw / 100 : ivRaw;
+  if (ivRaw !== null && ivRaw > 0) q.iv = ivRaw > 3 ? ivRaw : ivRaw * 100;
   const oi = num(p.open_interest);
   if (oi !== null) q.oi = oi;
   const vol = num(p.volume);
