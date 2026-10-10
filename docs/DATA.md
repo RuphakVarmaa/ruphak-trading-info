@@ -1,4 +1,4 @@
-# Market data: closing-auction artefacts, cleaning flags, 5-minute archive
+# Market data: closing-auction artefacts, cleaning flags, 5-minute archive, live option quotes
 
 Checked on 9 October 2026 against a Yahoo history snapshot of 59 sessions (16 Jul – 8 Oct 2026). The before/after backtest is in `reports/wp1-cleaning.md`.
 
@@ -189,3 +189,133 @@ Measured on the local D1 with the 9 Oct archive: a bar takes 109.5 bytes includi
 | rows read | ≈2,500 (the comparison window) | ≈0.6 million |
 
 Workers Paid includes 50 million rows written and 25 billion rows read a month, plus 5 GB of storage, so the archive adds nothing to the bill. The one-off back-fill writes about 258,000 rows; that is more than the free plan's 100,000 a day, but within the paid allowance. An export reads one row per bar.
+
+## Live option quotes (`option_quotes`): recording only
+
+**This records prices. It places no orders, sizes nothing and changes no trading decision.** Buying stays paused (`EDGE_GATE=calibrated`) and nothing here sells.
+
+### Why
+
+On five years of real 1-minute trade prices no option strategy passed the plan's bar ([reports/wp11-real-intraday.md](../reports/wp11-real-intraday.md)). The one near-miss was selling the at-the-money NIFTY or SENSEX straddle at the close of the 09:15 minute and buying it back at 15:00 or 15:20: +₹254 (NIFTY) and +₹304 (SENSEX) a lot. That assumes a sale at the minute's last trade. A real sell order fills at the bid, and trade bars do not show the bid. The mid-fill edge is 1.1–3.0% of premium, so it survives only if the bid sits within about 0.5–1.5% of the last trade (WP11 §9). About 60 sessions of Groww's own bid and ask quotes settle that.
+
+### What is recorded, and when
+
+On NSE trading days (the bundled holiday list plus the dashboard's overrides), from the trading Durable Object:
+
+| slot | when |
+|---|---|
+| `open` | every trading tick (about every 30 s) from 09:15:00 to 09:31:00 IST, at least 20 s apart |
+| `09:45`, `10:15`, `11:15`, `15:00`, `15:20` | one snapshot each: the first tick in the five minutes after the time |
+| `manual` | `POST /ops/quotes-snapshot` (left out of the report) |
+
+Each snapshot covers, for NIFTY and SENSEX:
+
+- **Expiries.** The nearest weekly expiry that does not expire today (`expiry_kind = 'next'`, the engine's own rule, WP11's convention B). On an expiry day, also the contract expiring today (`'expiring'`; with `next` it gives WP11's convention A). Expiries and symbols come from Groww's instrument master, never formatted by hand, so holiday-shifted expiries (NIFTY 19 Oct 2026) are right.
+- **Strikes.** The listed strike nearest Groww's index LTP at the snapshot (a tie goes to the lower strike, WP11's rule) and two listed strikes on each side, call and put: 10 contracts per index and expiry.
+- **The buy-back legs.** At 15:00 and 15:20, also every strike that was at the money at an entry snapshot (09:15–09:17, the 09:20 and 09:30 minutes, 11:15), so a straddle sold in the morning can be valued at the asks even after the market moved.
+
+Table `option_quotes` (`migrations/0002_option_quotes.sql`), one row per contract per snapshot, primary key `(snapshot_ms, trading_symbol)`. Prices are rupees per unit; NULL means Groww did not send the field (or sent zero).
+
+| column | content |
+|---|---|
+| `snapshot_ms`, `slot` | when the snapshot started (epoch ms; shared by its rows) and its slot |
+| `index_id`, `expiry`, `expiry_kind`, `strike`, `option_type`, `trading_symbol`, `lot_size` | the contract (lot size from the instrument master) |
+| `bid`, `ask`, `bid_qty`, `ask_qty` | best bid and ask with their sizes |
+| `ltp`, `last_trade_ms` | last traded price and the exchange time of that trade (when Groww sends it) |
+| `volume`, `oi` | day volume and open interest |
+| `depth` | top five levels a side as JSON `{"b":[[price,qty],...],"a":[[price,qty],...]}` |
+| `spot` | Groww's index LTP at the start of the snapshot |
+| `fetched_ms` | when this quote arrived (a snapshot's quotes arrive about 300 ms apart, the at-the-money legs first) |
+| `source`, `schema_v` | `groww:live-data/quote`, layout version 1 |
+
+Rows are only inserted (`INSERT OR IGNORE`): a snapshot written twice adds nothing. The nightly prune does not touch the table.
+
+### How it runs, and why it cannot hurt trading
+
+`workers/engine/src/quoteRecorder.ts` (slots and contracts: `src/engine/market/quoteRecorder.ts`):
+
+1. A tick does its own work and sets its next alarm first. Only then does the DO check the clock, and if a slot may be due it starts the recorder in the background. The tick never waits for it.
+2. The recorder has its own Groww client. It shares the engine's token but paces its own calls: at least 300 ms apart (at most 3.3 a second, so with the tick's own calls Groww's 10 a second is never reached), a 5 s timeout per call, and no new call 25 s after the snapshot started. An auth, permission or rate-limit failure, or three failed quotes in a row, end the snapshot.
+3. One failed quote is skipped and counted; the others are written. Every other failure (Groww, D1, KV, its own storage) is caught, counted and logged. The recorder never throws and keeps its own error counter. It never touches the engine's, so it cannot mark the engine DEGRADED. After three failed snapshots in a row it sends one Telegram alert a day.
+4. Without `GROWW_API_KEY` and `GROWW_TOTP_SECRET` it records nothing, and the status says so.
+
+### Status and a manual snapshot
+
+```
+curl -X POST -H "Authorization: Bearer $ADMIN_TOKEN" https://<engine-host>/ops/quotes-status
+curl -X POST -H "Authorization: Bearer $ADMIN_TOKEN" https://<engine-host>/ops/quotes-snapshot   # one snapshot now, labelled "manual"
+```
+
+The status (KV key `quotes:option_quotes:status`, written after every snapshot) has `ok`, `configured`, `ranAt`, `slot`, `skipped` (why nothing was recorded), `spot`, `planned`, `quotes`, `rowsWritten`, `requests`, `errors` (the first ten) and `errorCount`, `today` (snapshots, rows, requests, errors and the fixed slots done), `consecutiveFailures`, `lastError` and `lastOkAt`. A manual snapshot also works outside market hours, which makes it the check after a deploy. Groww then returns its last data, possibly without a bid or an ask; those columns are NULL.
+
+### Requests and cost
+
+Measured on 62 simulated sessions built with the recorder's own code:
+
+| | per trading day |
+|---|---|
+| snapshots | ≈ 37 (≈ 32 in the open window, 5 fixed) |
+| Groww calls | ≈ 940: ≈ 900 quotes (20 a snapshot, 30 on a NIFTY or SENSEX expiry day, a few more at 15:00 and 15:20) and one index LTP per snapshot |
+| peak rate | ≈ 40–60 calls a minute and at most 3.3 a second, against Groww's 300 a minute and 10 a second for live data |
+| D1 | ≈ 900 rows (≈ 1,800 rows written with the key index), ≈ 320 KB; 60 sessions ≈ 19 MB |
+| KV and DO storage | one status and one state write per snapshot |
+
+Groww charges nothing per call: the Trade API subscription (₹499 + GST a month) covers it. On Cloudflare it stays inside the Workers Paid allowance (50 million rows written and 5 GB a month), so it adds nothing to the bill. The trading DO is awake all session anyway.
+
+### Reading it: `npm run quotes-report`
+
+```
+npm run quotes-report                                  # the local D1 (.wrangler/state)
+npm run quotes-report -- --from 2026-10-12 --to 2027-01-15 --no-sessions
+npm run quotes-report -- --remote                      # the deployed database (read-only; rows read are billed)
+```
+
+Per session and index, for convention B (the next expiry) and A (the contract expiring today on its expiry day), with the straddle at the strike nearest the snapshot's spot whose legs both have a bid and an ask:
+
+1. **The 09:15 sale.** The straddle's two bids at each 09:15:15–09:16:30 snapshot (the first one is the trade) against the two legs' last trades in the 09:15 minute: the price WP11's near-miss assumed. The minute's last trade is the latest trade inside the minute that any quote showed. It is marked exact when a quote fetched after 09:16:00 still showed it; otherwise a later trade in the minute may have been missed. The bids are also compared with the last trades at the same snapshot, which shows the spread alone without the price moving inside the minute.
+2. **The same at 09:20, 09:30 and 11:15,** against those minutes' last trades.
+3. **The spread** (ask − bid) / mid of the at-the-money straddle, by minute in the open window and by slot after it: median and 75th percentile.
+4. **The buy-back:** the same strike's asks at 15:00 and 15:20 against its last trades.
+5. **Net per lot for the seller,** after charges at the dated schedule (`src/engine/broker/charges.ts`): sold at the bids and bought back at the asks (what an order could have got), and at the last trades (WP11's mid fill). The difference is what crossing the spread costs. There are no stops: snapshots are too sparse to check one.
+6. **Entry slippage** as % of premium with a day-clustered bootstrap 95% interval, next to WP11's 0.5–1.5% tolerance.
+7. **The plan's §12 bar** on the net per lot at the touch, once 60 sessions exist (before that it prints "not enough sessions: N of 60"). It applies the criteria per index, convention, entry and exit (32 variants), with day-block bootstrap intervals. The criteria: at least 180 trades, a CI above zero per trade and per session, profit factor ≥ 1.3, every year positive, Bonferroni with N from `reports/trials.jsonl` plus these 32, a deflated Sharpe ratio ≥ 0.95, and the last 40% of sessions. The placebo and ±20% checks need entries at random times, so they print N/A, and no variant can PASS on quotes alone. Sixty sessions give 60 trades per variant, so the 180-trade criterion stays INSUFFICIENT: the quotes answer the fill question, not the strategy question.
+
+`--json <file>` also writes the results (under `.cache/` or outside the repository: it holds quote data, and the repository is public). `--ledger` appends the 32 variants to `reports/trials.jsonl`, but only once 60 sessions exist.
+
+### What changes when the Groww secrets are set
+
+The same two secrets switch on more than the recorder. With `GROWW_API_KEY` and `GROWW_TOTP_SECRET` set (and `LIVE_TRADING` still `"false"`):
+
+- **08:00 IST:** the engine mints the day's Groww token; a failure sends a Telegram alert.
+- **Spot:** every tick takes Groww's index LTP for NIFTY, SENSEX and BANKNIFTY instead of Yahoo's last 5-minute close. This changes the strike choice, the paper fill context and the marks. Indicators still come from Yahoo's bars, and the per-index freshness gate still uses the bars. While Groww answers, the engine's overall data age reads fresh, so the `yahoo` source health no longer shows frozen Yahoo bars.
+- **Option prices:** all three paper accounts price entries, marks, stops and fills on Groww's bid and ask with depth (a market order walks the book), and the copy tickets say "broker price". The synthetic Black-Scholes quote is used only when Groww fails or has no two-sided quote.
+- **Buying stays paused:** `EDGE_GATE=calibrated` blocks every entry whatever the quote source (its measured move beta is negative).
+- **Nothing goes live:** live orders still need `LIVE_TRADING="true"`, the relay, LIVE mode and an ARM.
+
+If Groww's auth fails, or the TOTP key turns out to need a daily approval in the app:
+
+- the 08:00 mint fails and alerts;
+- retries pause for 5, then 10, 20 and 30 minutes (off hours the engine asks Groww only once an hour), which is at most about 35 token calls a day against Groww's 150. `POST /ops/token` tries at once, so approve the key and call it;
+- meanwhile every Groww call fails at once without a request: spot comes from Yahoo, quotes are synthetic, and the recorder records nothing (its status shows the token error);
+- nothing of this throws into the tick, so exits keep working on synthetic prices and the engine does not go DEGRADED.
+
+If Groww refuses Cloudflare's addresses for live data (unverified: relay/README.md, "Groww assumptions"), every data call fails with 403, which is handled the same way. The status shows the 403. The remedy is `GROWW_DATA_VIA_RELAY="true"` with the relay deployed.
+
+Guards added with the recorder, each with tests (`src/engine/broker/groww/groww.test.ts`, `src/engine/pipeline/paperQuotes.test.ts`):
+
+- **Token backoff.** Before, with no valid token, every Groww call minted again: hundreds of token calls an hour, past Groww's daily 150. Each call could also add up to 12 s to a tick.
+- **Empty, one-sided or crossed quotes fall back to the synthetic quote for paper.** Before, an empty Groww quote paused exits, the 15:05 square-off included. A one-sided quote got every paper exit order rejected. Either way the position stayed open until 16:00 closed it at its last mark.
+- **A 30 s pause after a Groww timeout, 5xx, 429 or auth failure,** for paper quotes only. Before, every quote waited up to 10 s, so a slow Groww could stretch one tick by minutes. LIVE quotes have no pause.
+- **Implied volatility in percent.** Groww's IV is now read in percent, like every other quote. Before it was 100× too small, so the edge gate's figures would have been wrong.
+
+### Setting it up
+
+Outside market hours, in this order. The engine has to be deployed **before** the secrets are set: the guards above ship with it, and the engine in production before it (2026.10.09-4) has none of them.
+
+1. `npm run db:migrate:remote` creates the table (CI does this on a push to `main`).
+2. Bump `ENGINE_VERSION` in `workers/engine/src/runtime.ts`, then `npm run deploy:engine`. `GET /health` shows the new version. Without the secrets the recorder only reports "Groww is not configured".
+3. Set the two secrets in the Cloudflare dashboard: Workers & Pages → ruphak-engine → Settings → Variables and Secrets → Add. Choose type **Secret** and the names `GROWW_API_KEY` and `GROWW_TOTP_SECRET`: the key and the TOTP secret (the base32 seed Groww shows when it creates the key) of a Groww API key of type TOTP. Type or paste each value only into that form, then deploy. Cloudflare starts the Worker again with them, and later `wrangler deploy`s keep them.
+4. Check `POST /ops/token` (`token valid until …`), `POST /ops/quotes-snapshot` (`configured: true`, `rowsWritten` 20, or 30 on an expiry day) and `POST /ops/quotes-status`. On the next trading day check `/ops/quotes-status` again after 09:31 and after 15:20.
+5. After about 60 sessions: `npm run quotes-report -- --remote`.
+
+To stop recording, delete the two secrets (that also returns paper trading to Yahoo spot and synthetic quotes). The rows stay.
