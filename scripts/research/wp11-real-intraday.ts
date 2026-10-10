@@ -42,7 +42,7 @@ import { dayBlockBootstrap, deflatedSharpe, profitFactor, seededRandom, type Blo
 import type { BhavRow } from "../../src/engine/backtest/realPrices";
 import { expectedMove, flyNoArbitrage, maxDrawdown, modeLot, strikeBeyond, structurePnl, tailShare, worstRun, type LegSpec } from "../../src/engine/backtest/shortPremium";
 import { formatTrial, parseTrials, sharpeVariance, type TrialRecord } from "../../src/engine/backtest/trials";
-import { istAt, MINUTE_MS } from "../../src/engine/clock";
+import { addDays, istAt, MINUTE_MS } from "../../src/engine/clock";
 import { istMinuteOfDay } from "../../src/engine/market/candles";
 import type { SessionBars } from "../../src/engine/strategy/published";
 import { firstCandlePlan } from "../../src/engine/strategy/published/firstCandle";
@@ -1704,6 +1704,12 @@ async function runAll(args: ReturnType<typeof parseArgs>): Promise<void> {
       pf: j.stats.pf,
       hit: j.stats.hit,
       halves: j.stats.halves,
+      eras: j.stats.eras,
+      sr: j.stats.sr,
+      net: j.stats.net,
+      sessions: j.stats.sessions,
+      charges: j.stats.charges,
+      premium: j.stats.premium,
       years: j.stats.years,
       tail: j.stats.tail,
       gaps: j.gaps,
@@ -1732,6 +1738,37 @@ async function main(): Promise<void> {
   const cmd = process.argv[2];
   if (cmd === "verify") return verify(args);
   if (cmd === "run") return runAll(args);
+  if (cmd === "debug") {
+    // Prints one session's inputs and a few trades in full, to check the fills by hand.
+    const x = str(args, "x") ?? fail("--x <extract dir> is required");
+    const sym = (str(args, "index") ?? "NIFTY") as IndexId;
+    const day = str(args, "day") ?? fail("--day YYYY-MM-DD is required");
+    const data = await loadResearchData({ from: addDays(day, -40), to: addDays(day, 10), dir: str(args, "dir") ?? fail("--dir is required") });
+    const I = indexData(data, x, loadManifest(x)[sym], RESEARCH_INDICES.find((i) => i.id === sym)!);
+    const d = I.build(day);
+    const show = (m: number) => `${minToHhmm(m)} idx ${d.idx.at(m)?.o}/${d.idx.at(m)?.h}/${d.idx.at(m)?.l}/${d.idx.at(m)?.c}`;
+    console.log(`${sym} ${day}: open ${d.open}, prev close ${d.prevClose}, VIX ${d.vixPrev}, A ${d.chain.A?.expiry} (lot ${d.lot.A}, DTE ${d.dte.A}), B ${d.chain.B?.expiry} (lot ${d.lot.B}, DTE ${d.dte.B})`);
+    for (const m of [555, 556, 899, 900, 920]) console.log(`  ${show(m)}`);
+    const chain = d.chain.B!;
+    const k = nearestListed(bothListed(chain), d.open)!;
+    for (const t of ["CE", "PE"] as const) {
+      const s = chain.series.get(key(k, t))!;
+      for (const m of [555, 556, 900, 920]) {
+        const b = s.at(m);
+        console.log(`  B ${k}${t} ${minToHhmm(m)}: ${b ? `o ${b.o} h ${b.h} l ${b.l} c ${b.c} v ${b.v}` : "no bar"}`);
+      }
+      console.log(`  B ${k}${t} bhav OPEN ${d.bhavOpen(k, t)}`);
+    }
+    for (const mode of ["conservative", "mid", "print"] as const) {
+      const o = sellOne(d, { conv: "B", wings: 0, entry: 555, exit: 900, stop: null, mode });
+      console.log(`  C4 B 09:15→15:00 ${mode}:`, JSON.stringify(o));
+    }
+    console.log("  C5 1EM 09:15→15:00 mid:", JSON.stringify(sellOne(d, { conv: "B", wings: 1, entry: 555, exit: 900, stop: null, mode: "mid" })));
+    const sig = firstCandleSignal(d, { rangeMin: 15, minBodyPct: 0.24, stop: PREMIUM_STOP, exit: 905, barMin: 5 });
+    console.log("  C1 signal:", JSON.stringify(sig), sig ? JSON.stringify(buyOne(d, { ...sig, exit: 905, reason: "time", itm: 0, stop: PREMIUM_STOP, mode: "mid" })) : "");
+    console.log("  C3 signal:", JSON.stringify(orbSignal(d, { entry: "PUBLISHED", rangeMin: 5, targetR: 10, itm: 0, stop: PREMIUM_STOP })));
+    return;
+  }
   if (cmd === "anatomy") {
     const x = str(args, "x") ?? fail("--x <extract dir> is required");
     const data = await loadResearchData({ from: "2021-05-01", to: "2026-07-31", dir: str(args, "dir") ?? fail("--dir is required") });
