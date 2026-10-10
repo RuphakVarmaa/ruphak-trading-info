@@ -1,0 +1,51 @@
+# systemd unit for the order relay. Install (see README.md "Install with systemd"):
+#   sudo cp deploy/relay.service /etc/systemd/system/relay.service
+#   sudo systemctl daemon-reload && sudo systemctl enable --now relay
+#   journalctl -u relay -f
+[Unit]
+Description=Ruphak order relay (static-IP gateway to the Groww Trade API)
+Documentation=file:///opt/ruphak-relay/README.md
+Wants=network-online.target time-sync.target
+After=network-online.target time-sync.target
+# Stop restarting after 10 failures in 5 minutes (protects Groww's 150/day token limit).
+StartLimitIntervalSec=300
+StartLimitBurst=10
+
+[Service]
+Type=simple
+User=relay
+Group=relay
+WorkingDirectory=/opt/ruphak-relay
+EnvironmentFile=/etc/ruphak-relay.env
+Environment=NODE_ENV=production
+# Adjust the node path if `command -v node` differs (Node 22.13+ required).
+ExecStart=/usr/bin/node --disable-warning=ExperimentalWarning dist/index.js
+Restart=always
+RestartSec=5
+TimeoutStopSec=15
+UMask=0077
+
+# Hardening: the relay only needs outbound HTTPS, its data directory and a loopback port.
+NoNewPrivileges=true
+CapabilityBoundingSet=
+AmbientCapabilities=
+PrivateTmp=true
+PrivateDevices=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/opt/ruphak-relay/data
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectKernelLogs=true
+ProtectControlGroups=true
+ProtectClock=true
+ProtectHostname=true
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+RestrictNamespaces=true
+RestrictRealtime=true
+RestrictSUIDSGID=true
+LockPersonality=true
+SystemCallArchitectures=native
+
+[Install]
+WantedBy=multi-user.target

@@ -1,23 +1,10 @@
-import { fetchIntelFeed, fetchCommodityPrices, getChokepointStatuses, deriveMapMarkers, getComexWarehouseData } from '@/utils/api';
+import { getInitialEngineSnapshot } from '@/lib/engine/snapshot';
 import DashboardClient from '@/components/DashboardClient';
 
+// Engine state changes every few seconds: render per request. Metals and macro have their own page (/metals).
+export const dynamic = 'force-dynamic';
+
 export default async function Home() {
-  const [intelItems, commodityPrices] = await Promise.all([
-    fetchIntelFeed(),
-    fetchCommodityPrices(),
-  ]);
-
-  const chokepoints = getChokepointStatuses();
-  const mapMarkers = deriveMapMarkers(intelItems);
-  const comexData = getComexWarehouseData();
-
-  return (
-    <DashboardClient
-      intelItems={intelItems}
-      commodityPrices={commodityPrices}
-      chokepoints={chokepoints}
-      mapMarkers={mapMarkers}
-      comexData={comexData}
-    />
-  );
+  const engineInitial = await getInitialEngineSnapshot();
+  return <DashboardClient engineInitial={engineInitial} />;
 }

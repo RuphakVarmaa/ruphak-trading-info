@@ -39,3 +39,25 @@ yarn-error.log*
 # typescript
 *.tsbuildinfo
 next-env.d.ts
+
+# allow committed templates
+!.env.example
+!.dev.vars.example
+
+# cloudflare / opennext
+.dev.vars
+.dev.vars.*
+!.dev.vars.example
+.open-next/
+.wrangler/
+worker-configuration.d.ts
+cloudflare-env.d.ts
+
+# relay runtime data
+relay/node_modules/
+relay/data/
+relay/dist/
+
+# backtest caches and reports
+.cache/
+reports/
