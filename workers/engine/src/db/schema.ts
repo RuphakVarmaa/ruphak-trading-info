@@ -215,3 +215,50 @@ export const bars5m = sqliteTable(
   },
   (t) => [primaryKey({ columns: [t.symbol, t.t] })],
 );
+
+/**
+ * Live option quotes recorded by the trading DO for the 09:15 straddle-sale question (read-only: no
+ * orders; reports/wp11-real-intraday.md §9, docs/DATA.md). One row per contract per snapshot, written
+ * with INSERT OR IGNORE and never updated or pruned. Prices are rupees per unit; NULL means Groww did
+ * not send the field (or sent zero).
+ */
+export const optionQuotes = sqliteTable(
+  "option_quotes",
+  {
+    /** When the snapshot started (epoch ms); every row of one snapshot shares it. */
+    snapshotMs: integer("snapshot_ms").notNull(),
+    /** "open" (every tick 09:15:00-09:31:00 IST), "09:45", "10:15", "11:15", "15:00", "15:20" or "manual" (POST /ops/quotes-snapshot). */
+    slot: text("slot").notNull(),
+    indexId: text("index_id").notNull(),
+    /** Contract expiry, YYYY-MM-DD. */
+    expiry: text("expiry").notNull(),
+    /** "next": the nearest weekly expiry that is not today's; "expiring": the contract expiring today. */
+    expiryKind: text("expiry_kind").notNull(),
+    strike: real("strike").notNull(),
+    /** "CE" or "PE". */
+    optionType: text("option_type").notNull(),
+    tradingSymbol: text("trading_symbol").notNull(),
+    /** Lot size from the instrument master, for per-lot figures. */
+    lotSize: integer("lot_size").notNull(),
+    bid: real("bid"),
+    ask: real("ask"),
+    bidQty: integer("bid_qty"),
+    askQty: integer("ask_qty"),
+    ltp: real("ltp"),
+    /** Exchange time of the last trade (epoch ms), when Groww sends it. */
+    lastTradeMs: integer("last_trade_ms"),
+    volume: integer("volume"),
+    oi: integer("oi"),
+    /** Top five depth levels as compact JSON {"b":[[price,qty],...],"a":[[price,qty],...]}; NULL without depth. */
+    depth: text("depth"),
+    /** Groww's index LTP at the start of the snapshot. */
+    spot: real("spot"),
+    /** When this quote arrived (epoch ms); quotes of one snapshot arrive a few hundred ms apart. */
+    fetchedMs: integer("fetched_ms").notNull(),
+    /** Writer, e.g. "groww:live-data/quote". */
+    source: text("source").notNull(),
+    /** Row layout version (1). */
+    schemaV: integer("schema_v").notNull(),
+  },
+  (t) => [primaryKey({ columns: [t.snapshotMs, t.tradingSymbol] })],
+);

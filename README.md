@@ -102,7 +102,7 @@ src/engine/            pure TypeScript engine: runs in Workers, Node scripts and
 workers/engine/        engine Worker: TradingEngineDO, IngestDO, BacktestDO, crons, queue consumer, EngineAdmin RPC, D1 repository
 migrations/            D1 schema (drizzle-kit)
 relay/                 static-IP order relay (Node 22 + Hono), see relay/README.md
-scripts/               backtest, fetch-history, archive-backfill, archive-export, bootstrap-events, score-batch, trigger-cron
+scripts/               backtest, fetch-history, archive-backfill, archive-export, quotes-report, bootstrap-events, score-batch, trigger-cron
 src/app, src/components, src/lib, src/hooks   Next.js dashboard (India Index Desk, blotter, /live, /copy, /backtest, /events)
 docs/RESEARCH.md       survey of public algo-trading projects, the Groww wire contract, charges and pitfalls
 ```
@@ -130,7 +130,22 @@ curl -X POST -H "Authorization: Bearer dev" localhost:8787/ops/status
 npm run cron:local -- "* 3-10 * * MON-FRI"                              # fire a cron by expression
 ```
 
-Then set `ENGINE_MOCK=0` in `.env.local` and restart `npm run dev`. The dashboard then reads the local engine through its `ENGINE` service binding. Other ops endpoints are `/ops/token`, `/ops/instruments`, `/ops/premarket`, `/ops/eod`, and `/ops/archive` and `/ops/archive-status` for the 5-minute bar archive ([docs/DATA.md](docs/DATA.md)).
+Then set `ENGINE_MOCK=0` in `.env.local` and restart `npm run dev`. The dashboard then reads the local engine through its `ENGINE` service binding.
+
+Ops endpoints (every one is `POST` with `Authorization: Bearer $ADMIN_TOKEN`; locally the token is `dev`):
+
+| Endpoint | What it does |
+|---|---|
+| `/ops/ingest` | Fetch, cluster and queue news for scoring (`?reason=`) |
+| `/ops/tick` | One trading-loop tick |
+| `/ops/status` | The Telegram `/status` text |
+| `/ops/token` | Mint the day's Groww token now, even while retries are paused after a failure |
+| `/ops/instruments` | Refresh the instrument master from Groww's `instrument.csv` |
+| `/ops/premarket`, `/ops/eod` | The 08:30 pre-market and 16:00 end-of-day jobs |
+| `/ops/archive`, `/ops/archive-status` | The 5-minute bar archive: run it (`?full=1`, `?force=1`) and its last result ([docs/DATA.md](docs/DATA.md)) |
+| `/ops/quotes-status` | The option-quote recorder (recording only, no orders): last run, rows written, errors, last error ([docs/DATA.md](docs/DATA.md#live-option-quotes-option_quotes-recording-only)) |
+| `/ops/quotes-snapshot` | One quote snapshot now, labelled `manual` and left out of the report: checks the Groww secrets and the table |
+| `/ops/telegram-test` | A test message to the Telegram chat |
 
 Without keys the engine still runs end to end. It paper-trades on synthetic option quotes priced from India VIX, and `npm run dev:engine` scores news with the lexicon fallback. The Workers AI binding only runs remotely, so to score with GLM-5.3 locally, log in with `npx wrangler login` and use `npm run dev:engine:ai`, which bills your Cloudflare account.
 
@@ -197,10 +212,12 @@ It creates the resources and fills in their IDs, migrates D1, deploys the engine
 | 16:15 | `45 10 * * MON-FRI` | Bar archive: appends the day's settled 5-minute bars to D1 `bars_5m` ([docs/DATA.md](docs/DATA.md)) |
 | 20:00 | `30 14 * * *` | Prune old D1 rows |
 
+The option-quote recorder has no cron of its own. With the Groww secrets set, the trading DO records Groww quotes after its ticks: every tick from 09:15 to 09:31, then at 09:45, 10:15, 11:15, 15:00 and 15:20. It is recording only, with no orders, and writes to D1 `option_quotes` ([docs/DATA.md](docs/DATA.md#live-option-quotes-option_quotes-recording-only)). `npm run quotes-report` reads it.
+
 ## Going live with Groww (only after the go/no-go below)
 
 1. Subscribe to the **Groww Trade API** (₹499 + GST a month). Create an API key of type **TOTP** and keep its TOTP secret. The relay's research found that the docs may also require a daily approval for TOTP keys. If so, approve it before 08:00. The 08:00 job alerts on failure.
-2. Set `GROWW_API_KEY` and `GROWW_TOTP_SECRET` on the engine. The engine then uses Groww's LTP for decision-time spot and real option quotes with depth. Paper fills use these real quotes.
+2. Set `GROWW_API_KEY` and `GROWW_TOTP_SECRET` on the engine. The engine then uses Groww's LTP for decision-time spot and real option quotes with depth. Paper fills, marks and stops use these real quotes, and the read-only quote recorder starts. A failed Groww call, or a quote without a two-sided price, falls back to Yahoo spot and synthetic quotes, and a failed token mint is retried after 5 to 30 minutes. [docs/DATA.md](docs/DATA.md#what-changes-when-the-groww-secrets-are-set) lists every change.
 3. Deploy the **order relay** on a machine with a static IP (a Mumbai VPS, about ₹300–800 a month). Whitelist that IP on Groww, and put the relay behind a Cloudflare Tunnel with an Access service token. Follow [`relay/README.md`](relay/README.md) step by step. Set `RELAY_URL`, `RELAY_HMAC_SECRET` (at least 32 characters), `CF_ACCESS_CLIENT_ID` and `CF_ACCESS_CLIENT_SECRET` on the engine.
 4. Run the relay with `RELAY_LIVE=false` (shadow mode) for at least a week while paper trading. Then follow its verification checklist.
 5. Redeploy the engine with `LIVE_TRADING="true"`. In the dashboard switch the mode to LIVE, ARM it, and start at 1 lot with caps at their minimum.
@@ -228,6 +245,7 @@ npm run backtest -- --from 2026-01-01 --to 2026-10-07 --walk-forward   # out-of-
 
 npm run fetch-history -- --from 2024-01-01 --to 2026-10-07          # Groww 5-minute index history (needs Groww keys)
 npm run archive-export -- --remote                                   # the engine's D1 bar archive as a --history snapshot (docs/DATA.md)
+npm run quotes-report                                                # recorded Groww quotes: the 09:15 straddle sale at the bids (local D1; --remote for production)
 npm run bootstrap-events -- --from 2026-07-01 --to 2026-10-07       # GDELT crawl -> clusters (resumable, hours)
 npm run score-batch -- --dry-run                                     # request count and token estimate
 npm run score-batch -- --provider workers-ai                        # GLM-5.3 on Workers AI (needs CLOUDFLARE_ACCOUNT_ID + CLOUDFLARE_API_TOKEN)
@@ -369,10 +387,10 @@ Limits worth knowing before copying with real money:
 
 | Item | Estimate |
 |---|---|
-| Cloudflare (Workers Paid, Durable Objects, D1, KV, Queues) | about $5 a month, mostly within included usage. The D1 bar archive adds about 1.2 million rows written and 70 MB a year, inside the included allowance. |
+| Cloudflare (Workers Paid, Durable Objects, D1, KV, Queues) | about $5 a month, mostly within included usage. The D1 bar archive adds about 1.2 million rows written and 70 MB a year, and the option-quote recorder about 1,800 rows written and 0.3 MB a trading day, both inside the included allowance. |
 | News scoring, GLM-5.3 on Workers AI | $1.40 per million input tokens and $4.40 per million output tokens, billed to the Cloudflare account. The default daily caps limit spend to about $8.60 a day; reasoning tokens count as output. |
 | News scoring with Claude (optional) | Roughly $200–280 a month on Opus 5.5 at about 200 calls a day; set `LLM_PROVIDER=anthropic`. |
-| Groww Trade API | ₹499 + GST a month (live data and live trading) |
+| Groww Trade API | ₹499 + GST a month (live data and live trading; the quote recorder's ≈ 940 calls a trading day are included) |
 | Relay VPS | ₹300–800 a month (live only) |
 | Yahoo, publisher RSS, Bing News, Google News, GDELT, Telegram | free |
 

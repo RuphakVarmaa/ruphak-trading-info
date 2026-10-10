@@ -136,11 +136,20 @@ export function relayClient(env: Env): RelayClient | null {
 }
 
 /** Groww data over the direct API, or over the relay's data proxy when GROWW_DATA_VIA_RELAY=true. */
-export function growwDataClient(env: Env, tokens: TokenSource | null): GrowwDataClient | null {
+export function growwDataClient(env: Env, tokens: TokenSource | null, http: { timeoutMs?: number } = {}): GrowwDataClient | null {
   let transport: GrowwTransport | null = null;
   if (env.GROWW_DATA_VIA_RELAY === "true") transport = relayClient(env)?.dataTransport() ?? null;
-  else if (tokens) transport = new GrowwHttp({ tokens });
+  else if (tokens) transport = new GrowwHttp({ tokens, timeoutMs: http.timeoutMs });
   return transport ? new GrowwDataClient(transport) : null;
+}
+
+/**
+ * The quote recorder's own Groww client: the same transport and token manager as the trading DO's
+ * client, but its own request pacing (so its calls never queue behind or ahead of the tick's) and a
+ * 5 s timeout. Null without Groww credentials.
+ */
+export function growwRecorderClient(env: Env, tokens: TokenSource | null): GrowwDataClient | null {
+  return growwDataClient(env, tokens, { timeoutMs: 5_000 });
 }
 
 export function llmClient(env: Env, logger?: Logger, opts: { mode?: ResponseFormatMode } = {}): LlmClient | null {

@@ -15,6 +15,13 @@
       "when": 1791556854446,
       "tag": "0001_bars_5m",
       "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "6",
+      "when": 1791618132896,
+      "tag": "0002_option_quotes",
+      "breakpoints": true
     }
   ]
 }

@@ -52,7 +52,11 @@ function levels(v: unknown): Level[] {
   return out;
 }
 
-/** Maps /live-data/quote's payload to an engine Quote. `t` is the fetch time: bid/ask are current. */
+/**
+ * Maps /live-data/quote's payload to an engine Quote. `t` is the fetch time: bid/ask are current.
+ * `iv` is in percent, like every Quote (the planner divides it by 100): Groww's implied_volatility is
+ * read as percent above 3 and as a decimal at or below it.
+ */
 export function parseQuote(symbol: string, payload: unknown, fetchedMs: number): Quote {
   const p = rec(payload) ?? {};
   const depth = rec(p.depth);
@@ -72,12 +76,18 @@ export function parseQuote(symbol: string, payload: unknown, fetchedMs: number):
     source: "groww",
   };
   if (buy.length > 0 || sell.length > 0) q.depth = { buy, sell };
-  if (ivRaw !== null && ivRaw > 0) q.iv = ivRaw > 3 ? ivRaw / 100 : ivRaw;
+  if (ivRaw !== null && ivRaw > 0) q.iv = ivRaw > 3 ? ivRaw : ivRaw * 100;
   const oi = num(p.open_interest);
   if (oi !== null) q.oi = oi;
   const vol = num(p.volume);
   if (vol !== null) q.volume = vol;
   return q;
+}
+
+/** Exchange time of the last trade in a /live-data/quote payload (`last_trade_time`: epoch s/ms or ISO), or null. */
+export function parseLastTradeTime(payload: unknown): number | null {
+  const t = parseGrowwTime(rec(payload)?.last_trade_time);
+  return t !== null && t > 0 ? t : null;
 }
 
 /** Maps /option-chain's payload to rows (iv as a decimal). */
@@ -204,11 +214,16 @@ export class GrowwDataClient {
   }
 
   async quote(exchange: Exchange, segment: "CASH" | "FNO", tradingSymbol: string): Promise<Quote> {
+    return (await this.quoteDetail(exchange, segment, tradingSymbol)).quote;
+  }
+
+  /** quote() plus the exchange time of the last trade (null when Groww does not send it); for the quote recorder. */
+  async quoteDetail(exchange: Exchange, segment: "CASH" | "FNO", tradingSymbol: string): Promise<{ quote: Quote; lastTradeMs: number | null }> {
     const payload = await this.http.request<unknown>("GET", "/live-data/quote", {
       query: { exchange, segment, trading_symbol: tradingSymbol },
       category: "live",
     });
-    return parseQuote(tradingSymbol, payload, this.now());
+    return { quote: parseQuote(tradingSymbol, payload, this.now()), lastTradeMs: parseLastTradeTime(payload) };
   }
 
   async optionChain(exchange: Exchange, underlying: string, expiry: string): Promise<{ underlyingLtp: number; rows: OptionChainRow[] }> {

@@ -5,6 +5,8 @@
  * (features -> conviction -> gates -> plan -> entry) in the current entry mode, then position
  * cycles for every mode with open positions, polling exits twice more while positioned.
  * Off hours it refreshes a market snapshot hourly and sleeps until 09:00 IST.
+ * After a tick (never inside it) the read-only quote recorder may take a snapshot of Groww option quotes
+ * for the 09:15 straddle study (workers/engine/src/quoteRecorder.ts); it places no orders.
  *
  * Live orders need three keys here (LIVE_TRADING var, settings.mode LIVE, an unexpired arm)
  * plus RELAY_LIVE on the relay; otherwise every order is simulated by the PaperBroker.
@@ -46,7 +48,8 @@ import { makeRefId } from "../../../../src/engine/util/refId";
 import { runBarArchive, type BarArchiveOptions, type BarArchiveStatus } from "../barArchive";
 import { sendEntryAlert, sendExitAlert, sendTrailAlerts, type CopyAlertContext } from "../copyAlerts";
 import { CachedInstruments } from "../instruments";
-import { accountRuntime, accountViews, enabledAccounts, errorMessage, growwDataClient, makeRuntime, relayClient, type AccountRuntime, type Runtime } from "../runtime";
+import { QUOTE_RECORDER_STATE_KEY, QuoteRecorder, type QuoteRecorderStatus, type RecorderState } from "../quoteRecorder";
+import { accountRuntime, accountViews, enabledAccounts, errorMessage, growwDataClient, growwRecorderClient, makeRuntime, relayClient, type AccountRuntime, type Runtime } from "../runtime";
 import { Alerts } from "../telegram";
 
 const LOOP_MS = 30_000;
@@ -58,6 +61,10 @@ const RECONCILE_EVERY_MS = 5 * MINUTE_MS;
 const RELAY_HEALTH_TTL_MS = 60_000;
 const OFF_HOURS_SNAPSHOT_MS = 60 * MINUTE_MS;
 const HEARTBEAT_STALE_MS = 120_000;
+/** Paper quotes skip Groww (synthetic quotes) for this long after a Groww failure that is not about one symbol. */
+const PAPER_QUOTE_PAUSE_MS = 30_000;
+/** The quote recorder covers both indices whatever the engine trades (INDICES). */
+const RECORDED_INDICES = ["NIFTY", "SENSEX"] as const;
 
 type BookMode = Extract<TradingMode, "PAPER" | "LIVE">;
 
@@ -100,7 +107,12 @@ export class TradingEngineDO extends DurableObject<Env> {
   private readonly marketContext = new MarketContextStore();
   private readonly tokens: GrowwTokenManager | null;
   private readonly data: GrowwDataClient | null;
+  /** Groww quotes for LIVE (no fallback, no pause). */
   private readonly growwQuotes: GrowwOptionQuotes | null;
+  /** Groww quotes behind the paper books' synthetic fallback: paused for 30 s after a Groww failure. */
+  private readonly paperQuotes: GrowwOptionQuotes | null;
+  /** Read-only live quote recorder (runs after ticks, never inside one; workers/engine/src/quoteRecorder.ts). */
+  private readonly quoteRecorder: QuoteRecorder;
   private readonly relay: RelayClient | null;
   private readonly market: YahooMarketDataSource;
   private readonly instruments: CachedInstruments;
@@ -135,6 +147,7 @@ export class TradingEngineDO extends DurableObject<Env> {
       : null;
     this.data = growwDataClient(env, this.tokens);
     this.growwQuotes = this.data ? new GrowwOptionQuotes(this.data, cfg) : null;
+    this.paperQuotes = this.data ? new GrowwOptionQuotes(this.data, cfg, { pauseAfterErrorMs: PAPER_QUOTE_PAUSE_MS }) : null;
     this.relay = relayClient(env);
     const data = this.data;
     this.market = new YahooMarketDataSource({
@@ -162,6 +175,23 @@ export class TradingEngineDO extends DurableObject<Env> {
       allowSynthetic: () => this.entryModeNow === "PAPER",
     });
     this.alerts = new Alerts(env, repo.state, logger);
+    this.quoteRecorder = new QuoteRecorder({
+      db: env.DB,
+      kv: env.KV,
+      state: {
+        get: async () => (await ctx.storage.get<RecorderState>(QUOTE_RECORDER_STATE_KEY)) ?? null,
+        put: async (s) => {
+          await ctx.storage.put(QUOTE_RECORDER_STATE_KEY, s);
+        },
+      },
+      source: growwRecorderClient(env, this.tokens),
+      // Its own copy of the real instrument master: never synthetic contracts.
+      instruments: new CachedInstruments({ env, cfg, calendar, marketContext: this.marketContext, logger, allowSynthetic: () => false }),
+      calendar: async () => this.calendarFor(await repo.settings.get()),
+      indices: RECORDED_INDICES,
+      logger,
+      alert: (text) => this.alerts.send(text, { key: "quote-recorder", minIntervalMs: 6 * 60 * MINUTE_MS }),
+    });
     const ids = enabledAccounts(env);
     const views = accountViews(this.rt, ids);
     const view = (id: AccountId): AccountView => views.find((v) => v.id === id) ?? accountViews(this.rt, [id])[0];
@@ -207,8 +237,8 @@ export class TradingEngineDO extends DurableObject<Env> {
       optionQuotes = this.growwQuotes;
       broker = new GrowwBroker({ relay: this.relay, repo, clock: systemClock, newId: randomId, logger });
     } else {
-      optionQuotes = this.growwQuotes
-        ? new FallbackOptionQuotes(this.growwQuotes, synthetic, (err) => logger.warn("groww quote failed; synthetic quote used for paper", { error: errorMessage(err) }))
+      optionQuotes = this.paperQuotes
+        ? new FallbackOptionQuotes(this.paperQuotes, synthetic, (err) => logger.warn("groww quote failed; synthetic quote used for paper", { error: errorMessage(err) }))
         : synthetic;
       broker = new PaperBroker({ cfg, clock: systemClock, repo, quotes: optionQuotes, marketContext: (i) => this.marketContext.get(i), newId: randomId, mode: "PAPER" });
     }
@@ -219,8 +249,8 @@ export class TradingEngineDO extends DurableObject<Env> {
   private followerDeps(f: Follower, calendar: TradingCalendar = this.rt.calendar): EngineDeps {
     const { logger } = this.rt;
     const synthetic = new SyntheticOptionQuotes(calendar, f.cfg);
-    const optionQuotes: OptionQuoteSource = this.growwQuotes
-      ? new FallbackOptionQuotes(this.growwQuotes, synthetic, (err) => logger.warn("groww quote failed; synthetic quote used for paper", { error: errorMessage(err) }))
+    const optionQuotes: OptionQuoteSource = this.paperQuotes
+      ? new FallbackOptionQuotes(this.paperQuotes, synthetic, (err) => logger.warn("groww quote failed; synthetic quote used for paper", { error: errorMessage(err) }))
       : synthetic;
     const broker = new PaperBroker({ cfg: f.cfg, clock: systemClock, repo: f.repo, quotes: optionQuotes, marketContext: (i) => this.marketContext.get(i), newId: randomId, mode: "PAPER" });
     return { cfg: f.cfg, clock: systemClock, calendar, repo: f.repo, broker, market: this.market, optionQuotes, instruments: this.instruments, logger, newId: randomId, mode: "PAPER", marketContext: this.marketContext };
@@ -331,6 +361,7 @@ export class TradingEngineDO extends DurableObject<Env> {
           } catch (err) {
             this.rt.logger.error("heartbeat/alarm write failed", { error: errorMessage(err) });
           }
+          this.kickQuoteRecorder();
         }
         return next;
       })().finally(() => {
@@ -338,6 +369,19 @@ export class TradingEngineDO extends DurableObject<Env> {
       });
     }
     return this.ticking;
+  }
+
+  /**
+   * After a tick's own work (the next alarm is already set): starts the read-only quote recorder in the
+   * background when a slot may be due. Nothing here is awaited by the tick and nothing can throw into it.
+   */
+  private kickQuoteRecorder(): void {
+    try {
+      if (!this.quoteRecorder.wants(Date.now())) return;
+      this.ctx.waitUntil(this.quoteRecorder.run());
+    } catch (err) {
+      this.rt.logger.warn("quote recorder not started", { error: errorMessage(err) });
+    }
   }
 
   private async phaseFor(now: number, settings?: EngineSettings): Promise<EnginePhase> {
@@ -593,11 +637,11 @@ export class TradingEngineDO extends DurableObject<Env> {
     if (at === null || at > now + 5_000) await this.ctx.storage.setAlarm(now + 2_000);
   }
 
-  /** 08:00 IST: mint the day's Groww token (tokens expire at 06:00). */
+  /** 08:00 IST and POST /ops/token: mint the day's Groww token (tokens expire at 06:00), even during a failure backoff. */
   async refreshToken(): Promise<AdminResult> {
     if (!this.tokens) return { ok: false, message: "Groww credentials not configured (paper trading uses synthetic quotes)" };
     try {
-      const t = await this.tokens.refresh();
+      const t = await this.tokens.refresh({ force: true });
       await recordSourceHealth(this.rt.repo, "groww", true, Date.now());
       return { ok: true, message: `token valid until ${istIso(t.expiryMs)}` };
     } catch (err) {
@@ -704,6 +748,14 @@ export class TradingEngineDO extends DurableObject<Env> {
       });
     }
     return this.archiving;
+  }
+
+  /**
+   * POST /ops/quotes-snapshot: one quote snapshot now, labelled "manual" (the report leaves those out), for
+   * checking the Groww credentials and the table after a deploy. Read-only like the scheduled snapshots.
+   */
+  recordQuotesNow(): Promise<QuoteRecorderStatus | null> {
+    return this.quoteRecorder.run({ manual: true });
   }
 
   async setArmed(armed: boolean, actor: string): Promise<AdminResult> {
