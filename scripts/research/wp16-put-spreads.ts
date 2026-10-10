@@ -935,6 +935,8 @@ function subOf(r: Run, side: SpreadSide, label: string, f: (t: Trade16) => boole
 
 interface Econ {
   credit: number;
+  /** Trades whose credit at the entry fills is zero or negative (a stale close or bar on a thin strike; added after the freeze, descriptive). */
+  creditNonPos: number;
   creditPerWidth: number;
   payoutPerWidth: number;
   premium: number;
@@ -967,6 +969,7 @@ function econOf(trades: readonly Trade16[], side: SpreadSide): Econ {
   const wm = trades.filter((t) => t.worstMark !== null).reduce<{ v: number; d: string } | null>((a, t) => (a === null || t.worstMark! < a.v ? { v: t.worstMark!, d: t.expiry } : a), null);
   return {
     credit: avg(s.map((x) => x.credit)),
+    creditNonPos: s.filter((x) => x.credit <= 0).length,
     creditPerWidth: avg(trades.map((t) => t[side].credit / t.lot / t[side].width)),
     payoutPerWidth: avg(s.map((x) => x.value / x.width)),
     premium: avg(s.map((x) => x.premium)),
@@ -1785,17 +1788,17 @@ async function runAll(args: ReturnType<typeof parseArgs>): Promise<void> {
   // Criterion detail per pick.
   for (const { pk, s, c, j } of judged) {
     const e = s.econ;
-    S.push(`\n### ${pk.run.name}\n\n${md([["criterion", "verdict", "detail"], ...j.criteria.map((z) => [z.name, z.verdict, z.detail])])}\n\n${md([["sample", "trades", "₹/trade", "95% CI", "per week CI", "PF", "win", "net ₹", "placebo gap (SE)"], ...[s.full, s.is, s.oos, s.half1, s.half2, s.era1, s.era2, s.oosEra1, s.oosEra2, s.pre2026, s.post2026].map((z) => [z.label, z.n, rs(z.mean), `${rs(z.lo)} … ${rs(z.hi)}`, `${rs(z.wLo)} … ${rs(z.wHi)}`, fx(z.pf), pct(z.hit), rs(z.net), `${rs(z.gap.gap)} (${fx(z.gap.t)})`])])}\n\nEconomics (all trades): credit ${rs(e.credit)}/lot (credit ÷ width ${pct(e.creditPerWidth)}; payout ÷ width ${pct(e.payoutPerWidth)}), win rate ${pct(e.winRate)}, average win ${rs(e.avgWin)}, average loss ${rs(e.avgLoss)}, short strike breached ${pct(e.breach)}, full width lost ${e.fullLossN} times (${pct(e.fullLoss)}), max loss ${rs(e.maxLoss)} (largest ${rs(e.maxLossMax)}), margin at entry ${rs(e.marginEntry)} (peak ${rs(e.marginPeakMax)}, smallest ${rs(e.marginMin)}; ≤ ₹10,000 on ${pct(e.smallFits)}), charges ${rs(e.charges)}, spread ${rs(e.spreadCost)}; legs: short ${rs(e.shortGross)}, long ${rs(e.longGross)} gross a trade; worst interim mark ${e.worstMark === null ? "–" : `${rs(e.worstMark)} (expiry ${e.worstMarkDay})`}${pk.family === "D" && pk.mgmt === "early" ? `; exits with an untraded leg ${pct(e.untradedExit)}` : ""}${pk.family === "M" && pk.mgmt === "early" ? `; stale exits ${pct(e.stale)}` : ""}.\n\nBy year (trades, net ₹, % of ₹5 lakh at one lot): ${s.years.map((y) => `${y.year} ${y.n} ${rs(y.net)} (${pp(y.pctCapital, 1)})`).join(" · ")}\n\nThe mirror call spread: ${rs(c.full.mean)}/trade (${rs(c.full.lo)} … ${rs(c.full.hi)}), PF ${fx(c.full.pf)}, win ${pct(c.full.hit)}; last 40% ${rs(c.oos.mean)} (${c.oos.n}); credit ${rs(c.econ.credit)}/lot.\n`);
+    S.push(`\n### ${pk.run.name}\n\n${md([["criterion", "verdict", "detail"], ...j.criteria.map((z) => [z.name, z.verdict, z.detail])])}\n\n${md([["sample", "trades", "₹/trade", "95% CI", "per week CI", "PF", "win", "net ₹", "placebo gap (SE)"], ...[s.full, s.is, s.oos, s.half1, s.half2, s.era1, s.era2, s.oosEra1, s.oosEra2, s.pre2026, s.post2026].map((z) => [z.label, z.n, rs(z.mean), `${rs(z.lo)} … ${rs(z.hi)}`, `${rs(z.wLo)} … ${rs(z.wHi)}`, fx(z.pf), pct(z.hit), rs(z.net), `${rs(z.gap.gap)} (${fx(z.gap.t)})`])])}\n\nEconomics (all trades): credit ${rs(e.credit)}/lot (credit ÷ width ${pct(e.creditPerWidth)}; payout ÷ width ${pct(e.payoutPerWidth)}; credit ≤ ₹0 at the entry fills on ${e.creditNonPos} trades), win rate ${pct(e.winRate)}, average win ${rs(e.avgWin)}, average loss ${rs(e.avgLoss)}, short strike breached ${pct(e.breach)}, full width lost ${e.fullLossN} times (${pct(e.fullLoss)}), max loss ${rs(e.maxLoss)} (largest ${rs(e.maxLossMax)}), margin at entry ${rs(e.marginEntry)} (peak ${rs(e.marginPeakMax)}, smallest ${rs(e.marginMin)}; ≤ ₹10,000 on ${pct(e.smallFits)}), charges ${rs(e.charges)}, spread ${rs(e.spreadCost)}; legs: short ${rs(e.shortGross)}, long ${rs(e.longGross)} gross a trade; worst interim mark ${e.worstMark === null ? "–" : `${rs(e.worstMark)} (expiry ${e.worstMarkDay})`}${pk.family === "D" && pk.mgmt === "early" ? `; exits with an untraded leg ${pct(e.untradedExit)}` : ""}${pk.family === "M" && pk.mgmt === "early" ? `; stale exits ${pct(e.stale)}` : ""}.\n\nBy year (trades, net ₹, % of ₹5 lakh at one lot): ${s.years.map((y) => `${y.year} ${y.n} ${rs(y.net)} (${pp(y.pctCapital, 1)})`).join(" · ")}\n\nThe mirror call spread: ${rs(c.full.mean)}/trade (${rs(c.full.lo)} … ${rs(c.full.hi)}), PF ${fx(c.full.pf)}, win ${pct(c.full.hit)}; last 40% ${rs(c.oos.mean)} (${c.oos.n}); credit ${rs(c.econ.credit)}/lot (≤ ₹0 on ${c.econ.creditNonPos} trades).\n`);
     const perts = pertRuns.filter((z) => z.base === pk.run.name);
     if (perts.length) S.push(`Perturbations (last 40% net ₹ / trades): ${perts.map((z) => `${z.label}: ${rs(pertStats.get(z.name)!.put.oos.net)} / ${pertStats.get(z.name)!.put.oos.n}`).join(" · ")}\n`);
   }
   // Every configuration: both sides, both fills.
   for (const family of FAMILIES)
     for (const sym of SYMS) {
-      const rows: (string | number)[][] = [["management", "m", "N", "fill", "trades", "put spread ₹/trade (95% CI)", "PF", "win", "first 60% / last 40%", "credit ₹/lot (÷ width)", "payout ÷ width", "breach / full width", "call spread ₹/trade (95% CI)", "call PF", "gap (SE)", "skips"]];
+      const rows: (string | number)[][] = [["management", "m", "N", "fill", "trades", "put spread ₹/trade (95% CI)", "PF", "win", "first 60% / last 40%", "credit ₹/lot (÷ width); entries with credit ≤ ₹0", "payout ÷ width", "breach / full width", "call spread ₹/trade (95% CI)", "call PF", "gap (SE)", "skips"]];
       for (const r of runs.filter((z) => z.cfg.family === family && z.cfg.sym === sym)) {
         const s = stats.get(r.name)!;
-        rows.push([r.cfg.mgmt, fmtM(r.cfg.m), r.cfg.n, r.mode, s.put.full.n, `${rs(s.put.full.mean)} (${rs(s.put.full.lo)} … ${rs(s.put.full.hi)})`, fx(s.put.full.pf), pct(s.put.full.hit, 0), `${rs(s.put.is.mean)} / ${rs(s.put.oos.mean)}`, `${rs(s.put.econ.credit)} (${pct(s.put.econ.creditPerWidth, 0)})`, pct(s.put.econ.payoutPerWidth, 1), `${pct(s.put.econ.breach, 0)} / ${pct(s.put.econ.fullLoss, 1)}`, `${rs(s.call.full.mean)} (${rs(s.call.full.lo)} … ${rs(s.call.full.hi)})`, fx(s.call.full.pf), `${rs(s.put.full.gap.gap)} (${fx(s.put.full.gap.t)})`, skipList(r.skips)]);
+        rows.push([r.cfg.mgmt, fmtM(r.cfg.m), r.cfg.n, r.mode, s.put.full.n, `${rs(s.put.full.mean)} (${rs(s.put.full.lo)} … ${rs(s.put.full.hi)})`, fx(s.put.full.pf), pct(s.put.full.hit, 0), `${rs(s.put.is.mean)} / ${rs(s.put.oos.mean)}`, `${rs(s.put.econ.credit)} (${pct(s.put.econ.creditPerWidth, 0)}); ≤ ₹0: ${s.put.econ.creditNonPos}`, pct(s.put.econ.payoutPerWidth, 1), `${pct(s.put.econ.breach, 0)} / ${pct(s.put.econ.fullLoss, 1)}`, `${rs(s.call.full.mean)} (${rs(s.call.full.lo)} … ${rs(s.call.full.hi)})`, fx(s.call.full.pf), `${rs(s.put.full.gap.gap)} (${fx(s.put.full.gap.t)})`, skipList(r.skips)]);
       }
       S.push(`\n## Every configuration: ${fam(family)}, ${sym}\n\n${md(rows)}\n`);
     }
