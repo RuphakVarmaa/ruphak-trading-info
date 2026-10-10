@@ -23,6 +23,7 @@
     "fetch-history": "tsx scripts/fetch-history.ts",
     "archive-backfill": "tsx scripts/archive-backfill.ts",
     "archive-export": "tsx scripts/archive-export.ts",
+    "quotes-report": "tsx scripts/quotes-report.ts",
     "bootstrap-events": "tsx scripts/bootstrap-events.ts",
     "score-batch": "tsx scripts/score-batch.ts",
     "eval:scorer": "RUN_LLM_EVAL=1 vitest run src/engine/evaluation/scorerEval.test.ts",
