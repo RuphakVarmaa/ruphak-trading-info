@@ -783,7 +783,7 @@ function trialOf(r: Run, s: Stats): TrialRecord {
 // Tables
 // ---------------------------------------------------------------------------
 
-const VHEAD = ["variant", "trades", "₹/trade (95% CI)", "% of premium", "hit", "PF", "first 60% ₹/trade (n)", "last 40% ₹/trade [CI] (n, PF)", "to Dec 2024 / from 2025 ₹/trade", "years +", "skips"];
+const VHEAD = ["variant", "trades", "₹/trade (95% CI)", "% of premium (H2: of the debit)", "hit", "PF", "first 60% ₹/trade (n)", "last 40% ₹/trade [CI] (n, PF)", "to Dec 2024 / from 2025 ₹/trade", "years +", "stopped", "skips"];
 
 function vrow(r: Run, s: Stats, prefix: string): (string | number)[] {
   const yrs = s.years.filter((y) => y.n >= 20);
@@ -799,11 +799,12 @@ function vrow(r: Run, s: Stats, prefix: string): (string | number)[] {
     `${rs(s.oos.mean)} [${rs(s.oos.lo)} … ${rs(s.oos.hi)}] (${s.oos.n}, ${fx(s.oos.pf)})`,
     `${rs(s.era1.mean)} / ${rs(s.era2.mean)}`,
     `${yrs.filter((y) => y.net > 0).length}/${yrs.length}`,
+    s.full.n ? pct(r.trades.filter((t) => t.reason === "stop").length / s.full.n, 0) : "–",
     skips,
   ];
 }
 
-const THEAD = ["variant", "trades", "net ₹ total", "worst day (date)", "10 worst days", "max drawdown (% of ₹5 lakh)", "worst 5% of days ÷ total net", "charges ₹/trade", "premium ₹/trade"];
+const THEAD = ["variant", "trades", "net ₹ total", "worst day (date)", "10 worst days", "max drawdown (% of ₹5 lakh)", "worst 5% of days (× the total net they lost)", "charges ₹/trade", "premium ₹/trade (H2: net debit)"];
 
 function trow(r: Run, s: Stats, prefix: string): (string | number)[] {
   return [
@@ -813,7 +814,7 @@ function trow(r: Run, s: Stats, prefix: string): (string | number)[] {
     `${rs(s.tail.worstDay)} (${s.tail.worstDayDate})`,
     rs(s.tail.worst10),
     `${rs(s.tail.maxDD)} (${pct(s.tail.maxDD / CAPITAL)})`,
-    s.full.net > 0 ? `${rs(s.tail.worst5Sum)} = ${fx(s.tail.worst5Multiple)}×` : `${rs(s.tail.worst5Sum)} (net < 0)`,
+    s.full.net > 0 ? `${rs(s.tail.worst5Sum)} (${fx(-s.tail.worst5Multiple)}×)` : `${rs(s.tail.worst5Sum)} (net < 0)`,
     rs(s.charges),
     rs(r.spec.kind === "H2" ? s.debit : s.premium),
   ];
@@ -1073,7 +1074,7 @@ async function runAll(args: ReturnType<typeof parseArgs>): Promise<void> {
     }
     // Worst days of the picks and of the most exposed naked straddle, and the largest late moves.
     const ref = runs.filter((r) => r.index === sym && r.family === "H1a" && r.spec.kind === "H1" && r.spec.entry === hhmmToMin("13:30") && r.spec.exit === hhmmToMin("15:20") && r.spec.stop === null);
-    for (const r of [...ref, ...judged.filter((j) => j.run.index === sym).map((j) => j.run)]) S.push(`\n#### ${r.name}: the 10 worst ${r.spec.kind === "H2" && (r.spec as H2Spec).hold ? "expiry weeks" : "days"}\n\n${worstList(r, 10)}\n`);
+    for (const r of new Set([...ref, ...judged.filter((j) => j.run.index === sym).map((j) => j.run)])) S.push(`\n#### ${r.name}: the 10 worst ${r.spec.kind === "H2" && (r.spec as H2Spec).hold ? "expiry weeks" : "days"}\n\n${worstList(r, 10)}\n`);
     for (const r of ref) S.push(`\n#### ${r.name}: the 10 largest index moves between entry and exit\n\n${lateMoves(r, 10)}\n`);
     // H3: every event.
     const h3 = runs.filter((r) => r.index === sym && r.family === "H3");
