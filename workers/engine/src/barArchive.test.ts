@@ -24,7 +24,7 @@ const migrationsDir = new URL("../../../migrations/", import.meta.url);
 
 beforeAll(async () => {
   proxy = await getPlatformProxy<{ DB: D1Database; KV: KVNamespace }>({ configPath: "workers/engine/wrangler.jsonc", persist: false, remoteBindings: false });
-  db = proxy.env.DB;
+  db = retryClosedSocket(proxy.env.DB);
   kv = proxy.env.KV;
   const sql = readdirSync(migrationsDir)
     .filter((f) => f.endsWith(".sql"))
@@ -37,6 +37,34 @@ beforeAll(async () => {
 afterAll(async () => {
   await proxy?.dispose();
 });
+
+/**
+ * Miniflare's proxy keeps an idle socket for 1 s and workerd closes it after 5 s. Its prepare() and bind()
+ * are synchronous round trips that block this thread, so on a loaded machine the ~240 statements a first
+ * run prepares can hold the event loop past 5 s; the next batch then goes out on a socket workerd has
+ * already closed ("fetch failed", cause UND_ERR_SOCKET "other side closed") before D1 has read it. Only
+ * that error is retried; any other error, and any wrong result, still fails the test.
+ */
+function retryClosedSocket(d1: D1Database): D1Database {
+  const closedSocket = (err: unknown) => (err as { cause?: { code?: unknown } } | null)?.cause?.code === "UND_ERR_SOCKET";
+  const batch: D1Database["batch"] = async (statements) => {
+    for (let attempt = 1; ; attempt++) {
+      try {
+        return await d1.batch(statements);
+      } catch (err) {
+        if (attempt >= 3 || !closedSocket(err)) throw err;
+        console.warn(`local D1: batch retried after workerd closed an idle socket (attempt ${attempt})`);
+      }
+    }
+  };
+  return new Proxy(d1, {
+    get(target, prop) {
+      if (prop === "batch") return batch;
+      const v: unknown = Reflect.get(target, prop);
+      return typeof v === "function" ? v.bind(target) : v;
+    },
+  });
+}
 
 beforeEach(async () => {
   await db.prepare("DELETE FROM bars_5m").run();
@@ -134,8 +162,8 @@ describe("runBarArchive (nightly job)", () => {
     const yahoo = fakeYahoo({ "ES=F": ES_60D });
     const first = await runBarArchive(deps(source, { fetchImpl: yahoo.fetchImpl }));
 
-    expect(first.ok).toBe(true);
     expect(first.errors).toEqual([]);
+    expect(first.ok).toBe(true);
     expect(await archived("^NSEI")).toEqual(NIFTY.map((c) => ({ ...c, source: ENGINE_SOURCE, firstSeenMs: RUN })));
     // ES=F: 60-day bars before the held window, the held copy where both exist, nothing that closed after 15:45.
     const esExpected = settledBy([...ES_60D.filter((c) => c.t < ES_HELD[0].t), ...ES_HELD], RUN);
