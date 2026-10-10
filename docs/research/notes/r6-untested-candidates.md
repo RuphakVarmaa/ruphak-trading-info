@@ -2,6 +2,12 @@
 
 Research date: Sat 10 Oct 2026.
 
+**Update, same evening: overnight drift (points 2–5) has now been tested in WP15** ([report](../../../reports/wp15-overnight-drift.md)). It fails.
+- The drift is real in NSE's and BSE's official prints: NIFTY +10.2 bp a night, 2011–2026. It fails the bar at the deflated Sharpe step and is fading (−0.6 bp a night in 2026).
+- "Buy the dip overnight" does not show up in India. After a fall of 1% or more the night averaged +4.8 bp, and its CI includes zero.
+- A trader cannot capture the drift. The near-month future keeps +1.7 bp a night, less than the STT on the sale. All 28 option picks fail on real 1-minute prices, including R6's synthetic long and its single-call version.
+- Of the remaining candidates, turn-of-the-month is still untested. Point 7's evidence is negative, and point 8 is not accessible to retail.
+
 This is a final completeness sweep. It looks for documented strategies on Indian index options, or on NIFTY/SENSEX through options or futures, that meet three conditions:
 - (a) a retail trader with ₹5,000 to ₹5 lakh can run them;
 - (b) they have out-of-sample, or live and audited, evidence of positive returns after costs;
