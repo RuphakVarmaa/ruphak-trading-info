@@ -18,7 +18,7 @@ import { istAt, istDate, istMinutes, parseHHMM } from "../clock";
 import type { EngineConfig } from "../config";
 import { istDateOf } from "../market/candles";
 import type { MarketDataSource } from "../ports";
-import { MARKET_SYMBOLS, type Candle, type GateResult, type IndexId, type MarketFeatures } from "../types";
+import { MARKET_SYMBOLS, type Candle, type GateResult, type IndexId, type MarketFeatures, type MarketSnapshot, type N2Daily } from "../types";
 import { squareOffMs } from "./gates";
 
 // ---------------------------------------------------------------------------------------------
@@ -29,19 +29,8 @@ export function n2Enabled(cfg: EngineConfig): boolean {
   return cfg.rules?.n2?.enabled === true;
 }
 
-/** The daily (previous-close) inputs of N2 for one index and session. */
-export interface N2Daily {
-  /** Date of the latest close used (the previous session when the data is complete). */
-  lastSession: string;
-  /** India VIX close(D-1) / close(D-6) - 1, percent; null with fewer than 6 closes. */
-  vix5dChangePct: number | null;
-  /** Share of the prior closes in the window strictly below VIX close(D-1); null with too short a history. */
-  vixPctile: number | null;
-  /** Prior closes the percentile compared against. */
-  vixPctileN: number;
-  /** ln(index close(D-1) / close(D-6)) in percent; null with fewer than 6 closes. */
-  run5dPct: number | null;
-}
+/** The daily (previous-close) inputs of N2 for one index and session (the type lives in ../types, so snapshots can carry it). */
+export type { N2Daily } from "../types";
 
 /** Finite, positive closes of daily bars dated before `today`, ascending (one per date). */
 export function closesBefore(daily: readonly Candle[], today: string): { date: string; c: number }[] {
@@ -69,6 +58,24 @@ export function n2Daily(vixDaily: readonly Candle[], indexDaily: readonly Candle
   const m = idx.length;
   const run5dPct = m >= 6 ? Math.log(idx[m - 1].c / idx[m - 6].c) * 100 : null;
   return { lastSession: vix[n - 1].date, vix5dChangePct, vixPctile, vixPctileN: window.length, run5dPct };
+}
+
+/**
+ * N2's daily inputs for every index from one market snapshot, stored with the snapshot for the Desk's plan.
+ * It runs on every tick whether or not N2 is on, so it never throws: an index whose inputs cannot be
+ * computed gets null, which the plan shows as "no data".
+ */
+export function n2DailyByIndex(snap: Pick<MarketSnapshot, "daily">, indices: readonly IndexId[], t: number, cfg: EngineConfig): Partial<Record<IndexId, N2Daily | null>> {
+  const out: Partial<Record<IndexId, N2Daily | null>> = {};
+  const date = istDate(t);
+  for (const index of indices) {
+    try {
+      out[index] = n2Daily(snap.daily[MARKET_SYMBOLS.INDIAVIX] ?? [], snap.daily[MARKET_SYMBOLS[index]] ?? [], date, cfg);
+    } catch {
+      out[index] = null;
+    }
+  }
+  return out;
 }
 
 /** Which N2 conditions hold; an input that cannot be computed blocks (the rule fails closed). */

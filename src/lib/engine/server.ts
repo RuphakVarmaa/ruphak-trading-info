@@ -48,6 +48,7 @@ const RPC_METHODS = [
   "getPnl",
   "getPerformance",
   "getScheduled",
+  "getTodayPlan",
   "getBacktest",
   "getCopyTickets",
   "verifyAdmin",

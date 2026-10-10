@@ -32,6 +32,7 @@ import {
 } from "../../../../src/engine/broker/groww";
 import type { EngineConfig } from "../../../../src/engine/config";
 import { computeFeatures } from "../../../../src/engine/market/features";
+import { n2DailyByIndex } from "../../../../src/engine/strategy/rules";
 import { YahooMarketDataSource } from "../../../../src/engine/market/yahooMarketData";
 import { runFollowerEntries } from "../../../../src/engine/pipeline/accountCycle";
 import { mainExitsFirst } from "../../../../src/engine/pipeline/tickOrder";
@@ -521,7 +522,7 @@ export class TradingEngineDO extends DurableObject<Env> {
       const snap = await this.market.snapshot(now);
       const features: Partial<Record<IndexId, MarketFeatures>> = {};
       for (const index of cfg.indices) features[index] = computeFeatures(index, snap, calendar, cfg);
-      await repo.snapshots.append({ t: now, quotes: quoteRows(snap), features, regimes: {}, pressure: {} });
+      await repo.snapshots.append({ t: now, quotes: quoteRows(snap), features, regimes: {}, pressure: {}, daily: n2DailyByIndex(snap, cfg.indices, now, cfg) });
       await recordSourceHealth(repo, "yahoo", true, now);
     } catch (err) {
       await recordSourceHealth(repo, "yahoo", false, now, errorMessage(err));

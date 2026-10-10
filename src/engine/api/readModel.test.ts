@@ -6,7 +6,7 @@ import { DEFAULT_CONFIG } from "../config";
 import { sample } from "../repo/contract";
 import { accountRepository } from "../repo/accountRepo";
 import { InMemoryRepository } from "../repo/memory";
-import type { Conviction, Fill, OptionContract, Order, PlanDecision, Position, TradePlan } from "../types";
+import type { Conviction, Fill, MarketFeatures, OptionContract, Order, PlanDecision, Position, TradePlan } from "../types";
 import { ReadModel, llmUsageKey, positionView } from "./readModel";
 
 const NOW = istAt("2026-10-07", "11:00");
@@ -90,6 +90,27 @@ describe("read model", () => {
     expect(s.health.rss?.ok).toBe(true);
     expect(s.stats).toMatchObject({ clustersScoredToday: 9, llmInputTokensToday: 1200, llmOutputTokensToday: 300 });
     expect(s.caps.dailyLossCap).toBe(15_000);
+  });
+
+  it("builds today's plan from the calendar and the latest snapshot's market inputs (read-only)", async () => {
+    const { repo, model } = await setup();
+    const f = { vixChangePct: 1.5, expectedGapPct: 0.2, gapPct: -0.35 } as unknown as MarketFeatures;
+    await repo.snapshots.append({
+      t: NOW - 60_000,
+      quotes: [],
+      features: { NIFTY: f, SENSEX: f },
+      regimes: {},
+      pressure: {},
+      daily: { NIFTY: { lastSession: "2026-10-06", vix5dChangePct: 3, vixPctile: 0.5, vixPctileN: 251, run5dPct: 0.9 }, SENSEX: null },
+    });
+    const plan = await model.getTodayPlan();
+    expect(plan).toMatchObject({ date: "2026-10-07", when: "today", buyingPaused: false, asOf: "2026-10-07T10:59:00+05:30" });
+    expect(plan.windows).toHaveLength(5);
+    const nifty = plan.indices.find((p) => p.index === "NIFTY")!;
+    expect(nifty).toMatchObject({ gapPct: -0.35, expiry: "2026-10-13", sessionsLeft: 4 });
+    expect(nifty.checks.find((c) => c.rule === "N9")!.status).toBe("caution");
+    expect(nifty.checks.find((c) => c.rule === "N2")!.status).toBe("clear");
+    expect(plan.indices.find((p) => p.index === "SENSEX")!.checks.find((c) => c.rule === "N2")!.status).toBe("unknown");
   });
 
   it("explains a signal with contributors, gates and the open position", async () => {

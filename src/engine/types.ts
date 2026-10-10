@@ -834,6 +834,20 @@ export interface QuoteRow {
   asOf: number;
 }
 
+/** The daily (previous-close) inputs of the plan's rule N2 for one index and session (src/engine/strategy/rules.ts n2Daily). */
+export interface N2Daily {
+  /** Date of the latest close used (the previous session when the data is complete). */
+  lastSession: string;
+  /** India VIX close(D-1) / close(D-6) - 1, percent; null with fewer than 6 closes. */
+  vix5dChangePct: number | null;
+  /** Share of the prior closes in the window strictly below VIX close(D-1); null with too short a history. */
+  vixPctile: number | null;
+  /** Prior closes the percentile compared against. */
+  vixPctileN: number;
+  /** ln(index close(D-1) / close(D-6)) in percent; null with fewer than 6 closes. */
+  run5dPct: number | null;
+}
+
 /** What the engine saw on one tick, persisted for the dashboard and for audits. */
 export interface SnapshotRecord {
   t: number;
@@ -841,6 +855,8 @@ export interface SnapshotRecord {
   features: Partial<Record<IndexId, MarketFeatures>>;
   regimes: Partial<Record<IndexId, Regime>>;
   pressure: Partial<Record<IndexId, number>>;
+  /** Rule N2's daily inputs per index, for the Desk's plan (absent from snapshots written before engine 2026.10.10-3). */
+  daily?: Partial<Record<IndexId, N2Daily | null>>;
 }
 
 export interface AuditEntry {

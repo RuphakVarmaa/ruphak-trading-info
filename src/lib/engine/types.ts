@@ -9,6 +9,7 @@ import type {
   ScheduledEventView,
   SignalPerformanceRow,
   SignalView,
+  TodayPlanView,
 } from "@/engine/api-types";
 
 export interface EngineSlices {
@@ -20,6 +21,8 @@ export interface EngineSlices {
   pnl: PnlResponse | null;
   performance: SignalPerformanceRow[] | null;
   scheduled: ScheduledEventView[] | null;
+  /** The plan's no-trade rules for the session (market-wide, like events). */
+  plan: TodayPlanView | null;
 }
 
 export interface EngineSnapshot extends EngineSlices {

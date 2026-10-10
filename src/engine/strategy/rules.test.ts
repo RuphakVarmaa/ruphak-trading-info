@@ -1,10 +1,10 @@
 import { describe, expect, it } from "vitest";
 import { TradingCalendar } from "../calendar/calendar";
 import { addDays, istAt, weekdayOf } from "../clock";
-import { DEFAULT_CONFIG, makeConfig, validateConfig, withOverrides } from "../config";
+import { DEFAULT_CONFIG, makeConfig, validateConfig, withOverrides, type EngineConfig } from "../config";
 import type { MarketDataSource } from "../ports";
 import { MARKET_SYMBOLS, type Candle, type MarketSnapshot } from "../types";
-import { closesBefore, minSessionsLeft, n2Blocks, n2Daily, n2DailyFor, n2Gate, n3Allows, n3Gate, N2_MIN_PCTILE_CLOSES, positionExitByMs } from "./rules";
+import { closesBefore, minSessionsLeft, n2Blocks, n2Daily, n2DailyByIndex, n2DailyFor, n2Gate, n3Allows, n3Gate, N2_MIN_PCTILE_CLOSES, positionExitByMs } from "./rules";
 
 const calendar = new TradingCalendar();
 const TODAY = "2026-10-07";
@@ -91,6 +91,18 @@ describe("N2: no entry after a volatility jump or a big run", () => {
     await n2DailyFor(market, "SENSEX", istAt(TODAY, "10:00"), "2026-10-06", on);
     expect(calls).toBe(2);
     expect(await n2DailyFor(undefined, "NIFTY", istAt(TODAY, "10:00"), null, on)).toBeNull();
+  });
+
+  it("stores each index's inputs with the snapshot, whether or not N2 is on, and never throws", () => {
+    const snap = { daily: { [MARKET_SYMBOLS.INDIAVIX]: dailyBefore(TODAY, vixSeries([15])), [MARKET_SYMBOLS.NIFTY]: flatIndex } };
+    const t = istAt(TODAY, "10:00");
+    const byIndex = n2DailyByIndex(snap, ["NIFTY", "SENSEX"], t, DEFAULT_CONFIG);
+    expect(byIndex.NIFTY).toEqual(n2Daily(snap.daily[MARKET_SYMBOLS.INDIAVIX], flatIndex, TODAY, DEFAULT_CONFIG));
+    expect(byIndex.SENSEX).toMatchObject({ lastSession: "2026-10-06", run5dPct: null }); // VIX known, no SENSEX closes
+    expect(n2DailyByIndex({ daily: {} }, ["NIFTY"], t, DEFAULT_CONFIG)).toEqual({ NIFTY: null });
+    // A config without the rules block (never built by makeConfig) gives "no data" instead of breaking the tick.
+    const broken = { ...DEFAULT_CONFIG, rules: undefined } as unknown as EngineConfig;
+    expect(n2DailyByIndex(snap, ["NIFTY", "SENSEX"], t, broken)).toEqual({ NIFTY: null, SENSEX: null });
   });
 });
 

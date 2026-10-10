@@ -22,6 +22,7 @@ import type {
   ScheduledEventView,
   SignalPerformanceRow,
   SignalView,
+  TodayPlanView,
 } from "../../../src/engine/api-types";
 import { parseAccountId, type AccountId } from "../../../src/engine/accounts";
 import { ReadModel } from "../../../src/engine/api/readModel";
@@ -110,6 +111,9 @@ export class EngineAdmin extends WorkerEntrypoint<Env> implements EngineApi {
   }
   getScheduled(hours: number): Promise<ScheduledEventView[]> {
     return this.model().getScheduled(Number(hours) || 48);
+  }
+  getTodayPlan(): Promise<TodayPlanView> {
+    return this.model().getTodayPlan();
   }
   getBacktest(runId: string): Promise<BacktestResult | null> {
     return getBacktest(this.env, String(runId));

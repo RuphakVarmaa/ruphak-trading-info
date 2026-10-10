@@ -181,6 +181,8 @@ The 8 Oct example: FIIs sold ₹12,943.58 crore (NSE provisional; the depository
 | 15:05 | Square off everything (no overnight) | — |
 | Weekly | Review paper results against the random-entry baseline | Kill or keep |
 
+The Desk's **Today's plan** panel shows this routine's rules for each session: the windows above, and rules N1, N2, N4, N7 and N9 per index, from the calendar and the engine's latest market snapshot.
+
 ---
 
 ## 12. What we are building and how it must prove itself

@@ -354,6 +354,21 @@ Backtest, 23 Jul – 8 Oct 2026 (54 sessions), no news, synthetic option prices,
 
 Reproduce with `npm run backtest -- --from 2026-07-23 --to 2026-10-08 --index BOTH --no-events --prod-limits --account small5k` (`--index NIFTY` for NIFTY only). Yahoo's window moves every day; `--save-history file` on one run and `--history file` on the next replay the same bars.
 
+## Today's plan (Desk)
+
+The Desk opens with **Today's plan**: the research plan's no-trade rules (docs/research/options-trading-plan.md §4–§5) checked for today's session, or the next one after the close. It is information only and changes no trade.
+
+- **The session's windows.** No buys 09:15–09:30 (the day's richest premium). Buy only 09:30–11:15. No new buys after 11:15. Everything is closed by 15:05.
+- **Per index:**
+  - **N1:** the session before a high-impact scheduled event, or one inside the session.
+  - **N2:** a VIX jump (more than 10% over 5 sessions, or more than 8% on the day), VIX in the top third of its year, or a 2% run over 5 sessions.
+  - **N4:** a contract with one session or less left (use the following week's).
+  - **N7:** the index's own expiry day.
+  - **N9:** the gap estimate from global markets, and the actual gap once open.
+- **Missing data is never read as clear.** With buying paused (`EDGE_GATE=calibrated`) the panel says so first.
+
+The inputs are the calendar and the engine's latest market snapshot, which now also carries rule N2's daily inputs (`GET /api/engine/plan`).
+
 ## Copy trading by hand
 
 `/copy` on the dashboard (`/copy?account=small10k` for the ₹10k account, `/copy?account=small5k` for the ₹5k one) lays out each paper trade so it can be repeated by hand in a personal broker account:

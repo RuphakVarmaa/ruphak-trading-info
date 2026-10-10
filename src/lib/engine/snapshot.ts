@@ -30,7 +30,7 @@ export async function getInitialEngineSnapshot(account?: string): Promise<Engine
     if (!engine) return null;
     const { api, source } = engine;
     const today = istDate(Date.now());
-    const [state, signals, positions, events, orders, pnl, performance, scheduled] = await Promise.all([
+    const [state, signals, positions, events, orders, pnl, performance, scheduled, plan] = await Promise.all([
       settle(account ? api.getState(account) : api.getState(), deadline),
       settle(account ? api.getSignals(account) : api.getSignals(), deadline),
       settle(account ? api.getPositions(account) : api.getPositions(), deadline),
@@ -39,8 +39,9 @@ export async function getInitialEngineSnapshot(account?: string): Promise<Engine
       settle(account ? api.getPnl(DEFAULT_PNL_DAYS, account) : api.getPnl(DEFAULT_PNL_DAYS), deadline),
       settle(account ? api.getPerformance(account) : api.getPerformance(), deadline),
       settle(api.getScheduled(DEFAULT_SCHEDULED_HOURS), deadline),
+      settle(api.getTodayPlan(), deadline),
     ]);
-    return { source, fetchedAt: Date.now(), state, signals, positions, events, orders, pnl, performance, scheduled };
+    return { source, fetchedAt: Date.now(), state, signals, positions, events, orders, pnl, performance, scheduled, plan };
   } finally {
     if (timer) clearTimeout(timer);
   }

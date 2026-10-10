@@ -380,6 +380,60 @@ export interface ScheduledEventView {
 }
 
 // ---------------------------------------------------------------------------
+// Today's plan: the plan's no-trade rules for the session (read-only)
+// ---------------------------------------------------------------------------
+
+/** One of the plan's no-trade rules (docs/research/options-trading-plan.md §4), checked for one index. */
+export interface PlanCheckView {
+  /** N1 scheduled event, N2 volatility jump or big run, N4 short-dated contract, N7 expiry day, N9 the opening gap. */
+  rule: "N1" | "N2" | "N4" | "N7" | "N9";
+  label: string;
+  /** block: no new entry today on this rule; caution: a narrower limit applies; clear; unknown: an input is missing. */
+  status: "block" | "caution" | "clear" | "unknown";
+  detail: string;
+}
+
+export interface IndexPlanView {
+  index: IndexId;
+  /** From the market checks only; the paused buying is reported once, for every index. */
+  verdict: "no_trade" | "caution" | "clear";
+  headline: string;
+  checks: PlanCheckView[];
+  /** The global-markets estimate of the opening gap, percent (null without a snapshot). */
+  expectedGapPct: number | null;
+  /** The actual opening gap once the index has opened today, percent. */
+  gapPct: number | null;
+  /** The nearest contract a buyer may use (never one expiring on the session) and its sessions left after the session. */
+  expiry: string | null;
+  sessionsLeft: number | null;
+}
+
+/** A part of the session and what the evidence says about buying in it. */
+export interface PlanWindowView {
+  /** IST "HH:mm". */
+  from: string;
+  to: string;
+  /** trade: the only window the evidence supports for a buyer; avoid: no new buys; close: everything is squared off. */
+  kind: "trade" | "avoid" | "close";
+  label: string;
+  why: string;
+}
+
+export interface TodayPlanView {
+  /** The IST session the plan is for: today while it is a trading day and before the close, otherwise the next trading day. */
+  date: string;
+  when: "today" | "next";
+  /** True while the measured-edge gate (EDGE_GATE=calibrated) is on: it has blocked every entry on the current signals. */
+  buyingPaused: boolean;
+  pausedReason: string | null;
+  windows: PlanWindowView[];
+  indices: IndexPlanView[];
+  /** When the market inputs were taken (the engine's latest snapshot), or null without one. */
+  asOf: string | null;
+  source: string;
+}
+
+// ---------------------------------------------------------------------------
 // Copy trading
 // ---------------------------------------------------------------------------
 
@@ -580,6 +634,8 @@ export interface EngineApi {
   getPnl(days: number, account?: string): Promise<PnlResponse>;
   getPerformance(account?: string): Promise<SignalPerformanceRow[]>;
   getScheduled(hours: number): Promise<ScheduledEventView[]>;
+  /** The plan's no-trade rules evaluated for today's session (or the next one), with the session's entry windows. */
+  getTodayPlan(): Promise<TodayPlanView>;
   getBacktest(runId: string): Promise<BacktestResult | null>;
   /** The account's trades opened on an IST date YYYY-MM-DD as copy tickets: open ones first, then newest first. */
   getCopyTickets(date: string, account?: string): Promise<CopyTicketView[]>;

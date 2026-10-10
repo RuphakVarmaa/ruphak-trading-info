@@ -11,6 +11,7 @@ import { combineConviction } from "../strategy/conviction";
 import { planEntry } from "../strategy/planner";
 import { publishedConviction, publishedSignal } from "../strategy/published";
 import { classifyRegime } from "../strategy/regime";
+import { n2DailyByIndex } from "../strategy/rules";
 import { rawComponents } from "../strategy/signals";
 import type {
   Conviction,
@@ -189,6 +190,8 @@ export async function runTradingCycle(deps: EngineDeps, opts: TradingCycleOption
       features: report.features,
       regimes,
       pressure: Object.fromEntries(Object.entries(report.pressure).map(([k, v]) => [k, v!.epi])),
+      // Rule N2's daily inputs, for the Desk's plan (read-only; the trading gates are unchanged).
+      daily: n2DailyByIndex(snap, cfg.indices, now, cfg),
     };
     await repo.snapshots.append(record);
     await repo.state.set(lastSnapKey, now);

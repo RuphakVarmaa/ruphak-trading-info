@@ -28,6 +28,7 @@ import {
   type SignalView,
   type SourceHealthView,
   type SuggestedContract,
+  type TodayPlanView,
 } from "../api-types";
 import type { TradingCalendar } from "../calendar/calendar";
 import { DAY_MS, HOUR_MS, MINUTE_MS, addDays, istAt, istDate, istIso, istMidnight } from "../clock";
@@ -38,6 +39,7 @@ import { CONFIDENCE_VALUE, MAGNITUDE_MIDPOINT_PCT, MAGNITUDE_VALUE } from "../ev
 import type { Repository } from "../ports";
 import { displayMode } from "../settings";
 import { stopPrice, targetPrice, trailPrice } from "../strategy/exits";
+import { buildTodayPlan } from "../strategy/todayPlan";
 import {
   INDEX_IDS,
   type ArticleCluster,
@@ -577,6 +579,14 @@ export class ReadModel {
         lastTradeAt: p.lastTradeMs ? istIso(p.lastTradeMs) : null,
       }))
       .sort((a, b) => a.source.localeCompare(b.source) || String(a.index).localeCompare(String(b.index)));
+  }
+
+  /** The plan's no-trade rules for today's session (or the next one), from the calendar and the latest snapshot. Read-only. */
+  async getTodayPlan(): Promise<TodayPlanView> {
+    const settings = await this.ctx.repo.settings.get();
+    const cal = calendarFor(this.ctx, settings);
+    const snap = await this.ctx.repo.snapshots.latest();
+    return buildTodayPlan({ nowMs: this.now, calendar: cal, cfg: this.ctx.cfg, snapshot: snap });
   }
 
   async getScheduled(hours: number): Promise<ScheduledEventView[]> {

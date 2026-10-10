@@ -38,7 +38,11 @@ import type {
   SourceHealthView,
   SourceName,
   SuggestedContract,
+  TodayPlanView,
 } from "@/engine/api-types";
+import { defaultCalendar } from "@/engine/calendar/calendar";
+import { DEFAULT_CONFIG } from "@/engine/config";
+import { buildTodayPlan } from "@/engine/strategy/todayPlan";
 import {
   HOUR_MS,
   istAt,
@@ -902,6 +906,16 @@ export class MockEngineApi implements EngineApi {
         })
         .sort((a, b) => Date.parse(a.at) - Date.parse(b.at)),
     );
+  }
+
+  /**
+   * The real plan builder on the bundled calendar, with buying paused as in production. The mock has no
+   * market snapshot, so the market checks (VIX, the gap) read "unknown" rather than inventing numbers.
+   */
+  async getTodayPlan(): Promise<TodayPlanView> {
+    const now = this.read();
+    const cfg = { ...DEFAULT_CONFIG, gates: { ...DEFAULT_CONFIG.gates, expectedMoveModel: "calibrated" as const } };
+    return clone(buildTodayPlan({ nowMs: now, calendar: defaultCalendar, cfg, snapshot: null }));
   }
 
   async getBacktest(runId: string): Promise<BacktestResult | null> {

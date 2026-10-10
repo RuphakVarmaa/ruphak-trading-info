@@ -2,9 +2,9 @@
 
 /**
  * EngineProvider polls the /api/engine/* route handlers in three tiers:
- *   FAST  state, signals, positions        5 s while the market is OPEN/PRE_OPEN, else 30 s
- *   SLOW  events, orders, pnl, performance 60 s
- *   CAL   scheduled                        5 min
+ *   FAST  state, signals, positions              5 s while the market is OPEN/PRE_OPEN, else 30 s
+ *   SLOW  events, orders, pnl, performance, plan 60 s
+ *   CAL   scheduled                              5 min
  * Each tier uses Promise.allSettled, pauses while the tab is hidden, refetches when it
  * becomes visible, and backs off (doubling, capped) while every request in it fails.
  * Last good data is never dropped. useNow() ticks once a second for countdown leaves only.
@@ -51,6 +51,7 @@ const TIER_SLICES: Record<TierName, { key: SliceKey; url: string }[]> = {
     { key: "orders", url: "/api/engine/orders" },
     { key: "pnl", url: `/api/engine/pnl?days=${PNL_DAYS}` },
     { key: "performance", url: "/api/engine/performance" },
+    { key: "plan", url: "/api/engine/plan" },
   ],
   cal: [{ key: "scheduled", url: `/api/engine/scheduled?hours=${SCHEDULED_HOURS}` }],
 };
@@ -173,6 +174,7 @@ export function EngineProvider({ initial, account, children }: { initial: Engine
     pnl: initial?.pnl ?? null,
     performance: initial?.performance ?? null,
     scheduled: initial?.scheduled ?? null,
+    plan: initial?.plan ?? null,
   }));
   const [source, setSource] = useState<"engine" | "mock" | null>(initial?.source ?? null);
   const [tiers, setTiers] = useState<Record<TierName, TierMeta>>(() => initialMeta(initial));

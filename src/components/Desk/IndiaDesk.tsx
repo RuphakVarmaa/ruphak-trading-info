@@ -16,13 +16,14 @@ import EventImpactFeed from "./EventImpactFeed";
 import MarketStrip from "./MarketStrip";
 import ScheduledEventsStrip from "./ScheduledEventsStrip";
 import SignalConsole from "./SignalConsole";
+import TodayPlan from "./TodayPlan";
 
 const linkStyle = { fontSize: 13, fontWeight: 600, color: C.gold, textDecoration: "none" } as const;
 
 /**
- * The India Index Desk, an overview: the market and today's P&L, both signals, the news and the
- * week's scheduled events. The book (orders, equity, signal record) and the engine's controls and
- * health sit in collapsed areas at the bottom.
+ * The India Index Desk, an overview: the session's plan (the research plan's no-trade rules), the market
+ * and today's P&L, both signals, the news and the week's scheduled events. The book (orders, equity,
+ * signal record) and the engine's controls and health sit in collapsed areas at the bottom.
  */
 export default function IndiaDesk() {
   const { status } = useEngineState();
@@ -34,6 +35,10 @@ export default function IndiaDesk() {
       <LiveIndicesPanel />
       <ConnectionBanner />
       <div style={{ display: "grid", gridTemplateColumns: "minmax(0, 1fr)", gap: 40, opacity: dim, transition: "opacity 0.3s", minWidth: 0 }}>
+        <Section id="plan" title="Today's plan" sub="The research plan's no-trade rules for this session: what blocks a buyer today, and when the entry window is.">
+          <TodayPlan />
+        </Section>
+
         <Section
           id="today"
           title="Today"
