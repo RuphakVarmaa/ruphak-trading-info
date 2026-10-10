@@ -224,7 +224,7 @@ Until a variant clears §12, **copying trades with real money has negative expec
   - −38.4% in early 2020;
   - −51.8% in calendar 2008, −24.6% in 2011, and −14.9% so far in 2026 (to 8 Oct).
   - It is the market's return, not an edge. Anyone who must sell in a fall, or uses borrowed money, can lose.
-- **How:** a NIFTY 50 index fund or ETF, held for years. Costs are a small annual fee and the usual transaction charges, against ₹56–71 of charges and spreads on every single option round trip here.
+- **How:** a NIFTY 50 index fund or ETF, held for years. Costs are a small annual fee and the usual transaction charges, against ₹56–71 of charges on every option round trip tested here, before the bid–ask spread.
 
 ---
 
