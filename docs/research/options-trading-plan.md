@@ -18,7 +18,7 @@ Each answer below comes from the tests in this document (sections in brackets). 
 | **FIIs sold ₹12,988 crore, so puts pay?** | FII data comes out after the close. It matches that same day's move (correlation 0.32) but says nothing about the next day (0.00 over 1,877 days). On 8 Oct NIFTY opened flat; the puts paid because of an intraday fall no pre-open number showed (§8). The 12 days since 2019 with FII cash selling worse than −₹10,000 crore were followed by a NIFTY *rise* on average (+0.21% from the next open to the close; it fell on 5 of the 12). FIIs' *positions* don't help either (WP14, NSE's daily participant files 2012–2026). Following FIIs' futures or options positions picked NIFTY's direction no better than chance out of sample. Buying the matching option lost ₹532–880 a lot a trade at a cautious fill. In 2024–26 that meant mostly puts, which lost ₹724 a trade. | Read FII flows and positions as context, never as a signal. |
 | **Can NIFTY's open be known before 09:15?** | **Yes.** ~08:55: GIFT Nifty minus the futures basis (on 9 Oct, 6–11 points off the open). 09:00: the global-markets model calls the gap's direction right 71% of the time (87% when it calls a gap beyond ±0.3%); its typical error is now 0.26% with the re-fitted weights. 09:08–09:10: NSE's pre-open auction gives the exact open (§9). **But the gap doesn't tell the day:** gap-up days closed above their open 48% of the time. | Use the pre-open to decide *whether* to trade: a small gap and no news means no early trade; a big gap means wait for 09:30. Never trade the gap itself. |
 | **Can I buy before the close and sell at the open?** | **Not profitably.** NIFTY does tend to rise overnight. From the official close to the next open it rose on 65% of nights since 2011, by +10.2 bp a night on average (+9.6 bp on the last 40% of nights). That still fails the bar's last step, the deflated Sharpe ratio, and it is fading: −0.6 bp a night in 2026. A trader keeps less of it. Holding the index from 15:25 to 09:30 made +4.4 bp a night; the near-month future made +1.7 bp, ₹129 a lot, less than the ₹183 of STT on selling it. All 28 overnight option picks fail on real 1-minute prices, and 27 lose out of sample. A call at the money or one strike in the money, bought at 15:20–15:25 and sold at 09:15–09:20, lost ₹241 (mid fill) to ₹567 (cautious fill) a NIFTY lot a night. The direction is worth about ₹44 a lot a night, while the decay and the move priced into the option cost more. The worst nights took the whole premium, −₹11,000 to −₹14,000 a lot, and no stop can fill while the market is shut (WP15). | Keep rule N5: hold nothing overnight. |
-| **Real money?** | 9 in 10 retail F&O traders lost in FY26 and nothing here has passed the bar (§13). | No real money until a rule passes §12 on paper. |
+| **Real money?** | 9 in 10 retail F&O traders lost in FY26, and nothing here has passed the bar (§13). What the data does support is owning the index: NIFTY returned 8.8% a year from 2007 to 2026 before dividends, and only 1.4% of five-year holds ended lower. The price is falls of −60% (2008) and −38% (2020) (§13). | No real money into options until a rule passes §12 on paper. To profit from NIFTY, the evidence favours holding the index for years over trading its options. |
 
 ---
 
@@ -210,6 +210,21 @@ Work in progress (each in its own branch, flags off by default, live engine unch
 ## 13. Real money
 
 Until a variant clears §12, **copying trades with real money has negative expected value** — the engine is indistinguishable from random entry, and the base rate for this activity is roughly 9 in 10 losing. If you copy anyway: use the ₹5k account's caps (≤ ₹1,500 a day, one lot, stop after one loss), only on trades that also satisfy §4, and treat it as the cost of learning.
+
+**What the data does support: owning the index, not trading its options.** Profit from NIFTY has come from holding it, not from timing it with options. This describes the data; it is not personal advice, and whether it suits you depends on your horizon and situation.
+- **The long-run return.** On the NIFTY price index (Yahoo daily closes, dividends excluded, so the total return was higher):
+  - 4,495 on 17 Sep 2007 to 22,232 on 8 Oct 2026, **8.8% a year** over 19 years;
+  - 8.5% a year since 2011.
+- **Time in the market, not timing.**
+  - Of all five-year holds in that history, 1.4% ended lower, and the worst lost 11%.
+  - Every timing rule tested here did worse than holding: the 50/200-day crossover made 4.0% a year against 9.9% for buy-and-hold (§8).
+  - The overnight drift that option traders cannot capture (WP15) is part of what an index holder collects at no extra cost.
+- **The price of that return is deep falls that can last years:**
+  - −59.9% from Jan to Oct 2008;
+  - −38.4% in early 2020;
+  - −51.8% in calendar 2008, −24.6% in 2011, and −14.9% so far in 2026 (to 8 Oct).
+  - It is the market's return, not an edge. Anyone who must sell in a fall, or uses borrowed money, can lose.
+- **How:** a NIFTY 50 index fund or ETF, held for years. Costs are a small annual fee and the usual transaction charges, against ₹56–71 of charges and spreads on every single option round trip here.
 
 ---
 
