@@ -6,7 +6,7 @@ import { silentLogger, sequentialIds } from "../../ports";
 import { InMemoryRepository } from "../../repo/memory";
 import type { OptionContract, OrderRequest, Quote } from "../../types";
 import { GrowwTokenManager, mintTotpToken, nextTokenExpiry, parseGrowwExpiry } from "./auth";
-import { parseGrowwTime, parseHistoricalCandles, parseOptionChain, parsePositions, parseQuote, GrowwDataClient } from "./data";
+import { parseGrowwTime, parseHistoricalCandles, parseLastTradeTime, parseOptionChain, parsePositions, parseQuote, GrowwDataClient } from "./data";
 import { GrowwError, classifyGrowwFailure } from "./errors";
 import { GrowwBroker, toRelayOrder, type OrderRelay } from "./growwBroker";
 import { GrowwHttp, buildQuery, unwrapEnvelope } from "./http";
@@ -193,6 +193,20 @@ describe("Groww payload parsers", () => {
     expect(q.iv).toBeCloseTo(13.2);
     expect(parseQuote("X", { implied_volatility: 0.132 }, 1).iv).toBeCloseTo(13.2);
     expect(q.depth?.sell).toHaveLength(2);
+  });
+
+  it("reads the last-trade time of a quote (epoch ms, epoch s or ISO; null when absent)", async () => {
+    expect(parseLastTradeTime({ last_trade_time: 1_791_354_600_123 })).toBe(1_791_354_600_123);
+    expect(parseLastTradeTime({ last_trade_time: 1_791_354_600 })).toBe(1_791_354_600_000);
+    expect(parseLastTradeTime({ last_trade_time: "2026-10-07T09:15:19" })).toBe(IST("2026-10-07T09:15:19"));
+    expect(parseLastTradeTime({ last_trade_time: 0 })).toBeNull();
+    expect(parseLastTradeTime({})).toBeNull();
+    const transport = { request: async <T,>() => ({ last_price: 101, bid_price: 100.9, offer_price: 101.2, last_trade_time: 1_791_354_600_000 }) as T };
+    const data = new GrowwDataClient(transport, () => 5_000);
+    const d = await data.quoteDetail("NSE", "FNO", "NIFTY26O1324500CE");
+    expect(d.lastTradeMs).toBe(1_791_354_600_000);
+    expect(d.quote).toMatchObject({ symbol: "NIFTY26O1324500CE", t: 5_000, ltp: 101, bid: 100.9, ask: 101.2 });
+    expect(await data.quote("NSE", "FNO", "NIFTY26O1324500CE")).toEqual(d.quote);
   });
 
   it("parses an option chain", () => {

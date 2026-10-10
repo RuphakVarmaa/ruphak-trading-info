@@ -84,6 +84,12 @@ export function parseQuote(symbol: string, payload: unknown, fetchedMs: number):
   return q;
 }
 
+/** Exchange time of the last trade in a /live-data/quote payload (`last_trade_time`: epoch s/ms or ISO), or null. */
+export function parseLastTradeTime(payload: unknown): number | null {
+  const t = parseGrowwTime(rec(payload)?.last_trade_time);
+  return t !== null && t > 0 ? t : null;
+}
+
 /** Maps /option-chain's payload to rows (iv as a decimal). */
 export function parseOptionChain(payload: unknown): { underlyingLtp: number; rows: OptionChainRow[] } {
   const p = rec(payload) ?? {};
@@ -208,11 +214,16 @@ export class GrowwDataClient {
   }
 
   async quote(exchange: Exchange, segment: "CASH" | "FNO", tradingSymbol: string): Promise<Quote> {
+    return (await this.quoteDetail(exchange, segment, tradingSymbol)).quote;
+  }
+
+  /** quote() plus the exchange time of the last trade (null when Groww does not send it); for the quote recorder. */
+  async quoteDetail(exchange: Exchange, segment: "CASH" | "FNO", tradingSymbol: string): Promise<{ quote: Quote; lastTradeMs: number | null }> {
     const payload = await this.http.request<unknown>("GET", "/live-data/quote", {
       query: { exchange, segment, trading_symbol: tradingSymbol },
       category: "live",
     });
-    return parseQuote(tradingSymbol, payload, this.now());
+    return { quote: parseQuote(tradingSymbol, payload, this.now()), lastTradeMs: parseLastTradeTime(payload) };
   }
 
   async optionChain(exchange: Exchange, underlying: string, expiry: string): Promise<{ underlyingLtp: number; rows: OptionChainRow[] }> {

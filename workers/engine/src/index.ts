@@ -8,6 +8,7 @@ import { timingSafeEqual } from "../../../src/engine/util/hash";
 import { BAR_ARCHIVE_STATUS_KEY, recordBarArchiveFailure } from "./barArchive";
 import type { ScoreMessage } from "./do/IngestDO";
 import { refreshInstruments } from "./instruments";
+import { QUOTE_RECORDER_STATUS_KEY } from "./quoteRecorder";
 import { ENGINE_VERSION, errorMessage, makeRuntime } from "./runtime";
 import { consumeScoreBatch } from "./scoring";
 import { Alerts, parseTelegramUpdate, sendTelegram } from "./telegram";
@@ -147,6 +148,18 @@ async function handleFetch(req: Request, env: Env): Promise<Response> {
           return Response.json(await engine(env).archiveBars({ full: url.searchParams.get("full") === "1", force: url.searchParams.get("force") === "1" }));
         case "/ops/archive-status":
           return Response.json((await env.KV.get(BAR_ARCHIVE_STATUS_KEY, "json")) ?? { ok: false, error: "no bar archive run recorded yet" });
+        case "/ops/quotes-status":
+          // The read-only option-quote recorder (docs/DATA.md): last run, rows written, errors, last error.
+          return Response.json(
+            (await env.KV.get(QUOTE_RECORDER_STATUS_KEY, "json")) ?? {
+              ok: false,
+              configured: rt.growwConfigured,
+              error: rt.growwConfigured ? "no quote snapshot recorded yet" : "Groww is not configured (GROWW_API_KEY and GROWW_TOTP_SECRET are not set): nothing is recorded",
+            },
+          );
+        case "/ops/quotes-snapshot":
+          // One snapshot now, labelled "manual" (left out of the report): checks the credentials and the table.
+          return Response.json((await engine(env).recordQuotesNow()) ?? { ok: false, error: "no snapshot taken" });
         case "/ops/status":
           return new Response(await engine(env).statusText());
         case "/ops/telegram-test": {
