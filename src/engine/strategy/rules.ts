@@ -18,6 +18,7 @@ import { istAt, istDate, istMinutes, parseHHMM } from "../clock";
 import type { EngineConfig } from "../config";
 import { istDateOf } from "../market/candles";
 import type { MarketDataSource } from "../ports";
+import { ordinal } from "../text";
 import { MARKET_SYMBOLS, type Candle, type GateResult, type IndexId, type MarketFeatures, type MarketSnapshot, type N2Daily } from "../types";
 import { squareOffMs } from "./gates";
 
@@ -87,7 +88,7 @@ export function n2Blocks(d: N2Daily | null, vixChangePct: number, cfg: EngineCon
   else if (d.vix5dChangePct > r.vix5dJumpPct) out.push(`VIX +${d.vix5dChangePct.toFixed(1)}% over 5 sessions (> ${r.vix5dJumpPct}%)`);
   if (Number.isFinite(vixChangePct) && vixChangePct > r.vixDayJumpPct) out.push(`VIX +${vixChangePct.toFixed(1)}% today (> ${r.vixDayJumpPct}%)`);
   if (d.vixPctile === null) out.push(`fewer than ${N2_MIN_PCTILE_CLOSES} VIX closes for the 1-year percentile`);
-  else if (d.vixPctile > r.vixPctileAbove) out.push(`VIX at the ${Math.round(d.vixPctile * 100)}th percentile of its past year (top third)`);
+  else if (d.vixPctile > r.vixPctileAbove) out.push(`VIX at the ${ordinal(Math.round(d.vixPctile * 100))} percentile of its past year (top third)`);
   if (d.run5dPct === null) out.push("fewer than 6 index closes");
   else if (Math.abs(d.run5dPct) > r.run5dPct) out.push(`index ${d.run5dPct >= 0 ? "+" : ""}${d.run5dPct.toFixed(2)}% over 5 sessions (beyond ±${r.run5dPct}%)`);
   return out;
@@ -97,7 +98,7 @@ export function n2Gate(d: N2Daily | null, f: Pick<MarketFeatures, "vixChangePct"
   const blocks = n2Blocks(d, f.vixChangePct, cfg);
   const fmt = (x: number | null, unit = "%") => (x === null ? "n/a" : `${x >= 0 ? "+" : ""}${x.toFixed(1)}${unit}`);
   const ok = d
-    ? `VIX ${fmt(d.vix5dChangePct)} over 5 sessions, ${fmt(f.vixChangePct)} today, ${d.vixPctile === null ? "n/a" : `${Math.round(d.vixPctile * 100)}th`} percentile of its year; index ${fmt(d.run5dPct)} over 5 sessions`
+    ? `VIX ${fmt(d.vix5dChangePct)} over 5 sessions, ${fmt(f.vixChangePct)} today, ${d.vixPctile === null ? "n/a" : ordinal(Math.round(d.vixPctile * 100))} percentile of its year; index ${fmt(d.run5dPct)} over 5 sessions`
     : "";
   return { gate: "vol_jump", label: "N2: no entry after a volatility jump or a big run", passed: blocks.length === 0, detail: blocks.length ? blocks.join("; ") : ok };
 }

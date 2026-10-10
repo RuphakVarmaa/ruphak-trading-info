@@ -22,6 +22,7 @@
 import type { IndexPlanView, PlanCheckView, PlanWindowView, TodayPlanView } from "../api-types";
 import { MINUTE_MS, SESSION, formatHHMM, istDate, istIso, istMinutes } from "../clock";
 import type { EngineConfig } from "../config";
+import { ordinal } from "../text";
 import type { IndexId, MarketFeatures, N2Daily, ScheduledEvent } from "../types";
 
 /** What the plan needs from the trading calendar (TradingCalendar implements it). */
@@ -146,13 +147,13 @@ export function volatilityCheck(d: N2Daily | null | undefined, vixChangePct: num
   else if (d.vix5dChangePct > r.vix5dJumpPct) blocks.push(`VIX ${pct(d.vix5dChangePct)} over 5 sessions (above +${r.vix5dJumpPct}%)`);
   if (vixChangePct !== null && Number.isFinite(vixChangePct) && vixChangePct > r.vixDayJumpPct) blocks.push(`VIX ${pct(vixChangePct)} today (above +${r.vixDayJumpPct}%)`);
   if (d.vixPctile === null) missing.push("VIX's 1-year percentile");
-  else if (d.vixPctile > r.vixPctileAbove) blocks.push(`VIX at the ${Math.round(d.vixPctile * 100)}th percentile of its year (top third)`);
+  else if (d.vixPctile > r.vixPctileAbove) blocks.push(`VIX at the ${ordinal(Math.round(d.vixPctile * 100))} percentile of its year (top third)`);
   if (d.run5dPct === null) missing.push("the 5-session index move");
   else if (Math.abs(d.run5dPct) > r.run5dPct) blocks.push(`index ${pct(d.run5dPct, 2)} over 5 sessions (beyond ±${r.run5dPct}%)`);
   const facts = [
     d.vix5dChangePct === null ? null : `VIX ${pct(d.vix5dChangePct)} over 5 sessions`,
     vixChangePct === null ? null : `${pct(vixChangePct)} today`,
-    d.vixPctile === null ? null : `${Math.round(d.vixPctile * 100)}th percentile of its year`,
+    d.vixPctile === null ? null : `${ordinal(Math.round(d.vixPctile * 100))} percentile of its year`,
     d.run5dPct === null ? null : `index ${pct(d.run5dPct, 2)} over 5 sessions`,
   ].filter((x): x is string => x !== null);
   if (blocks.length > 0) return { rule: "N2", label, status: "block", detail: `${blocks.join("; ")}. Buying after a volatility jump or a big run lost the most on real prices.` };

@@ -1,5 +1,6 @@
 /** Rule-based regime classifier. The first matching rule wins. */
 import type { EngineConfig } from "../config";
+import { ordinal } from "../text";
 import type { EventPressure, MarketFeatures, Regime } from "../types";
 
 export interface RegimeExplanation {
@@ -24,7 +25,7 @@ export function classifyRegime(f: MarketFeatures, p: EventPressure | null, cfg: 
   }
   if (f.vix >= cfg.highVolVix) return { regime: "HIGH_VOL", reason: `India VIX ${f.vix.toFixed(1)}` };
   if (f.rvIvRatio >= cfg.highVolRvIv) return { regime: "HIGH_VOL", reason: `realized/implied vol ${f.rvIvRatio.toFixed(2)}` };
-  if (f.atrPctile20d >= cfg.highVolAtrPctile) return { regime: "HIGH_VOL", reason: `ATR at ${f.atrPctile20d.toFixed(0)}th percentile` };
+  if (f.atrPctile20d >= cfg.highVolAtrPctile) return { regime: "HIGH_VOL", reason: `ATR at ${ordinal(Math.round(f.atrPctile20d))} percentile` };
   const trendUp = f.ret60m >= cfg.trendRet60mPct && f.efficiencyRatio60m >= cfg.trendEfficiency && f.barsSameSideOfVwap >= cfg.trendVwapBars;
   const trendDown = f.ret60m <= -cfg.trendRet60mPct && f.efficiencyRatio60m >= cfg.trendEfficiency && f.barsSameSideOfVwap <= -cfg.trendVwapBars;
   if (trendUp) return { regime: "TREND_UP", reason: `60m +${f.ret60m.toFixed(2)}%, efficiency ${f.efficiencyRatio60m.toFixed(2)}` };

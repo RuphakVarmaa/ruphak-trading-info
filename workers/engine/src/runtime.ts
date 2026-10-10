@@ -17,7 +17,7 @@ import { UPSTOX_QUOTE_SOURCE, UpstoxQuotes } from "../../../src/engine/market/up
 import { D1Repository } from "./db/d1Repository";
 import type { QuoteSource } from "./quoteRecorder";
 
-export const ENGINE_VERSION = "2026.10.10-3";
+export const ENGINE_VERSION = "2026.10.10-4";
 
 export interface Runtime {
   env: Env;

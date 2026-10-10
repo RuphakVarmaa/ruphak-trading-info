@@ -66,6 +66,7 @@ describe("today's plan: the rules", () => {
     expect(volatilityCheck(calm, null, DEFAULT_CONFIG).status).toBe("clear");
     expect(volatilityCheck({ ...calm, vix5dChangePct: 12 }, null, DEFAULT_CONFIG)).toMatchObject({ status: "block" });
     expect(volatilityCheck({ ...calm, vixPctile: 0.8 }, null, DEFAULT_CONFIG).detail).toContain("80th percentile");
+    expect(volatilityCheck({ ...calm, vixPctile: 0.62 }, null, DEFAULT_CONFIG).detail).toContain("62nd percentile of its year");
     expect(volatilityCheck({ ...calm, run5dPct: -2.5 }, null, DEFAULT_CONFIG).detail).toContain("−2.50% over 5 sessions");
     expect(volatilityCheck(calm, 9, DEFAULT_CONFIG).status).toBe("block");
     expect(volatilityCheck({ ...calm, vixPctile: null }, null, DEFAULT_CONFIG).status).toBe("unknown");
