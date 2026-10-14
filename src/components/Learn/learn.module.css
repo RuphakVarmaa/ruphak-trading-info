@@ -1,0 +1,217 @@
+/* /learn: a sticky contents column beside the guide on wide screens; a collapsible bar on phones. */
+.wrap {
+  max-width: 1240px;
+  margin: 0 auto;
+  padding: 32px 16px 64px;
+  width: 100%;
+  box-sizing: border-box;
+}
+
+.grid {
+  display: grid;
+  grid-template-columns: 230px minmax(0, 1fr);
+  gap: 40px;
+  align-items: start;
+  margin-top: 32px;
+}
+
+.main {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 56px;
+  min-width: 0;
+  max-width: 860px;
+}
+
+.tocSide {
+  position: sticky;
+  top: 84px;
+}
+
+.tocBar {
+  display: none;
+}
+
+.tocList {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  gap: 2px;
+  counter-reset: toc;
+}
+
+.tocLink {
+  display: grid;
+  grid-template-columns: 22px minmax(0, 1fr);
+  gap: 6px;
+  padding: 7px 10px;
+  border-radius: 9px;
+  font-size: 13.5px;
+  line-height: 1.35;
+  color: var(--c-muted);
+  text-decoration: none;
+  transition: background 0.15s, color 0.15s;
+}
+.tocLink:hover {
+  background: var(--c-panelAlt);
+  color: var(--c-textStrong);
+}
+.tocLink[aria-current="true"] {
+  background: var(--c-panelDeep);
+  color: var(--c-textStrong);
+  font-weight: 600;
+}
+.tocNum {
+  font-family: var(--font-num);
+  font-variant-numeric: tabular-nums;
+  color: var(--c-muted3);
+  font-size: 12px;
+  padding-top: 1px;
+}
+
+/* Two-up and three-up card rows that fall to one column on phones. */
+.cols2 {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 300px), 1fr));
+  gap: 12px;
+}
+.cols3 {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 220px), 1fr));
+  gap: 12px;
+}
+
+/* A two-column definition table that stacks on phones. */
+.defRow {
+  display: grid;
+  grid-template-columns: 170px minmax(0, 1fr) minmax(0, 1fr);
+  gap: 6px 18px;
+  padding: 14px 18px;
+  border-top: 1px solid var(--c-borderSoft);
+}
+.defRow:first-child {
+  border-top: none;
+}
+.defHead {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--c-muted2);
+  background: var(--c-panelAlt);
+}
+
+.timeline {
+  display: grid;
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+  gap: 8px;
+}
+
+@media (max-width: 1000px) {
+  .grid {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 0;
+    margin-top: 20px;
+  }
+  .tocSide {
+    display: none;
+  }
+  .tocBar {
+    display: block;
+    position: sticky;
+    top: 0;
+    z-index: 30;
+    margin: 0 -16px 28px;
+    padding: 8px 16px;
+    background: var(--c-bg);
+    border-bottom: 1px solid var(--c-border);
+  }
+  .tocBar[open] {
+    box-shadow: 0 8px 24px rgba(20, 20, 19, 0.12);
+  }
+  .tocBar > summary {
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    font-size: 14px;
+    font-weight: 600;
+    color: var(--c-textStrong);
+    padding: 6px 0;
+  }
+  .tocBar[open] > summary {
+    margin-bottom: 6px;
+  }
+  .tocBar .tocList {
+    max-height: 60vh;
+    overflow-y: auto;
+    padding-bottom: 6px;
+  }
+  .main {
+    gap: 44px;
+    max-width: none;
+  }
+}
+
+@media (max-width: 760px) {
+  .timeline {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
+@media (max-width: 640px) {
+  .wrap {
+    padding-top: 22px;
+  }
+  .defRow {
+    grid-template-columns: minmax(0, 1fr);
+    padding: 12px 14px;
+  }
+  .defHead {
+    display: none;
+  }
+}
+
+.cellLabel {
+  display: none;
+}
+@media (max-width: 640px) {
+  .cellLabel {
+    display: block;
+    font-size: 11.5px;
+    font-weight: 600;
+    color: var(--c-muted2);
+    margin-bottom: 2px;
+  }
+}
+
+.exitRow {
+  display: grid;
+  grid-template-columns: 130px 210px minmax(0, 1fr);
+  gap: 4px 16px;
+  padding: 10px 18px;
+  border-top: 1px solid var(--c-borderSoft);
+  font-size: 14px;
+  line-height: 1.5;
+}
+@media (max-width: 640px) {
+  .exitRow {
+    grid-template-columns: minmax(0, 1fr);
+    padding: 10px 14px;
+  }
+}
+
+.checkRow {
+  display: grid;
+  grid-template-columns: 170px minmax(0, 1fr);
+  gap: 2px 12px;
+  padding: 10px 18px;
+  border-top: 1px solid var(--c-borderSoft);
+  font-size: 14px;
+  line-height: 1.5;
+}
+@media (max-width: 640px) {
+  .checkRow {
+    grid-template-columns: minmax(0, 1fr);
+    padding: 10px 14px;
+  }
+}
