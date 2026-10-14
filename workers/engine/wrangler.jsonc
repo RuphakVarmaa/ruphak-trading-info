@@ -32,12 +32,15 @@
     "bindings": [
       { "name": "ENGINE_DO", "class_name": "TradingEngineDO" },
       { "name": "INGEST_DO", "class_name": "IngestDO" },
-      { "name": "BACKTEST_DO", "class_name": "BacktestDO" }
+      { "name": "BACKTEST_DO", "class_name": "BacktestDO" },
+      { "name": "MARKET_FEED_DO", "class_name": "MarketFeedDO" }
     ]
   },
   "migrations": [
     { "tag": "v1", "new_sqlite_classes": ["TradingEngineDO", "IngestDO"] },
-    { "tag": "v2", "new_sqlite_classes": ["BacktestDO"] }
+    { "tag": "v2", "new_sqlite_classes": ["BacktestDO"] },
+    // Upstox Market Data Feed V3 WebSocket (1-second index levels and option quotes).
+    { "tag": "v3", "new_sqlite_classes": ["MarketFeedDO"] }
   ],
   "d1_databases": [
     {
@@ -157,7 +160,8 @@
         "bindings": [
           { "name": "ENGINE_DO", "class_name": "TradingEngineDO" },
           { "name": "INGEST_DO", "class_name": "IngestDO" },
-          { "name": "BACKTEST_DO", "class_name": "BacktestDO" }
+          { "name": "BACKTEST_DO", "class_name": "BacktestDO" },
+      { "name": "MARKET_FEED_DO", "class_name": "MarketFeedDO" }
         ]
       },
       "triggers": { "crons": ["*/30 * * * *"] }

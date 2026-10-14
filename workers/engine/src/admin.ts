@@ -29,6 +29,8 @@ import type {
 } from "../../../src/engine/api-types";
 import { parseAccountId, type AccountId } from "../../../src/engine/accounts";
 import { ReadModel } from "../../../src/engine/api/readModel";
+import { liveIndicesWithFeed, optionChainWithFeed } from "../../../src/engine/market/liveFeedViews";
+import type { FeedSnapshot } from "../../../src/engine/market/upstoxFeed";
 import { UpstoxLive } from "../../../src/engine/market/upstoxLive";
 import { timingSafeEqual } from "../../../src/engine/util/hash";
 import { getBacktest, startBacktest } from "./backtestRunner";
@@ -90,6 +92,24 @@ export class EngineAdmin extends WorkerEntrypoint<Env> implements EngineApi {
     return this.env.ENGINE_DO.get(this.env.ENGINE_DO.idFromName("engine"));
   }
 
+  /** The market feed's latest ticks; null when the DO does not answer within 1.5 s (the views then use REST). */
+  private async feedTicks(keys?: string[]): Promise<FeedSnapshot | null> {
+    const stub = this.env.MARKET_FEED_DO.get(this.env.MARKET_FEED_DO.idFromName("feed"));
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    try {
+      return await Promise.race([
+        stub.ticks(keys) as Promise<FeedSnapshot>,
+        new Promise<null>((resolve) => {
+          timer = setTimeout(() => resolve(null), 1_500);
+        }),
+      ]);
+    } catch {
+      return null;
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+
   private requireAdmin(token: string): void {
     const expected = this.env.ADMIN_TOKEN;
     if (!expected) throw new AdminError("ADMIN_DISABLED", "ADMIN_TOKEN is not set on the engine Worker");
@@ -130,10 +150,10 @@ export class EngineAdmin extends WorkerEntrypoint<Env> implements EngineApi {
   getOptionChain(index: IndexId, expiry?: string): Promise<OptionChainView> {
     if (index !== "NIFTY" && index !== "SENSEX") throw new AdminError("BAD_REQUEST", "index must be NIFTY or SENSEX");
     if (expiry != null && expiry !== "" && (typeof expiry !== "string" || !/^\d{4}-\d{2}-\d{2}$/.test(expiry))) throw new AdminError("BAD_REQUEST", "expiry must be YYYY-MM-DD");
-    return liveMarket(this.env).getOptionChain(index, expiry || undefined);
+    return optionChainWithFeed(liveMarket(this.env), (keys) => this.feedTicks(keys), index, expiry || undefined);
   }
   getLiveIndices(): Promise<LiveIndexLevelsView> {
-    return liveMarket(this.env).getLiveIndices();
+    return liveIndicesWithFeed(liveMarket(this.env), (keys) => this.feedTicks(keys));
   }
   getBacktest(runId: string): Promise<BacktestResult | null> {
     return getBacktest(this.env, String(runId));
