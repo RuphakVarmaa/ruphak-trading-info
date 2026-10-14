@@ -4,6 +4,8 @@ import Link from "next/link";
 import { useEngineState } from "@/hooks/useEngineState";
 import IndexActionStrip from "@/components/Copy/ActionStrip";
 import SetupBoard from "@/components/Setups/SetupBoard";
+import FlowPanel from "@/components/Flow/FlowPanel";
+import RecoCard from "@/components/Reco/RecoCard";
 import { LiveIndicesPanel } from "@/components/Market";
 import PnlTiles from "@/components/Blotter/PnlTiles";
 import TradeBlotter from "@/components/Blotter/TradeBlotter";
@@ -22,7 +24,7 @@ import TodayPlan from "./TodayPlan";
 const linkStyle = { fontSize: 13, fontWeight: 600, color: C.gold, textDecoration: "none" } as const;
 
 /**
- * The India Index Desk, an overview: the session's plan (the research plan's no-trade rules), the market
+ * The India Index Desk, an overview: the ₹10k "trade now" card and the live option flow, the session's plan (the research plan's no-trade rules), the market
  * and today's P&L, both signals, the news and the week's scheduled events. The book (orders, equity,
  * signal record) and the engine's controls and health sit in collapsed areas at the bottom.
  */
@@ -32,8 +34,10 @@ export default function IndiaDesk() {
   return (
     <div id="desk" style={{ display: "grid", gridTemplateColumns: "minmax(0, 1fr)", gap: 28, minWidth: 0 }}>
       <DeskHeader />
+      <RecoCard />
       <IndexActionStrip compact />
       <SetupBoard />
+      <FlowPanel variant="compact" id="flow" />
       <LiveIndicesPanel />
       <ConnectionBanner />
       <div style={{ display: "grid", gridTemplateColumns: "minmax(0, 1fr)", gap: 40, opacity: dim, transition: "opacity 0.3s", minWidth: 0 }}>

@@ -40,6 +40,7 @@ import type {
   SuggestedContract,
   LiveIndexLevelsView,
   OptionChainView,
+  OptionFlowView,
   TodayPlanView,
 } from "@/engine/api-types";
 import { defaultCalendar } from "@/engine/calendar/calendar";
@@ -76,6 +77,7 @@ import { copyTicketView } from "@/engine/copy/copyTicket";
 import type { Position, TradePlan } from "@/engine/types";
 import { buildMockChain, weeklyExpiries } from "./mockChain";
 import { mockSetups } from "./mockSetups";
+import { mockOptionFlow, mockRecommendation } from "./mockFlowStub";
 import { simulateBacktest } from "./mockBacktest";
 import { clamp, gauss, hashString, mulberry32, round2 } from "./random";
 
@@ -852,7 +854,16 @@ export class MockEngineApi implements EngineApi {
   async getSignals(account?: string): Promise<SignalView[]> {
     const now = this.read();
     const book = this.book(account);
-    return clone(this.seed.signals.map((s) => this.signalView(s, now, book)));
+    const views = this.seed.signals.map((s) => this.signalView(s, now, book));
+    // Dashboard stub (mockFlowStub.ts) until this mock builds its own recommendations.
+    for (const v of views) if (v.recommendation === undefined) v.recommendation = await mockRecommendation(v, (e) => this.getOptionChain(v.index, e), now);
+    return clone(views);
+  }
+
+  /** Dashboard stub (mockFlowStub.ts) until this mock builds its own option flow. */
+  async getOptionFlow(index: IndexId): Promise<OptionFlowView> {
+    const now = this.read();
+    return mockOptionFlow(await this.getOptionChain(index), now);
   }
 
   async getPositions(account?: string): Promise<PositionView[]> {

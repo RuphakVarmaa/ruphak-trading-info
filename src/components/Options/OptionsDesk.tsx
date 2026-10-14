@@ -16,6 +16,8 @@ import { plainError, useSharedPoll } from "@/components/Copy/sharedPoll";
 import ChainTable, { type Highlight } from "./ChainTable";
 import { adviceLine, chainPollMs, diffFlashes, engineTieIn, shortExpiry, visibleRows, type Flash } from "./chainView";
 import SideDetail from "./SideDetail";
+import FlowPanel from "@/components/Flow/FlowPanel";
+import RecoCard from "@/components/Reco/RecoCard";
 
 const INDEX_OPTIONS = [
   { value: "NIFTY", label: "NIFTY" },
@@ -97,6 +99,8 @@ export default function OptionsDesk({ initialIndex, initialExpiry }: { initialIn
         </div>
       </div>
 
+      <RecoCard clockOffsetMs={clockOffset} showAlertsToggle />
+
       {/* Expiry, spot and chain stats */}
       <Panel style={{ padding: "12px 14px", display: "grid", gap: 12 }}>
         <div style={{ display: "flex", flexWrap: "wrap", alignItems: "center", gap: "8px 12px" }}>
@@ -165,6 +169,8 @@ export default function OptionsDesk({ initialIndex, initialExpiry }: { initialIn
           Engine: no entry on {index} — {tie.reason}
         </div>
       ) : null}
+
+      <FlowPanel id="flow" index={index} onIndexChange={switchIndex} clockOffsetMs={clockOffset} />
 
       {/* Columns and range */}
       <div style={{ display: "flex", flexWrap: "wrap", alignItems: "center", gap: 8 }}>

@@ -259,6 +259,8 @@ export interface SignalView {
   levels?: KeyLevelView[];
   /** Why there are no setups right now ("No new setups after 14:30 IST"), when that is the reason. */
   setupNote?: string | null;
+  /** The ₹10k "trade now" recommendation for this index (absent from engines that predate it). */
+  recommendation?: RecommendationView | null;
 }
 
 /** One key level, or several within ~0.05% of each other merged into one zone ("PDH + R1"). */
@@ -829,6 +831,89 @@ export interface LiveIndexLevelsView {
   error: string | null;
   /** "websocket" when built from Upstox's market feed (1-second ticks), "rest" from the quotes endpoint; absent from older engines. */
   feed?: "websocket" | "rest";
+}
+
+// ---------------------------------------------------------------------------
+// Option flow (OI added / removed, build-ups, volume, premium decay) and the ₹10k recommendation
+// ---------------------------------------------------------------------------
+
+/** One side (CE or PE) of one strike over a window: changes are over the window, levels are now. */
+export interface FlowSide {
+  oi: number | null;
+  oiChg: number | null;
+  oiChgPct: number | null;
+  /** Contracts traded in the window. */
+  vol: number | null;
+  ltp: number | null;
+  ltpChgPct: number | null;
+  /** Change in implied volatility over the window, vol points. */
+  ivChg: number | null;
+  buildup: "LONG_BUILDUP" | "SHORT_BUILDUP" | "SHORT_COVERING" | "LONG_UNWINDING" | "NEUTRAL";
+}
+
+/** Live option flow for one index (GET /api/engine/flow?index=NIFTY|SENSEX). */
+export interface OptionFlowView {
+  index: IndexId;
+  /** ISO, IST. */
+  asOf: string;
+  spot: number;
+  atm: number;
+  windows: Record<"1m" | "5m" | "15m", { rows: { strike: number; ce: FlowSide | null; pe: FlowSide | null }[] }>;
+  /** Plain-words events ("22500 CE: 4.2L OI added in 5 min while the price fell 6%"), at ISO IST. */
+  events: {
+    at: string;
+    index: string;
+    strike: number;
+    side: "CE" | "PE";
+    kind: "LONG_BUILDUP" | "SHORT_BUILDUP" | "SHORT_COVERING" | "LONG_UNWINDING" | "VOLUME_SPIKE" | "DRY_UP" | "OI_WALL";
+    text: string;
+    magnitude: number;
+  }[];
+  summary: {
+    callWritersVsPutWriters: number;
+    pcr: number | null;
+    pcrChg15m: number | null;
+    /** Strike with the most call OI (resistance) and put OI (support). */
+    resistance: number | null;
+    support: number | null;
+    premiumDryUp: boolean;
+    decayPctPerHourAtm: number | null;
+  };
+  bestEntryWindow: { window: string; verdict: "good" | "neutral" | "expensive"; reason: string } | null;
+  source: "feed" | "rest" | "mock";
+  error: string | null;
+}
+
+/** The exact order a ₹10k account would place now on one index, with the rule's measured history. */
+export interface RecommendationView {
+  status: "ENTER" | "WAIT" | "NO_TRADE";
+  index: IndexId;
+  grade: "A" | "B" | "C";
+  /** ₹ the recommendation is sized for (10,000). */
+  capital: number;
+  contract: { strike: number; optionType: "CE" | "PE"; expiry: string; tradingSymbol: string; lotSize: number; label: string } | null;
+  entry: { limit: number; validUntil: string; trigger: string } | null;
+  stop: { premium: number; index: number | null } | null;
+  target: { t1: number; t2: number | null; indexT1: number | null } | null;
+  timeExit: string | null;
+  lots: number;
+  costRupees: number;
+  riskRupees: number;
+  rewardRupees: number;
+  rr: number | null;
+  reasons: string[];
+  historical: {
+    ruleIds: string[];
+    sample: number;
+    hitRate: number | null;
+    avgPnlPerLot: number | null;
+    ci95: [number, number] | null;
+    verdict: "positive" | "not_proven" | "negative";
+    dataRange: string;
+  } | null;
+  /** One plain sentence on what the history does and does not show; printed whenever the grade is not A. */
+  honestLine: string;
+  asOf: string;
 }
 
 export interface EngineApi {
