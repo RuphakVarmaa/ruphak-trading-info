@@ -515,6 +515,31 @@ export class MockEngineApi implements EngineApi {
     });
   }
 
+  /**
+   * Broker-style levels for getLiveIndices from the mock's own spot (NIFTY, SENSEX, BANKNIFTY, India VIX).
+   * `fetchedAt` is the real clock, not the simulated one: the dashboard drops broker levels older than 30 s.
+   */
+  private liveLevels(): LiveIndexLevelsView {
+    const keys: LiveIndexLevelsView["levels"][number]["key"][] = ["NIFTY", "SENSEX", "BANKNIFTY", "INDIAVIX"];
+    const levels = keys.map((key) => {
+      const q = this.quoteSeed(key);
+      const price = this.quote(q);
+      const open = round2(q.prevClose + (q.base - q.prevClose) * 0.35);
+      const change = round2(price - q.prevClose);
+      return {
+        key,
+        price,
+        open,
+        high: round2(Math.max(open, price, q.base) * 1.0012),
+        low: round2(Math.min(open, price, q.base) * 0.9988),
+        prevClose: q.prevClose,
+        change,
+        changePct: round2((change / q.prevClose) * 100),
+      };
+    });
+    return { fetchedAt: new Date().toISOString(), source: "mock", levels, error: null };
+  }
+
   private health(now: number): Partial<Record<SourceName, SourceHealthView>> {
     const ago = (ms: number) => toIstIso(now - ms);
     const h: Partial<Record<SourceName, SourceHealthView>> = {
@@ -930,7 +955,7 @@ export class MockEngineApi implements EngineApi {
 
   async getLiveIndices(): Promise<LiveIndexLevelsView> {
     this.read();
-    return { fetchedAt: new Date().toISOString(), source: "mock", levels: [], error: "not implemented" };
+    return clone(this.liveLevels());
   }
 
   async getBacktest(runId: string): Promise<BacktestResult | null> {
