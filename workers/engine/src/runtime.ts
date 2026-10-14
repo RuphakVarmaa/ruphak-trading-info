@@ -17,7 +17,7 @@ import { UPSTOX_QUOTE_SOURCE, UpstoxQuotes } from "../../../src/engine/market/up
 import { D1Repository } from "./db/d1Repository";
 import type { QuoteSource } from "./quoteRecorder";
 
-export const ENGINE_VERSION = "2026.10.14-1";
+export const ENGINE_VERSION = "2026.10.14-2";
 
 export interface Runtime {
   env: Env;
@@ -179,6 +179,25 @@ export function recorderQuoteSource(env: Env, tokens: TokenSource | null): { sou
   if (choice === "groww") return { source: null, reason: "QUOTE_SOURCE=groww but the Groww Trade API keys (GROWW_API_KEY and GROWW_TOTP_SECRET) are not set" };
   if (choice === "upstox") return { source: null, reason: "QUOTE_SOURCE=upstox but the Worker secret UPSTOX_ANALYTICS_TOKEN is not set" };
   return { source: null, reason: null };
+}
+
+export type LiveDataSource = "upstox" | "yahoo";
+
+/**
+ * Worker var LIVE_DATA: where the paper trading loop gets live index bars, spots and option quotes.
+ * "upstox" (the default when UPSTOX_ANALYTICS_TOKEN is set) overlays Upstox's read-only Market Data API
+ * on Yahoo; "yahoo", or no token, keeps Yahoo bars and Groww or synthetic paper quotes.
+ */
+export function liveDataSource(env: Env): LiveDataSource {
+  const raw = (env.LIVE_DATA ?? "").trim().toLowerCase();
+  if (raw === "yahoo" || !env.UPSTOX_ANALYTICS_TOKEN?.trim()) return "yahoo";
+  return "upstox";
+}
+
+/** The trading loop's own Upstox client (5 s timeout), or null when LIVE_DATA resolves to "yahoo". */
+export function upstoxLiveClient(env: Env): UpstoxQuotes | null {
+  const token = env.UPSTOX_ANALYTICS_TOKEN?.trim();
+  return liveDataSource(env) === "upstox" && token ? new UpstoxQuotes({ token, timeoutMs: 5_000 }) : null;
 }
 
 /** For /ops/quotes-status before the first run: whether a source is configured, and which (no network). */

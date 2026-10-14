@@ -74,13 +74,13 @@ export function unusableQuote(q: Quote): string | null {
  * so paper exits never wait on an empty or one-sided Groww book. Never used in LIVE mode.
  */
 export class FallbackOptionQuotes implements OptionQuoteSource {
-  readonly kind: "groww" | "synthetic";
+  readonly kind: "groww" | "upstox" | "synthetic";
   constructor(
     private readonly primary: OptionQuoteSource,
     private readonly fallback: OptionQuoteSource,
     private readonly onFallback?: (err: unknown) => void,
   ) {
-    this.kind = primary.kind === "groww" ? "groww" : "synthetic";
+    this.kind = primary.kind === "groww" || primary.kind === "upstox" ? primary.kind : "synthetic";
   }
 
   async quote(contract: OptionContract, ctx: { t: number; spot: number; vix: number }): Promise<Quote> {

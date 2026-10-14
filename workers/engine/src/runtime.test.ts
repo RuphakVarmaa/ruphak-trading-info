@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { GrowwDataClient } from "../../../src/engine/broker/groww";
 import { UPSTOX_QUOTE_SOURCE, UpstoxQuotes } from "../../../src/engine/market/upstoxQuotes";
-import { parseQuoteSourceChoice, quoteSourceSummary, recorderQuoteSource } from "./runtime";
+import { liveDataSource, parseQuoteSourceChoice, quoteSourceSummary, recorderQuoteSource, upstoxLiveClient } from "./runtime";
 
 const tokens = { token: async () => "t", invalidate: () => {} };
 const env = (o: Partial<Env>): Env => ({ GROWW_DATA_VIA_RELAY: "false", QUOTE_SOURCE: "auto", ...o }) as unknown as Env;
@@ -36,5 +36,16 @@ describe("the quote recorder's source (read-only)", () => {
     expect(quoteSourceSummary(env({ UPSTOX_ANALYTICS_TOKEN: "u" }))).toEqual({ configured: true, source: UPSTOX_QUOTE_SOURCE });
     expect(quoteSourceSummary(env({ GROWW_API_KEY: "k", GROWW_TOTP_SECRET: "s", UPSTOX_ANALYTICS_TOKEN: "u" }))).toEqual({ configured: true, source: "groww:live-data/quote" });
     expect(quoteSourceSummary(env({ QUOTE_SOURCE: "off", UPSTOX_ANALYTICS_TOKEN: "u" }))).toEqual({ configured: false, source: null });
+  });
+});
+
+describe("liveDataSource", () => {
+  it("defaults to upstox when the token is set; yahoo when asked or without a token", () => {
+    expect(liveDataSource(env({ UPSTOX_ANALYTICS_TOKEN: "u" }))).toBe("upstox");
+    expect(liveDataSource(env({ LIVE_DATA: "upstox", UPSTOX_ANALYTICS_TOKEN: "u" }))).toBe("upstox");
+    expect(liveDataSource(env({ LIVE_DATA: " Yahoo ", UPSTOX_ANALYTICS_TOKEN: "u" }))).toBe("yahoo");
+    expect(liveDataSource(env({ LIVE_DATA: "upstox" }))).toBe("yahoo");
+    expect(upstoxLiveClient(env({ UPSTOX_ANALYTICS_TOKEN: "u" }))).toBeInstanceOf(UpstoxQuotes);
+    expect(upstoxLiveClient(env({ LIVE_DATA: "yahoo", UPSTOX_ANALYTICS_TOKEN: "u" }))).toBeNull();
   });
 });

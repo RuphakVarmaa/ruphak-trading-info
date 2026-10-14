@@ -188,7 +188,8 @@ describe("copy ticket", () => {
     expect(t.market.indicators?.rsi14).toBe(38);
     expect(t.market.vix).toBeNull();
     expect(t.entry.priceSource).toBe("broker");
-    const none = copyTicketView({ position: position(), plan: null, account: TEN_K, timeStopMinPnlPct: 10 });
+    expect(copyTicketView({ position: position(), plan: plan({ quoteSource: "upstox" }), account: TEN_K, timeStopMinPnlPct: 10 }).entry.priceSource).toBe("broker");
+    const none =copyTicketView({ position: position(), plan: null, account: TEN_K, timeStopMinPnlPct: 10 });
     expect(none.setup).toBeNull();
     expect(none.entry.skipBeyondSpot).toBeNull();
   });

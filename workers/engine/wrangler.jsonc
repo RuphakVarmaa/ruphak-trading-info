@@ -101,6 +101,10 @@
     // Data API when the free one-year read-only Analytics Token is set as the secret UPSTOX_ANALYTICS_TOKEN.
     // "groww" or "upstox" forces one; "off" records nothing.
     "QUOTE_SOURCE": "auto",
+    // Live data for the paper trading loop: "upstox" overlays Upstox's read-only Market Data API (index
+    // 1-minute candles, spots and paper option quotes) on Yahoo when UPSTOX_ANALYTICS_TOKEN is set;
+    // "yahoo" keeps Yahoo bars and Groww or synthetic paper quotes. Paper only: no orders either way.
+    "LIVE_DATA": "upstox",
     // Dashboard base URL for the links in copy-trade alerts (empty: no links).
     "DASHBOARD_URL": "https://ruphak-dashboard.sanjaysenthilkumar.workers.dev"
   },
@@ -123,6 +127,7 @@
         "ACCOUNTS": "main,small10k,small5k",
         "EDGE_GATE": "calibrated",
         "QUOTE_SOURCE": "auto",
+        "LIVE_DATA": "upstox",
         "DASHBOARD_URL": ""
       },
       "d1_databases": [

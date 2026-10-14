@@ -36,6 +36,7 @@ export const UPSTOX_INDEX_KEYS: Partial<Record<FeatureIndexId, string>> = {
   NIFTY: "NSE_INDEX|Nifty 50",
   SENSEX: "BSE_INDEX|SENSEX",
 };
+export const UPSTOX_VIX_KEY = "NSE_INDEX|India VIX";
 
 /** The failures the recorder acts on: auth, forbidden and rate_limited stop a snapshot. */
 export type UpstoxErrorKind = "auth" | "forbidden" | "bad_request" | "not_found" | "rate_limited" | "transient" | "unknown";
@@ -160,8 +161,16 @@ export class UpstoxQuotes {
     return (this.o.now ?? Date.now)();
   }
 
-  private async quotes(keys: readonly string[]): Promise<unknown> {
-    const url = `${UPSTOX_API_BASE}/v2/market-quote/quotes?instrument_key=${keys.map(encodeURIComponent).join(",")}`;
+  private quotes(keys: readonly string[]): Promise<unknown> {
+    return this.get("/v2/market-quote/quotes", `instrument_key=${keys.map(encodeURIComponent).join(",")}`);
+  }
+
+  /**
+   * One authenticated GET of `path` (already URL-encoded) with an optional query; the parsed body when
+   * Upstox says "success", else an UpstoxError naming `label` (default: the path).
+   */
+  async get(path: string, query?: string, label: string = path): Promise<unknown> {
+    const url = `${UPSTOX_API_BASE}${path}${query ? `?${query}` : ""}`;
     const init: RequestInit = {
       headers: { Accept: "application/json", Authorization: `Bearer ${this.o.token}` },
       signal: AbortSignal.timeout(this.o.timeoutMs ?? 8_000),
@@ -171,7 +180,7 @@ export class UpstoxQuotes {
       // Call the global fetch directly: a detached fetch loses its binding in Workers.
       res = this.o.fetch ? await this.o.fetch(url, init) : await fetch(url, init);
     } catch (err) {
-      throw new UpstoxError(`Upstox GET /v2/market-quote/quotes: ${err instanceof Error ? err.message : String(err)}`, "transient", 0);
+      throw new UpstoxError(`Upstox GET ${label}: ${err instanceof Error ? err.message : String(err)}`, "transient", 0);
     }
     let body: unknown = null;
     try {
@@ -184,12 +193,17 @@ export class UpstoxQuotes {
     const message = str(first?.message) ?? "";
     if (!res.ok) {
       // Never echo the request (it carries no secret, but keep errors short and about the failure).
-      throw new UpstoxError(`Upstox GET /v2/market-quote/quotes: HTTP ${res.status}${code ? ` ${code}` : ""}${message ? ` ${message.slice(0, 120)}` : ""}`, classifyUpstoxStatus(res.status), res.status, code);
+      throw new UpstoxError(`Upstox GET ${label}: HTTP ${res.status}${code ? ` ${code}` : ""}${message ? ` ${message.slice(0, 120)}` : ""}`, classifyUpstoxStatus(res.status), res.status, code);
     }
     if (rec(body)?.status !== "success") {
-      throw new UpstoxError(`Upstox GET /v2/market-quote/quotes: status ${String(rec(body)?.status ?? "missing")}${code ? ` ${code}` : ""}`, "unknown", res.status, code);
+      throw new UpstoxError(`Upstox GET ${label}: status ${String(rec(body)?.status ?? "missing")}${code ? ` ${code}` : ""}`, "unknown", res.status, code);
     }
     return body;
+  }
+
+  /** Raw quotes of any instrument keys (indices or contracts), at most 500, by instrument key. */
+  async quotesByKey(keys: readonly string[]): Promise<Map<string, Rec>> {
+    return upstoxEntriesByKey(await this.quotes(keys));
   }
 
   /** Index spots (NIFTY, SENSEX) in one call. */

@@ -33,6 +33,7 @@ import {
 import type { EngineConfig } from "../../../../src/engine/config";
 import { computeFeatures } from "../../../../src/engine/market/features";
 import { n2DailyByIndex } from "../../../../src/engine/strategy/rules";
+import { UpstoxOptionQuotes, UpstoxOverlayMarketData } from "../../../../src/engine/market/upstoxMarket";
 import { YahooMarketDataSource } from "../../../../src/engine/market/yahooMarketData";
 import { runFollowerEntries } from "../../../../src/engine/pipeline/accountCycle";
 import { mainExitsFirst } from "../../../../src/engine/pipeline/tickOrder";
@@ -43,7 +44,7 @@ import { MarketContextStore } from "../../../../src/engine/pipeline/marketContex
 import { runPositionCycle, type PositionReport } from "../../../../src/engine/pipeline/positionCycle";
 import { quoteRows, runTradingCycle, type CycleReport } from "../../../../src/engine/pipeline/tradingCycle";
 import { SyntheticOptionQuotes } from "../../../../src/engine/pricing/syntheticOptionPricer";
-import { randomId, type Broker, type EngineDeps, type OptionQuoteSource, type Repository } from "../../../../src/engine/ports";
+import { randomId, type Broker, type EngineDeps, type MarketDataSource, type OptionQuoteSource, type Repository } from "../../../../src/engine/ports";
 import { entryMode } from "../../../../src/engine/settings";
 import type { EngineMode, EnginePhase, EngineSettings, Fill, Heartbeat, IndexId, MarketFeatures, Order, Position, TradingMode } from "../../../../src/engine/types";
 import { makeRefId } from "../../../../src/engine/util/refId";
@@ -51,7 +52,21 @@ import { runBarArchive, type BarArchiveOptions, type BarArchiveStatus } from "..
 import { sendEntryAlert, sendExitAlert, sendTrailAlerts, type CopyAlertContext } from "../copyAlerts";
 import { CachedInstruments } from "../instruments";
 import { QUOTE_RECORDER_STATE_KEY, QuoteRecorder, type QuoteRecorderStatus, type RecorderState } from "../quoteRecorder";
-import { accountRuntime, accountViews, enabledAccounts, errorMessage, growwDataClient, makeRuntime, recorderQuoteSource, relayClient, type AccountRuntime, type Runtime } from "../runtime";
+import {
+  accountRuntime,
+  accountViews,
+  enabledAccounts,
+  errorMessage,
+  growwDataClient,
+  liveDataSource,
+  makeRuntime,
+  recorderQuoteSource,
+  relayClient,
+  upstoxLiveClient,
+  type AccountRuntime,
+  type LiveDataSource,
+  type Runtime,
+} from "../runtime";
 import { Alerts } from "../telegram";
 
 const LOOP_MS = 30_000;
@@ -111,12 +126,19 @@ export class TradingEngineDO extends DurableObject<Env> {
   private readonly data: GrowwDataClient | null;
   /** Groww quotes for LIVE (no fallback, no pause). */
   private readonly growwQuotes: GrowwOptionQuotes | null;
-  /** Groww quotes behind the paper books' synthetic fallback: paused for 30 s after a Groww failure. */
-  private readonly paperQuotes: GrowwOptionQuotes | null;
+  /**
+   * Real quotes behind the paper books' synthetic fallback, paused for 30 s after a failure: Groww when its
+   * keys are set, else Upstox when LIVE_DATA is "upstox".
+   */
+  private readonly paperQuotes: GrowwOptionQuotes | UpstoxOptionQuotes | null;
   /** Read-only live quote recorder (runs after ticks, never inside one; workers/engine/src/quoteRecorder.ts). */
   private readonly quoteRecorder: QuoteRecorder;
   private readonly relay: RelayClient | null;
-  private readonly market: YahooMarketDataSource;
+  /** Yahoo's bars (the bar archive's source). */
+  private readonly yahoo: YahooMarketDataSource;
+  /** The trading loop's market data: Yahoo, with Upstox's live index data over it when LIVE_DATA is "upstox". */
+  private readonly market: MarketDataSource;
+  private readonly liveData: LiveDataSource;
   private readonly instruments: CachedInstruments;
   private readonly alerts: Alerts;
   /** Copy-trade alerts for main. */
@@ -149,10 +171,16 @@ export class TradingEngineDO extends DurableObject<Env> {
       : null;
     this.data = growwDataClient(env, this.tokens);
     this.growwQuotes = this.data ? new GrowwOptionQuotes(this.data, cfg) : null;
-    this.paperQuotes = this.data ? new GrowwOptionQuotes(this.data, cfg, { pauseAfterErrorMs: PAPER_QUOTE_PAUSE_MS }) : null;
+    const upstox = upstoxLiveClient(env);
+    this.liveData = liveDataSource(env);
+    this.paperQuotes = this.data
+      ? new GrowwOptionQuotes(this.data, cfg, { pauseAfterErrorMs: PAPER_QUOTE_PAUSE_MS })
+      : upstox
+        ? new UpstoxOptionQuotes(upstox, { pauseAfterErrorMs: PAPER_QUOTE_PAUSE_MS })
+        : null;
     this.relay = relayClient(env);
     const data = this.data;
-    this.market = new YahooMarketDataSource({
+    this.yahoo = new YahooMarketDataSource({
       calendar,
       ltp: data
         ? async () => {
@@ -168,6 +196,7 @@ export class TradingEngineDO extends DurableObject<Env> {
         : undefined,
       log: (msg, d) => logger.warn(msg, d),
     });
+    this.market = upstox ? new UpstoxOverlayMarketData(this.yahoo, upstox, { log: (msg, d) => logger.warn(msg, d) }) : this.yahoo;
     this.instruments = new CachedInstruments({
       env,
       cfg,
@@ -243,7 +272,7 @@ export class TradingEngineDO extends DurableObject<Env> {
       broker = new GrowwBroker({ relay: this.relay, repo, clock: systemClock, newId: randomId, logger });
     } else {
       optionQuotes = this.paperQuotes
-        ? new FallbackOptionQuotes(this.paperQuotes, synthetic, (err) => logger.warn("groww quote failed; synthetic quote used for paper", { error: errorMessage(err) }))
+        ? new FallbackOptionQuotes(this.paperQuotes, synthetic, (err) => logger.warn(`${this.paperQuotes!.kind} quote failed; synthetic quote used for paper`, { error: errorMessage(err) }))
         : synthetic;
       broker = new PaperBroker({ cfg, clock: systemClock, repo, quotes: optionQuotes, marketContext: (i) => this.marketContext.get(i), newId: randomId, mode: "PAPER" });
     }
@@ -255,7 +284,7 @@ export class TradingEngineDO extends DurableObject<Env> {
     const { logger } = this.rt;
     const synthetic = new SyntheticOptionQuotes(calendar, f.cfg);
     const optionQuotes: OptionQuoteSource = this.paperQuotes
-      ? new FallbackOptionQuotes(this.paperQuotes, synthetic, (err) => logger.warn("groww quote failed; synthetic quote used for paper", { error: errorMessage(err) }))
+      ? new FallbackOptionQuotes(this.paperQuotes, synthetic, (err) => logger.warn(`${this.paperQuotes!.kind} quote failed; synthetic quote used for paper`, { error: errorMessage(err) }))
       : synthetic;
     const broker = new PaperBroker({ cfg: f.cfg, clock: systemClock, repo: f.repo, quotes: optionQuotes, marketContext: (i) => this.marketContext.get(i), newId: randomId, mode: "PAPER" });
     return { cfg: f.cfg, clock: systemClock, calendar, repo: f.repo, broker, market: this.market, optionQuotes, instruments: this.instruments, logger, newId: randomId, mode: "PAPER", marketContext: this.marketContext };
@@ -747,7 +776,7 @@ export class TradingEngineDO extends DurableObject<Env> {
         } catch (err) {
           this.rt.logger.warn("bar archive: settings unavailable, using the bundled holiday calendar", { error: errorMessage(err) });
         }
-        return runBarArchive({ db: this.env.DB, kv: this.env.KV, source: this.market, calendar, logger: this.rt.logger }, opts);
+        return runBarArchive({ db: this.env.DB, kv: this.env.KV, source: this.yahoo, calendar, logger: this.rt.logger }, opts);
       })().finally(() => {
         this.archiving = null;
       });
@@ -888,6 +917,7 @@ export class TradingEngineDO extends DurableObject<Env> {
       `open: ${paper.length} paper, ${live.length} live`,
       ...[...paper, ...live].map((p) => `  ${p.mode} ${p.contract.tradingSymbol} x${p.qty} @ ${p.avgEntry.toFixed(2)} mark ${p.markPremium.toFixed(2)}`),
       `relay: ${relay ? relay.detail : "not configured"}`,
+      `live data: ${this.liveData === "upstox" ? "upstox (index bars and spots over yahoo" : "yahoo (index bars"}; paper quotes ${this.paperQuotes?.kind ?? "synthetic"})`,
     ];
     for (const f of this.followers) {
       const [fs, open, l] = await Promise.all([f.repo.settings.get(), f.repo.positions.open("PAPER"), f.repo.ledger.get(istDate(now), "PAPER")]);
