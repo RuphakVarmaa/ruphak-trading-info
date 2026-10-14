@@ -4,6 +4,7 @@
  * for the dashboard, and a small HTTP surface (/health, Telegram webhook, token-protected ops).
  */
 import { istDate } from "../../../src/engine/clock";
+import { redactFeedError } from "../../../src/engine/market/upstoxFeed";
 import { timingSafeEqual } from "../../../src/engine/util/hash";
 import { BAR_ARCHIVE_STATUS_KEY, recordBarArchiveFailure } from "./barArchive";
 import type { ScoreMessage } from "./do/IngestDO";
@@ -16,10 +17,21 @@ import { Alerts, parseTelegramUpdate, sendTelegram } from "./telegram";
 export { TradingEngineDO } from "./do/TradingEngineDO";
 export { IngestDO } from "./do/IngestDO";
 export { BacktestDO } from "./do/BacktestDO";
+export { MarketFeedDO } from "./do/MarketFeedDO";
 export { EngineAdmin } from "./admin";
 
 const engine = (env: Env) => env.ENGINE_DO.get(env.ENGINE_DO.idFromName("engine"));
 const ingest = (env: Env) => env.INGEST_DO.get(env.INGEST_DO.idFromName("ingest"));
+const marketFeed = (env: Env) => env.MARKET_FEED_DO.get(env.MARKET_FEED_DO.idFromName("feed"));
+
+/** Pokes the market feed (it connects inside 09:10-15:35 IST and sleeps otherwise); never throws. */
+async function wakeMarketFeed(env: Env, logger: { error(msg: string, data?: unknown): void }): Promise<void> {
+  try {
+    await marketFeed(env).ensureRunning();
+  } catch (err) {
+    logger.error("market feed wake failed", { error: redactFeedError(err, [env.UPSTOX_ANALYTICS_TOKEN]) });
+  }
+}
 
 /** Cron expressions in workers/engine/wrangler.jsonc (UTC; IST = UTC+5:30). */
 export const CRONS = {
@@ -49,7 +61,11 @@ async function runCron(cron: string, env: Env): Promise<void> {
       if (tradingDay) await ingest(env).runCycle("boost");
       return;
     case CRONS.ENGINE_WAKE:
-      if (tradingDay) await engine(env).ensureRunning();
+      if (tradingDay) {
+        // The feed first and independently: a trading-loop failure must not keep it from connecting at 09:10.
+        await wakeMarketFeed(env, rt.logger);
+        await engine(env).ensureRunning();
+      }
       return;
     case CRONS.TOKEN:
       if (tradingDay) await engine(env).refreshToken();
@@ -87,7 +103,10 @@ async function runCron(cron: string, env: Env): Promise<void> {
     }
     case CRONS.PREVIEW:
       await ingest(env).runCycle("base");
-      if (tradingDay) await engine(env).ensureRunning();
+      if (tradingDay) {
+        await wakeMarketFeed(env, rt.logger);
+        await engine(env).ensureRunning();
+      }
       return;
     default:
       rt.logger.warn("unknown cron", { cron });
@@ -162,6 +181,10 @@ async function handleFetch(req: Request, env: Env): Promise<Response> {
           return Response.json((await engine(env).recordQuotesNow()) ?? { ok: false, error: "no snapshot taken" });
         case "/ops/status":
           return new Response(await engine(env).statusText());
+        case "/ops/feed-status":
+          // The Upstox market feed socket: connected, last message, subscriptions, reconnects, last error
+          // (never the token or the authorized URL). ?wake=1 also runs one connect/maintain step now.
+          return Response.json(url.searchParams.get("wake") === "1" ? await marketFeed(env).ensureRunning() : await marketFeed(env).status());
         case "/ops/telegram-test": {
           // Confirms the TELEGRAM_* secrets reach the chat (the alerts are otherwise silent no-ops).
           const alerts = new Alerts(env, rt.repo.state, rt.logger);

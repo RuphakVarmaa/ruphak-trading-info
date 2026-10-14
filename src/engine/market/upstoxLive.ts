@@ -26,6 +26,8 @@ import { UpstoxError } from "./upstoxQuotes";
 export const NO_QUOTE_SOURCE = "no quote source: set UPSTOX_ANALYTICS_TOKEN";
 
 export const CHAIN_TTL_MS = 5_000;
+/** The chain TTL while the market feed overlays 1-second ticks (REST then only refreshes greeks and the structure). */
+export const CHAIN_TTL_FEED_MS = 30_000;
 export const META_TTL_MS = 30 * 60_000;
 export const INDICES_TTL_MS = 3_000;
 /** How long a last good value is served after a failed or throttled refresh. */
@@ -145,7 +147,8 @@ export class UpstoxLive {
   }
 
   /** `expiry` (YYYY-MM-DD, validated by the caller) defaults to defaultExpiry(). */
-  async getOptionChain(index: IndexId, expiry?: string): Promise<OptionChainView> {
+  /** `chainTtlMs` overrides CHAIN_TTL_MS (CHAIN_TTL_FEED_MS while the market feed is live). */
+  async getOptionChain(index: IndexId, expiry?: string, chainTtlMs: number = CHAIN_TTL_MS): Promise<OptionChainView> {
     const client = this.client;
     if (!client) return this.emptyChain(index, expiry ?? "", null, NO_QUOTE_SOURCE);
     const m = await this.read(`meta:${index}`, META_TTL_MS, () => client.contracts(index), META_STALE_MS);
@@ -154,7 +157,7 @@ export class UpstoxLive {
     const exp = expiry || defaultExpiry(meta.expiries, this.now());
     if (!exp) return this.emptyChain(index, "", meta, `Upstox lists no upcoming ${index} expiry`);
     if (!meta.expiries.includes(exp)) return this.emptyChain(index, exp, meta, `${index} has no listed expiry ${exp}`);
-    const c = await this.read<ParsedChain>(`chain:${index}:${exp}`, CHAIN_TTL_MS, () => client.chain(index, exp));
+    const c = await this.read<ParsedChain>(`chain:${index}:${exp}`, chainTtlMs, () => client.chain(index, exp));
     if (!c.value || c.at === null) return this.emptyChain(index, exp, meta, c.error ?? "Upstox returned no chain");
     if (c.value.rows.length === 0) return this.emptyChain(index, exp, meta, c.error ?? `Upstox returned an empty chain for ${index} ${exp}`);
     return buildOptionChainView({ index, expiry: exp, meta, chain: c.value, fetchedMs: c.at, error: c.error });
@@ -166,6 +169,12 @@ export class UpstoxLive {
     const r = await this.read<LiveIndexLevel[]>("indices", INDICES_TTL_MS, () => client.indexLevels());
     const levels = r.value ?? [];
     const error = r.error ?? (levels.length === 0 ? "Upstox returned no index levels" : null);
-    return { fetchedAt: istIso(r.at ?? this.now()), source: "upstox", levels, error };
+    return { fetchedAt: istIso(r.at ?? this.now()), source: "upstox", levels, error, feed: "rest" };
+  }
+
+  /** The last good index levels already fetched (no request), up to `maxAgeMs` old; null without one. */
+  cachedIndices(maxAgeMs = 6 * 60 * 60_000): LiveIndexLevel[] | null {
+    const s = this.slots.get("indices") as Slot<LiveIndexLevel[]> | undefined;
+    return s?.good && this.now() - s.good.at <= maxAgeMs ? s.good.value : null;
   }
 }

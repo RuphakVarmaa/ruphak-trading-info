@@ -817,6 +817,8 @@ export interface OptionChainView {
   source: "upstox" | "mock";
   /** Set when the chain could not be fetched (rows are then empty). */
   error: string | null;
+  /** "websocket" when Upstox market-feed ticks are laid over the REST chain; "rest" (or absent) otherwise. */
+  feed?: "websocket" | "rest";
 }
 
 /** Live index levels from the broker feed (Upstox LTP), for the dashboard's ticker. */
@@ -825,6 +827,8 @@ export interface LiveIndexLevelsView {
   source: "upstox" | "mock";
   levels: { key: "NIFTY" | "SENSEX" | "INDIAVIX" | "BANKNIFTY"; price: number; open: number | null; high: number | null; low: number | null; prevClose: number | null; change: number | null; changePct: number | null }[];
   error: string | null;
+  /** "websocket" when built from Upstox's market feed (1-second ticks), "rest" from the quotes endpoint; absent from older engines. */
+  feed?: "websocket" | "rest";
 }
 
 export interface EngineApi {
