@@ -3,6 +3,7 @@
  * D1, Groww, Yahoo and Anthropic; tests and backtests wire in-memory and replay versions.
  */
 import type { ZodType } from "zod";
+import type { OptionFlowView } from "./api-types";
 import type { Clock } from "./clock";
 import type { EngineConfig } from "./config";
 import type { TradingCalendar } from "./calendar/calendar";
@@ -312,4 +313,11 @@ export interface EngineDeps {
   mode: TradingMode;
   /** Latest spot/VIX per index, shared with the broker's quote lookups. */
   marketContext: MarketContextStore;
+  /** The live option flow (the market feed's minute samples); absent in backtests and tests. Read-only. */
+  flow?: OptionFlowSource;
+}
+
+/** The live option-flow monitor (MarketFeedDO.getOptionFlow); null when it does not answer. */
+export interface OptionFlowSource {
+  view(index: IndexId): Promise<OptionFlowView | null>;
 }

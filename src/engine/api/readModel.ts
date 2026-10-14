@@ -41,6 +41,8 @@ import type { Repository } from "../ports";
 import { displayMode } from "../settings";
 import { ADVICE_MAX_AGE_MS, adviceKey, type SignalAdvice, type SignalAdviceEnter } from "../strategy/advice";
 import { SETUPS_MAX_AGE_MS, setupsKey, type SetupsRecord } from "../strategy/setups";
+import { RECO_MAX_AGE_MS, recoKey } from "../flow/recommend";
+import type { RecoRecord } from "../pipeline/recoCycle";
 import { stopPrice, targetPrice, trailPrice } from "../strategy/exits";
 import { positionExitByMs } from "../strategy/rules";
 import { buildTodayPlan } from "../strategy/todayPlan";
@@ -442,6 +444,13 @@ export class ReadModel {
     return { setups: r.setups, levels: r.levels, setupNote: r.note };
   }
 
+  /** The engine's recommendation for an index (flow/recommend.ts); null when older than 3 minutes or from another session. */
+  private async recommendation(index: IndexId): Promise<Pick<SignalView, "recommendation">> {
+    const r = await this.ctx.repo.state.get<RecoRecord>(recoKey(index));
+    if (!r || !r.view || this.now - r.t > RECO_MAX_AGE_MS || r.t > this.now + MINUTE_MS || r.session !== istDate(this.now)) return { recommendation: null };
+    return { recommendation: r.view };
+  }
+
   async getSignals(): Promise<SignalView[]> {
     const { repo, cfg } = this.ctx;
     const snap = await repo.snapshots.latest();
@@ -488,6 +497,7 @@ export class ReadModel {
         indicators: d.indicators ?? null,
         advice: await this.advice(index, d),
         ...(await this.setups(index)),
+        ...(await this.recommendation(index)),
       });
     }
     return out;

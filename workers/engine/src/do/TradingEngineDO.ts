@@ -14,7 +14,7 @@
  */
 import { DurableObject } from "cloudflare:workers";
 import { parseAccountId, type AccountId } from "../../../../src/engine/accounts";
-import type { AccountView } from "../../../../src/engine/api-types";
+import type { AccountView, OptionFlowView } from "../../../../src/engine/api-types";
 import type { TradingCalendar } from "../../../../src/engine/calendar/calendar";
 import { MINUTE_MS, istAt, istDate, istIso, systemClock } from "../../../../src/engine/clock";
 import { PaperBroker } from "../../../../src/engine/broker/paperBroker";
@@ -44,7 +44,7 @@ import { MarketContextStore } from "../../../../src/engine/pipeline/marketContex
 import { runPositionCycle, type PositionReport } from "../../../../src/engine/pipeline/positionCycle";
 import { quoteRows, runTradingCycle, type CycleReport } from "../../../../src/engine/pipeline/tradingCycle";
 import { SyntheticOptionQuotes } from "../../../../src/engine/pricing/syntheticOptionPricer";
-import { randomId, type Broker, type EngineDeps, type MarketDataSource, type OptionQuoteSource, type Repository } from "../../../../src/engine/ports";
+import { randomId, type Broker, type EngineDeps, type MarketDataSource, type OptionFlowSource, type OptionQuoteSource, type Repository } from "../../../../src/engine/ports";
 import { entryMode } from "../../../../src/engine/settings";
 import type { EngineMode, EnginePhase, EngineSettings, Fill, Heartbeat, IndexId, MarketFeatures, Order, Position, TradingMode } from "../../../../src/engine/types";
 import { makeRefId } from "../../../../src/engine/util/refId";
@@ -276,8 +276,42 @@ export class TradingEngineDO extends DurableObject<Env> {
         : synthetic;
       broker = new PaperBroker({ cfg, clock: systemClock, repo, quotes: optionQuotes, marketContext: (i) => this.marketContext.get(i), newId: randomId, mode: "PAPER" });
     }
-    return { cfg, clock: systemClock, calendar, repo, broker, market: this.market, optionQuotes, instruments: this.instruments, logger, newId: randomId, mode, marketContext: this.marketContext };
+    return {
+      cfg,
+      clock: systemClock,
+      calendar,
+      repo,
+      broker,
+      market: this.market,
+      optionQuotes,
+      instruments: this.instruments,
+      logger,
+      newId: randomId,
+      mode,
+      marketContext: this.marketContext,
+      flow: this.flowSource,
+    };
   }
+
+  /** The market feed's option flow (read-only, for the recommendation); null when it does not answer within 1.5 s. */
+  private readonly flowSource: OptionFlowSource = {
+    view: async (index) => {
+      const stub = this.env.MARKET_FEED_DO.get(this.env.MARKET_FEED_DO.idFromName("feed"));
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      try {
+        return await Promise.race([
+          stub.getOptionFlow(index) as Promise<OptionFlowView>,
+          new Promise<null>((resolve) => {
+            timer = setTimeout(() => resolve(null), 1_500);
+          }),
+        ]);
+      } catch {
+        return null;
+      } finally {
+        clearTimeout(timer);
+      }
+    },
+  };
 
   /** Paper deps for a follower: its own config, book and broker; main's market data, quotes and calendar. */
   private followerDeps(f: Follower, calendar: TradingCalendar = this.rt.calendar): EngineDeps {
@@ -483,7 +517,7 @@ export class TradingEngineDO extends DurableObject<Env> {
       }
     }
 
-    const report = await runTradingCycle(this.deps(mode), { noEntries, decisionEveryMs: 5 * MINUTE_MS });
+    const report = await runTradingCycle(this.deps(mode), { noEntries, decisionEveryMs: 5 * MINUTE_MS, recommend: true });
     if (report.snapshot) {
       const age = report.snapshot.dataAgeSec;
       await recordSourceHealth(repo, "yahoo", age < 600, now, age < 600 ? undefined : `market data ${Math.round(age)} s old`);

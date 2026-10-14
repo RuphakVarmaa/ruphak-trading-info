@@ -90,6 +90,14 @@ export interface FeedStatus {
 
 const iso = (ms: number | null): string | null => (ms === null ? null : new Date(ms).toISOString());
 
+/** One index's subscribed option strikes (UpstoxFeedClient.optionBooks). */
+export interface OptionBook {
+  index: IndexId;
+  expiry: string;
+  lotSize: number | null;
+  strikes: StrikeKeys[];
+}
+
 export class UpstoxFeedClient {
   readonly store = new TickStore();
   private socket: FeedSocket | null = null;
@@ -103,7 +111,7 @@ export class UpstoxFeedClient {
   private lastErrorAt: number | null = null;
   private guid = 0;
   private readonly subscribed = new Set<string>();
-  private readonly strikes = new Map<IndexId, { expiry: string; list: StrikeKeys[]; spot: number; at: number }>();
+  private readonly strikes = new Map<IndexId, { expiry: string; list: StrikeKeys[]; spot: number; at: number; lotSize: number }>();
   private readonly selections = new Map<IndexId, StrikeSelection>();
   private readonly chains: ChainSource | null;
 
@@ -293,7 +301,7 @@ export class UpstoxFeedClient {
           const list = strikeKeysFromRows(chain.rows);
           if (list.length === 0) throw new Error(`Upstox returned an empty ${index} chain`);
           if (s && s.expiry !== expiry) this.selections.delete(index);
-          s = { expiry, list, spot: chain.spot, at: now };
+          s = { expiry, list, spot: chain.spot, at: now, lotSize: meta.lotSize };
           this.strikes.set(index, s);
         }
         if (!this.socket) return;
@@ -319,6 +327,28 @@ export class UpstoxFeedClient {
       }
     }
     this.store.retain(keep);
+  }
+
+  /**
+   * Per option index, the subscribed expiry, its lot size and the subscribed strikes with their keys
+   * (ascending), for the option-flow monitor's minute samples. Empty before the first subscription.
+   */
+  optionBooks(): OptionBook[] {
+    const out: OptionBook[] = [];
+    for (const index of OPTION_INDICES) {
+      const sel = this.selections.get(index);
+      const s = this.strikes.get(index);
+      if (!sel || !s) continue;
+      const keys = new Set(sel.keys);
+      const strikes = s.list.filter((x) => (x.ce !== null && keys.has(x.ce)) || (x.pe !== null && keys.has(x.pe)));
+      if (strikes.length > 0) out.push({ index, expiry: s.expiry, lotSize: s.lotSize > 0 ? s.lotSize : null, strikes });
+    }
+    return out;
+  }
+
+  /** True while a socket is open. */
+  get connected(): boolean {
+    return this.socket !== null;
   }
 
   /** The latest ticks (all, or those for `keys`) with the stream's liveness. */

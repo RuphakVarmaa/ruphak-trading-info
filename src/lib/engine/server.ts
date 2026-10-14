@@ -51,6 +51,7 @@ const RPC_METHODS = [
   "getTodayPlan",
   "getOptionChain",
   "getLiveIndices",
+  "getOptionFlow",
   "getBacktest",
   "getCopyTickets",
   "verifyAdmin",

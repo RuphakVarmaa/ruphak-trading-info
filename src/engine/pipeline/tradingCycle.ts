@@ -10,6 +10,8 @@ import type { EngineDeps } from "../ports";
 import { combineConviction } from "../strategy/conviction";
 import { recordAdvice } from "../strategy/advice";
 import { refreshSetups } from "./setupsCycle";
+import { refreshRecommendation } from "./recoCycle";
+import type { SetupsRecord } from "../strategy/setups";
 import { planEntry } from "../strategy/planner";
 import { publishedConviction, publishedSignal } from "../strategy/published";
 import { classifyRegime } from "../strategy/regime";
@@ -45,6 +47,11 @@ export interface TradingCycleOptions {
   events?: ScoredEvent[];
   /** Evaluate and persist decisions but submit no entries (DEGRADED engine, unhealthy relay). */
   noEntries?: string | null;
+  /**
+   * Compute and store the dashboard's recommendation per index (pipeline/recoCycle.ts). The engine's main
+   * tick only: it quotes a few contracts, so backtests and follower books leave it off.
+   */
+  recommend?: boolean;
 }
 
 export interface CycleReport {
@@ -168,10 +175,19 @@ export async function runTradingCycle(deps: EngineDeps, opts: TradingCycleOption
       // Live ENTER/WAIT advice for the dashboard while the measured-edge check pauses the book (kv only).
       await recordAdvice(repo, decision, f.spot, cfg);
       // Level-based trade setups for the dashboard (kv only; decision support, never an entry).
+      let setups: SetupsRecord | null = null;
       try {
-        await refreshSetups(deps, index, f, snap, regime, calendar);
+        setups = await refreshSetups(deps, index, f, snap, regime, calendar);
       } catch (err) {
         logger.warn("setups error", { index, error: err instanceof Error ? err.message : String(err) });
+      }
+      // The ₹10k recommendation (setup + live option flow + measured statistics; kv only, never an entry).
+      if (opts.recommend) {
+        try {
+          await refreshRecommendation(deps, index, f, snap, setups, calendar);
+        } catch (err) {
+          logger.warn("recommendation error", { index, error: err instanceof Error ? err.message : String(err) });
+        }
       }
 
       if (decision.plan && phase === "OPEN" && !halt && !noEntries) {

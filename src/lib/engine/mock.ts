@@ -40,6 +40,7 @@ import type {
   SuggestedContract,
   LiveIndexLevelsView,
   OptionChainView,
+  OptionFlowView,
   TodayPlanView,
 } from "@/engine/api-types";
 import { defaultCalendar } from "@/engine/calendar/calendar";
@@ -76,6 +77,7 @@ import { copyTicketView } from "@/engine/copy/copyTicket";
 import type { Position, TradePlan } from "@/engine/types";
 import { buildMockChain, weeklyExpiries } from "./mockChain";
 import { mockSetups } from "./mockSetups";
+import { mockOptionFlow, mockRecommendation, type MockFlowInput } from "./mockFlow";
 import { simulateBacktest } from "./mockBacktest";
 import { clamp, gauss, hashString, mulberry32, round2 } from "./random";
 
@@ -733,6 +735,7 @@ export class MockEngineApi implements EngineApi {
     else if (!pos) noPlanReason = "Position closed today; 15-minute re-entry cooldown";
     else if (!allGatesPassed) noPlanReason = gates.find((g) => g.passed === false)?.detail ?? "A gate failed";
     const impliedMovePct = seed.impliedMovePct;
+    const setups = mockSetups(seed.index, this.spot(seed.index), now);
     return {
       index: seed.index,
       stance: seed.stance,
@@ -755,8 +758,15 @@ export class MockEngineApi implements EngineApi {
       position: pos ? this.positionView(pos, now) : null,
       indicators: seed.indicators,
       advice: null,
-      ...mockSetups(seed.index, this.spot(seed.index), now),
+      ...setups,
+      recommendation: mockRecommendation({ ...this.flowInput(seed.index, now), setups: setups.setups ?? [] }),
     };
+  }
+
+  /** Inputs for the synthetic option flow: the mock's spot, the session's open (as liveLevels shows it) and holidays. */
+  private flowInput(index: IndexId, now: number): MockFlowInput {
+    const q = this.quoteSeed(index);
+    return { index, nowMs: now, spot: this.spot(index), open: round2(q.prevClose + (q.base - q.prevClose) * 0.35), prevSpot: q.prevClose, isHoliday: isMockHoliday };
   }
 
   /** The open position as a copy ticket, built by the engine's own builder from the fixture. */
@@ -965,6 +975,13 @@ export class MockEngineApi implements EngineApi {
   async getLiveIndices(): Promise<LiveIndexLevelsView> {
     this.read();
     return clone(this.liveLevels());
+  }
+
+  /** Synthetic minute snapshots of the mock chain through the engine's real flow monitor (mockFlow.ts), flagged source "mock". */
+  async getOptionFlow(index: IndexId): Promise<OptionFlowView> {
+    const now = this.read();
+    if (index !== "NIFTY" && index !== "SENSEX") throw new Error("BAD_REQUEST: index must be NIFTY or SENSEX");
+    return clone(mockOptionFlow(this.flowInput(index, now)));
   }
 
   async getBacktest(runId: string): Promise<BacktestResult | null> {

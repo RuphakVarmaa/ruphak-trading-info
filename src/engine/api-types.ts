@@ -259,6 +259,12 @@ export interface SignalView {
   levels?: KeyLevelView[];
   /** Why there are no setups right now ("No new setups after 14:30 IST"), when that is the reason. */
   setupNote?: string | null;
+  /**
+   * The engine's one recommendation for this index (src/engine/flow/recommend.ts), sized for ₹10,000:
+   * setup + live option flow + measured statistics. Null when older than 3 minutes or from another session;
+   * absent from older engines.
+   */
+  recommendation?: RecommendationView | null;
 }
 
 /** One key level, or several within ~0.05% of each other merged into one zone ("PDH + R1"). */
@@ -831,6 +837,214 @@ export interface LiveIndexLevelsView {
   feed?: "websocket" | "rest";
 }
 
+// ---------------------------------------------------------------------------
+// Live option flow (src/engine/flow/flowMonitor.ts): OI added and removed, build-ups, volume spikes
+// ---------------------------------------------------------------------------
+
+/** Price and open interest moving together: up/up long build-up, down/up short build-up, up/down short covering, down/down long unwinding. */
+export type FlowBuildup = "LONG_BUILDUP" | "SHORT_BUILDUP" | "SHORT_COVERING" | "LONG_UNWINDING" | "NEUTRAL";
+export type FlowWindowKey = "1m" | "5m" | "15m";
+
+/** One side of one strike over a window: the latest quote and the change since the window's start. */
+export interface FlowSideView {
+  /** Latest values (null: not reported). */
+  oi: number | null;
+  ltp: number | null;
+  bid: number | null;
+  ask: number | null;
+  /** Implied volatility, percent. */
+  iv: number | null;
+  delta: number | null;
+  /** Change over the window; null when either end is missing. */
+  oiChg: number | null;
+  oiChgPct: number | null;
+  /** Quantity traded in the window (the day's cumulative volume now minus then). */
+  vol: number | null;
+  /** The window's volume per minute over the normal volume per minute (research baseline, else the session's median); null without one. */
+  volMultiple: number | null;
+  ltpChgPct: number | null;
+  /** Change in implied volatility, vol points. */
+  ivChg: number | null;
+  buildup: FlowBuildup;
+}
+
+export interface FlowStrikeRow {
+  strike: number;
+  ce: FlowSideView | null;
+  pe: FlowSideView | null;
+}
+
+export interface FlowWindowView {
+  minutes: number;
+  /** The snapshot the changes are measured from (ISO, IST); null when the session has no snapshot that old yet. */
+  from: string | null;
+  rows: FlowStrikeRow[];
+}
+
+export type FlowEventKind = "OI_BUILDUP" | "VOLUME_SPIKE" | "DRY_UP" | "PCR_SHIFT" | "WALL_SHIFT";
+
+export interface FlowEventView {
+  /** ISO, IST. */
+  at: string;
+  kind: FlowEventKind;
+  strike: number | null;
+  side: "CE" | "PE" | null;
+  buildup: FlowBuildup | null;
+  oiChg: number | null;
+  ltpChgPct: number | null;
+  volMultiple: number | null;
+  /** "10:42 · NIFTY 22500 PE · +18.4L OI in 5 min, price −6.0% → SHORT BUILD-UP (put writers adding)". */
+  text: string;
+}
+
+export interface FlowSummaryView {
+  /** OI added at ATM±3 strikes over 15 minutes (or since the previous close on the REST fallback), calls against puts. */
+  callWritersVsPutWriters: {
+    window: "15m" | "day";
+    ceOiAdded: number | null;
+    peOiAdded: number | null;
+    lean: "CALL_WRITERS" | "PUT_WRITERS" | "BALANCED" | "UNKNOWN";
+    text: string;
+  };
+  /** Put-call ratio on open interest over the monitored strikes. */
+  pcr: number | null;
+  /** PCR now minus PCR 15 minutes ago, on the strikes present at both times. */
+  pcrChg15m: number | null;
+  /** The strike with the most call OI (resistance) and with the most put OI (support). */
+  resistance: { strike: number; oi: number } | null;
+  support: { strike: number; oi: number } | null;
+  /** Where OI was added fastest over 15 minutes. */
+  fastestOiAdd: { ce: { strike: number; oiChg: number } | null; pe: { strike: number; oiChg: number } | null };
+  /** Volume and |ΔOI| at ATM±2 both under half of normal for 15 minutes: premium drying up. */
+  premiumDryUp: boolean;
+  dryUpDetail: string;
+  /** Premium the ATM straddle lost per hour beyond what delta × the index move explains, percent (positive = decaying); null without history. */
+  decayPctPerHourAtm: number | null;
+  /** Where "normal volume" came from: the research's measured medians, the session's own running medians, or none yet. */
+  volumeBaseline: "research" | "session" | "none";
+}
+
+export interface EntryTimeStatsView {
+  window: string;
+  avgPremiumDecayPctPerHour: number;
+  avgAbsIndexMovePct: number;
+  costPerPointMove: number;
+  sample: number;
+}
+
+/** The measured entry-time statistics for now (FLOW_STATS.entryTimes) and whether now is a good or expensive time to buy. */
+export interface FlowEntryWindowView {
+  verdict: "good" | "average" | "expensive" | "closed" | "unknown";
+  text: string;
+  now: EntryTimeStatsView | null;
+  best: EntryTimeStatsView | null;
+}
+
+export interface OptionFlowView {
+  index: IndexId;
+  /** "feed": 1-minute samples of the Upstox market feed; "rest": one REST chain (no minute history); "mock": the dashboard's synthetic engine. */
+  source: "feed" | "rest" | "mock";
+  /** The latest snapshot (ISO, IST); null without one. */
+  asOf: string | null;
+  expiry: string | null;
+  lotSize: number | null;
+  spot: number | null;
+  atm: number | null;
+  step: number | null;
+  /** 1-minute snapshots held for the session. */
+  minutes: number;
+  /** Plain words when the view is partial or stale. */
+  note: string | null;
+  windows: Record<FlowWindowKey, FlowWindowView>;
+  /** REST fallback only: the change since the previous session's close. */
+  day?: FlowWindowView;
+  /** Newest first, at most 100. */
+  events: FlowEventView[];
+  summary: FlowSummaryView;
+  bestEntryWindow: FlowEntryWindowView;
+  /** The research's plain sentences, printed verbatim. */
+  honestSummary: string[];
+  statsGeneratedAt: string | null;
+}
+
+// ---------------------------------------------------------------------------
+// The recommendation (src/engine/flow/recommend.ts): at most one per index, sized to a capital
+// ---------------------------------------------------------------------------
+
+export type RecommendationStatus = "ENTER" | "WAIT" | "NO_TRADE";
+/** A: a rule with a positive measured edge matches; B: the setup and the option flow agree but no edge is proven; C: watch only. */
+export type RecommendationGrade = "A" | "B" | "C";
+
+export interface RecommendationView {
+  index: IndexId;
+  status: RecommendationStatus;
+  grade: RecommendationGrade;
+  /** One line a person can act on. */
+  headline: string;
+  /** When it was computed (ISO, IST). */
+  at: string;
+  /** The capital it is sized for, rupees. */
+  capital: number;
+  side: "BULL" | "BEAR" | null;
+  setup: { id: string; name: string; kind: TradeSetupKind; status: TradeSetupStatus } | null;
+  contract: {
+    index: IndexId;
+    expiry: string;
+    strike: number;
+    optionType: OptionType;
+    tradingSymbol: string;
+    lotSize: number;
+    /** e.g. "NIFTY 21-OCT-2026 25200 CE". */
+    label: string;
+    delta: number | null;
+    iv: number | null;
+    /** feed: the 1-second market feed; broker: a REST quote; model: Black-Scholes (no live quote); mock: the dashboard's synthetic engine. */
+    priceSource: "feed" | "broker" | "model" | "mock";
+  } | null;
+  entry: {
+    /** Limit price, on the contract's tick: at most the live ask + 2% when entering now; the expected premium at the trigger (+2%) when waiting. */
+    limit: number;
+    ask: number | null;
+    bid: number | null;
+    /** ISO, IST. */
+    validUntil: string;
+    /** The index condition, in words. */
+    trigger: string;
+    triggerLevel: number | null;
+    /** Do not buy once the index is past this level (the setup's chase limit). */
+    chaseLimit: number | null;
+  } | null;
+  stop: { premium: number; pct: number; index: number | null } | null;
+  target: { t1: number; t2: number; t1Pct: number; t2Pct: number; indexT1: number | null; indexT2: number | null } | null;
+  /** IST "HH:MM": be out by then whatever happens. */
+  timeExit: string | null;
+  qty: { lots: number; units: number; premiumRupees: number; chargesRupees: number; totalRupees: number } | null;
+  risk: { riskRupees: number; rewardT1Rupees: number; rewardT2Rupees: number; rr1: number; rr2: number; pctOfCapital: number } | null;
+  /** Setup and flow evidence, in plain words with numbers. */
+  reasons: string[];
+  cautions: string[];
+  /** The measured statistics of the matching research rule (FLOW_STATS), or verdict "none". */
+  historical: {
+    ruleIds: string[];
+    title: string | null;
+    sample: number;
+    inSample: number;
+    hitRate: number | null;
+    avgPnlPerLot: number | null;
+    medianPnlPerLot: number | null;
+    ci95: [number, number] | null;
+    verdict: "positive" | "not_proven" | "negative" | "none";
+    dataRange: string | null;
+    text: string;
+  };
+  /** Why this is not a measured edge, when the grade is not A. */
+  honest: string | null;
+  /** The same trade sized for other capitals (₹5,000, ₹10,000, ₹5,00,000). */
+  sizing: { capital: number; fits: boolean; lots: number; strike: number | null; optionType: OptionType | null; totalRupees: number | null; text: string }[];
+  /** When the option-flow reading it used was taken (ISO, IST), or null without one. */
+  flowAsOf: string | null;
+}
+
 export interface EngineApi {
   getState(account?: string): Promise<EngineStateDTO>;
   getSignals(account?: string): Promise<SignalView[]>;
@@ -848,6 +1062,8 @@ export interface EngineApi {
   getOptionChain(index: IndexId, expiry?: string): Promise<OptionChainView>;
   /** Live index levels from the broker feed (null-free; `error` set when unavailable). */
   getLiveIndices(): Promise<LiveIndexLevelsView>;
+  /** The live option flow for an index (OI added/removed per strike, build-ups, volume spikes, premium decay). */
+  getOptionFlow(index: IndexId): Promise<OptionFlowView>;
   getBacktest(runId: string): Promise<BacktestResult | null>;
   /** The account's trades opened on an IST date YYYY-MM-DD as copy tickets: open ones first, then newest first. */
   getCopyTickets(date: string, account?: string): Promise<CopyTicketView[]>;

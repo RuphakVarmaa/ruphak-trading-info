@@ -194,6 +194,27 @@ describe("read model", () => {
     expect((await model.getSignals())[0].setups).toEqual([]);
   });
 
+  it("attaches the recommendation, and drops one older than 3 minutes or from another session", async () => {
+    const { repo, model } = await setup();
+    await repo.decisions.append({ id: "d1", index: "NIFTY", t: NOW - 20_000, conviction: conviction(0.1), gates: [], plan: null, contract: null, refPremium: null, expectedMovePct: null, impliedMovePct: null, edgeRatio: null, noPlanReason: null });
+    expect((await model.getSignals())[0].recommendation).toBeNull();
+    const view = { index: "NIFTY", status: "WAIT", grade: "C", headline: "NIFTY: WAIT — no chart setup near the price." };
+    const record = { t: NOW - 50_000, session: "2026-10-07", index: "NIFTY", sig: "", view };
+    await repo.state.set("reco:latest:NIFTY", record);
+    expect((await model.getSignals())[0].recommendation).toEqual(view);
+    await repo.state.set("reco:latest:NIFTY", { ...record, t: NOW - 3 * 60_000 - 1 });
+    expect((await model.getSignals())[0].recommendation).toBeNull();
+    await repo.state.set("reco:latest:NIFTY", { ...record, session: "2026-10-06" });
+    expect((await model.getSignals())[0].recommendation).toBeNull();
+    // A follower account reads main's recommendation (it is not account-scoped).
+    await repo.state.set("reco:latest:NIFTY", record);
+    const cfgSmall = accountConfig(DEFAULT_CONFIG, "small10k");
+    const smallRepo = accountRepository(repo, "small10k", cfgSmall, () => NOW);
+    const small = new ReadModel({ repo: smallRepo, cfg: cfgSmall, calendar: defaultCalendar, now: NOW, liveTradingEnabled: false });
+    await smallRepo.decisions.append({ id: "d2", index: "NIFTY", t: NOW - 20_000, conviction: conviction(0.1), gates: [], plan: null, contract: null, refPremium: null, expectedMovePct: null, impliedMovePct: null, edgeRatio: null, noPlanReason: null });
+    expect((await small.getSignals())[0].recommendation).toEqual(view);
+  });
+
   it("maps positions with stop, target and trail levels", () => {
     const v = positionView(position());
     expect(v).toMatchObject({ stopPrice: 70, targetPrice: 150, ltp: 120, pnl: 1272, qty: 65, openedAt: "2026-10-07T10:30:00+05:30" });

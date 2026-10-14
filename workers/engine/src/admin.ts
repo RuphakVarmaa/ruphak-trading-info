@@ -25,8 +25,10 @@ import type {
   IndexId,
   LiveIndexLevelsView,
   OptionChainView,
+  OptionFlowView,
   TodayPlanView,
 } from "../../../src/engine/api-types";
+import { optionFlowWithFallback } from "../../../src/engine/flow/flowFallback";
 import { parseAccountId, type AccountId } from "../../../src/engine/accounts";
 import { ReadModel } from "../../../src/engine/api/readModel";
 import { liveIndicesWithFeed, optionChainWithFeed } from "../../../src/engine/market/liveFeedViews";
@@ -154,6 +156,37 @@ export class EngineAdmin extends WorkerEntrypoint<Env> implements EngineApi {
   }
   getLiveIndices(): Promise<LiveIndexLevelsView> {
     return liveIndicesWithFeed(liveMarket(this.env), (keys) => this.feedTicks(keys));
+  }
+  /**
+   * The market feed's minute-sampled option flow; when it has no minutes (or does not answer in 1.5 s), what
+   * one REST chain shows, flagged source "rest" (src/engine/flow/flowFallback.ts).
+   */
+  getOptionFlow(index: IndexId): Promise<OptionFlowView> {
+    if (index !== "NIFTY" && index !== "SENSEX") throw new AdminError("BAD_REQUEST", "index must be NIFTY or SENSEX");
+    return optionFlowWithFallback(
+      index,
+      () => this.feedFlow(index),
+      () => liveMarket(this.env).getOptionChain(index),
+      Date.now(),
+    );
+  }
+
+  /** The feed DO's option flow; null when it does not answer within 1.5 s. */
+  private async feedFlow(index: IndexId): Promise<OptionFlowView | null> {
+    const stub = this.env.MARKET_FEED_DO.get(this.env.MARKET_FEED_DO.idFromName("feed"));
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    try {
+      return await Promise.race([
+        stub.getOptionFlow(index) as Promise<OptionFlowView>,
+        new Promise<null>((resolve) => {
+          timer = setTimeout(() => resolve(null), 1_500);
+        }),
+      ]);
+    } catch {
+      return null;
+    } finally {
+      clearTimeout(timer);
+    }
   }
   getBacktest(runId: string): Promise<BacktestResult | null> {
     return getBacktest(this.env, String(runId));

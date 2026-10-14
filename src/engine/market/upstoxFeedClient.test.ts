@@ -111,6 +111,21 @@ describe("UpstoxFeedClient", () => {
     expect(h.client.status().marketStatus.NSE_FO).toBe("NORMAL_CLOSE");
   });
 
+  it("lists the subscribed option strikes per index for the flow monitor", async () => {
+    const h = harness();
+    expect(h.client.optionBooks()).toEqual([]);
+    expect(h.client.connected).toBe(false);
+    await h.client.tick();
+    expect(h.client.connected).toBe(true);
+    const books = h.client.optionBooks();
+    expect(books.map((b) => [b.index, b.expiry, b.lotSize, b.strikes.length])).toEqual([
+      ["NIFTY", "2026-10-20", 65, 31],
+      ["SENSEX", "2026-10-15", 65, 31],
+    ]);
+    expect(books[0].strikes[0]).toEqual({ strike: 21850, ce: "NIFTY|CE21850", pe: "NIFTY|PE21850" });
+    expect(books[0].strikes[30].strike).toBe(23350);
+  });
+
   it("re-centres when the spot moves more than 3 strikes, unsubscribing the strikes left behind", async () => {
     const h = harness();
     await h.client.tick();
