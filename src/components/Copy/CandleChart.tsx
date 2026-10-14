@@ -23,8 +23,16 @@ export interface ChartMarks {
   skipBeyond?: number | null;
 }
 
+/** An extra horizontal line (a setup's entry, stop or target, a key level). */
+export interface ChartLine {
+  price: number;
+  label: string;
+  color: string;
+  dashed?: boolean;
+}
+
 /** One session of 5-minute candles with VWAP, the opening range and the trade's entry and exit. */
-export default function CandleChart({ feed, marks }: { feed: IntradayFeed; marks: ChartMarks }) {
+export default function CandleChart({ feed, marks, lines = [], height = H }: { feed: IntradayFeed; marks: ChartMarks; lines?: ChartLine[]; height?: number }) {
   const wrap = useRef<HTMLDivElement>(null);
   const [width, setWidth] = useState(0);
   const [hover, setHover] = useState<number | null>(null);
@@ -43,6 +51,7 @@ export default function CandleChart({ feed, marks }: { feed: IntradayFeed; marks
   if (or) levels.push(or.high, or.low);
   if (marks.entry) levels.push(marks.entry.spot);
   if (marks.skipBeyond) levels.push(marks.skipBeyond);
+  for (const l of lines) levels.push(l.price);
   let lo = Math.min(...levels);
   let hi = Math.max(...levels);
   if (feed.prevClose != null && feed.prevClose > lo - (hi - lo) * 0.5 && feed.prevClose < hi + (hi - lo) * 0.5) {
@@ -54,7 +63,7 @@ export default function CandleChart({ feed, marks }: { feed: IntradayFeed; marks
   const yMax = hi + span * 0.06;
   const innerW = Math.max(1, width - PAD.l - PAD.r);
   const x = (t: number) => PAD.l + (Math.min(SESSION_MIN, Math.max(0, istMinute(t) - OPEN_MIN)) / SESSION_MIN) * innerW;
-  const y = (v: number) => PAD.t + (1 - (v - yMin) / (yMax - yMin)) * (H - PAD.t - PAD.b);
+  const y = (v: number) => PAD.t + (1 - (v - yMin) / (yMax - yMin)) * (height - PAD.t - PAD.b);
   const slot = innerW / (SESSION_MIN / 5);
   const bodyW = Math.max(1.5, slot * 0.66);
   const last = candles[candles.length - 1];
@@ -74,9 +83,9 @@ export default function CandleChart({ feed, marks }: { feed: IntradayFeed; marks
   const entryColor = C.gold;
 
   return (
-    <div ref={wrap} style={{ position: "relative", width: "100%", height: H }}>
+    <div ref={wrap} style={{ position: "relative", width: "100%", height }}>
       {width > 0 && candles.length > 0 && (
-        <svg width={width} height={H} role="img" aria-label={`${feed.index} 5-minute candles on ${feed.session}, last ${fmtNum(feed.last)}`} style={{ display: "block" }}>
+        <svg width={width} height={height} role="img" aria-label={`${feed.index} 5-minute candles on ${feed.session}, last ${fmtNum(feed.last)}`} style={{ display: "block" }}>
           {grid.map((g) => (
             <g key={g}>
               <line x1={PAD.l} x2={PAD.l + innerW} y1={y(g)} y2={y(g)} stroke={C.borderSoft} strokeWidth={1} />
@@ -89,7 +98,7 @@ export default function CandleChart({ feed, marks }: { feed: IntradayFeed; marks
             const [hh, mm] = tk.split(":").map(Number);
             const tx = PAD.l + ((hh * 60 + mm - OPEN_MIN) / SESSION_MIN) * innerW;
             return (
-              <text key={tk} x={tx} y={H - 6} fill={C.muted3} fontSize={9} style={{ fontFamily: "var(--font-num)" }} textAnchor={tk === "09:15" ? "start" : tk === "15:30" ? "end" : "middle"}>
+              <text key={tk} x={tx} y={height - 6} fill={C.muted3} fontSize={9} style={{ fontFamily: "var(--font-num)" }} textAnchor={tk === "09:15" ? "start" : tk === "15:30" ? "end" : "middle"}>
                 {tk}
               </text>
             );
@@ -134,6 +143,14 @@ export default function CandleChart({ feed, marks }: { feed: IntradayFeed; marks
               </g>
             );
           })}
+          {lines.map((l) => (
+            <g key={`${l.label}-${l.price}`}>
+              <line x1={PAD.l} x2={PAD.l + innerW} y1={y(l.price)} y2={y(l.price)} stroke={l.color} strokeWidth={1} strokeDasharray={l.dashed ? "4 3" : undefined} />
+              <text x={PAD.l + 4} y={y(l.price) - 3} fill={l.color} fontSize={9} fontWeight={600}>
+                {l.label} {fmtNum(l.price, 0)}
+              </text>
+            </g>
+          ))}
           {candles.length > 1 && <path d={vwapPath} fill="none" stroke={C.blue} strokeWidth={1.5} strokeLinejoin="round" />}
           {candles.length > 0 && (
             <text x={x(candles[0].t) + slot / 2 + 4} y={y(vwap[0]) + (vwap[0] > candles[0].c ? -6 : 12)} fill={C.blue} fontSize={9}>
@@ -142,7 +159,7 @@ export default function CandleChart({ feed, marks }: { feed: IntradayFeed; marks
           )}
           {entryMs != null && marks.entry && (
             <g>
-              <line x1={x(entryMs)} x2={x(entryMs)} y1={PAD.t} y2={H - PAD.b} stroke={entryColor} strokeWidth={1} strokeDasharray="4 3" />
+              <line x1={x(entryMs)} x2={x(entryMs)} y1={PAD.t} y2={height - PAD.b} stroke={entryColor} strokeWidth={1} strokeDasharray="4 3" />
               <path
                 d={
                   marks.entry.side === "BULL"
@@ -158,7 +175,7 @@ export default function CandleChart({ feed, marks }: { feed: IntradayFeed; marks
           )}
           {exitMs != null && (
             <g>
-              <line x1={x(exitMs)} x2={x(exitMs)} y1={PAD.t} y2={H - PAD.b} stroke={C.textDim} strokeWidth={1} strokeDasharray="4 3" />
+              <line x1={x(exitMs)} x2={x(exitMs)} y1={PAD.t} y2={height - PAD.b} stroke={C.textDim} strokeWidth={1} strokeDasharray="4 3" />
               <text x={x(exitMs) + 5} y={PAD.t + 21} fill={C.textDim} fontSize={10} fontWeight={700}>
                 SELL {fmtIstHm(exitMs)}
               </text>
@@ -174,9 +191,9 @@ export default function CandleChart({ feed, marks }: { feed: IntradayFeed; marks
             </g>
           )}
           {h && (
-            <line x1={x(h.t) + slot / 2} x2={x(h.t) + slot / 2} y1={PAD.t} y2={H - PAD.b} stroke={C.muted2} strokeWidth={1} pointerEvents="none" />
+            <line x1={x(h.t) + slot / 2} x2={x(h.t) + slot / 2} y1={PAD.t} y2={height - PAD.b} stroke={C.muted2} strokeWidth={1} pointerEvents="none" />
           )}
-          <rect x={PAD.l} y={0} width={innerW} height={H} fill="transparent" onPointerMove={onMove} onPointerLeave={() => setHover(null)} />
+          <rect x={PAD.l} y={0} width={innerW} height={height} fill="transparent" onPointerMove={onMove} onPointerLeave={() => setHover(null)} />
         </svg>
       )}
       {h && hover != null && width > 0 && (

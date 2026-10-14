@@ -9,6 +9,7 @@ import { computeFeatures } from "../market/features";
 import type { EngineDeps } from "../ports";
 import { combineConviction } from "../strategy/conviction";
 import { recordAdvice } from "../strategy/advice";
+import { refreshSetups } from "./setupsCycle";
 import { planEntry } from "../strategy/planner";
 import { publishedConviction, publishedSignal } from "../strategy/published";
 import { classifyRegime } from "../strategy/regime";
@@ -166,6 +167,12 @@ export async function runTradingCycle(deps: EngineDeps, opts: TradingCycleOption
       if (await shouldPersistDecision(deps, decision, opts.decisionEveryMs ?? 5 * MINUTE_MS)) await repo.decisions.append(decision);
       // Live ENTER/WAIT advice for the dashboard while the measured-edge check pauses the book (kv only).
       await recordAdvice(repo, decision, f.spot, cfg);
+      // Level-based trade setups for the dashboard (kv only; decision support, never an entry).
+      try {
+        await refreshSetups(deps, index, f, snap, regime, calendar);
+      } catch (err) {
+        logger.warn("setups error", { index, error: err instanceof Error ? err.message : String(err) });
+      }
 
       if (decision.plan && phase === "OPEN" && !halt && !noEntries) {
         const { order, position } = await submitEntry(deps, decision.plan, p);

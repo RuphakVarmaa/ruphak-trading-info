@@ -179,6 +179,21 @@ describe("read model", () => {
     expect((await model.getSignals())[0].advice).toBeNull();
   });
 
+  it("attaches the trade-setup board, and drops one older than 3 minutes or from another session", async () => {
+    const { repo, model } = await setup();
+    await repo.decisions.append({ id: "d1", index: "NIFTY", t: NOW - 20_000, conviction: conviction(0.1), gates: [], plan: null, contract: null, refPremium: null, expectedMovePct: null, impliedMovePct: null, edgeRatio: null, noPlanReason: null });
+    const setup1 = { id: "2026-10-07:NIFTY:ORB:BULL", status: "WATCHING", trigger: 22540 };
+    const record = { t: NOW - 30_000, index: "NIFTY", session: "2026-10-07", spot: 22512, setups: [setup1], levels: [{ price: 22540, label: "ORH", kinds: ["ORH"], strength: 2 }], note: null };
+    await repo.state.set("setups:latest:NIFTY", record);
+    const [sig] = await model.getSignals();
+    expect(sig.setups).toEqual([setup1]);
+    expect(sig.levels?.[0]).toMatchObject({ label: "ORH" });
+    await repo.state.set("setups:latest:NIFTY", { ...record, t: NOW - 4 * 60_000 });
+    expect((await model.getSignals())[0]).toMatchObject({ setups: [], levels: [] });
+    await repo.state.set("setups:latest:NIFTY", { ...record, session: "2026-10-06" });
+    expect((await model.getSignals())[0].setups).toEqual([]);
+  });
+
   it("maps positions with stop, target and trail levels", () => {
     const v = positionView(position());
     expect(v).toMatchObject({ stopPrice: 70, targetPrice: 150, ltp: 120, pnl: 1272, qty: 65, openedAt: "2026-10-07T10:30:00+05:30" });

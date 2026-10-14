@@ -75,6 +75,7 @@ import {
 import { copyTicketView } from "@/engine/copy/copyTicket";
 import type { Position, TradePlan } from "@/engine/types";
 import { buildMockChain, weeklyExpiries } from "./mockChain";
+import { mockSetups } from "./mockSetups";
 import { simulateBacktest } from "./mockBacktest";
 import { clamp, gauss, hashString, mulberry32, round2 } from "./random";
 
@@ -754,6 +755,7 @@ export class MockEngineApi implements EngineApi {
       position: pos ? this.positionView(pos, now) : null,
       indicators: seed.indicators,
       advice: null,
+      ...mockSetups(seed.index, this.spot(seed.index), now),
     };
   }
 
