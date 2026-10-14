@@ -10,7 +10,13 @@ const NO_STORE = { "Cache-Control": "no-store" };
 /** Epoch milliseconds (13 digits until the year 2286). */
 const EPOCH_MS = /^\d{13}$/;
 
-const loadBrokerLevels = async () => (await getEngineApi()).api.getLiveIndices();
+// Simulated mock levels are used only when the mock is asked for explicitly (ENGINE_MOCK=1), never
+// layered over real Yahoo prices because the engine binding happens to be missing.
+const loadBrokerLevels = async () => {
+  const { api, source } = await getEngineApi();
+  if (source === "mock" && process.env.ENGINE_MOCK !== "1") throw new Error("no engine binding: broker levels unavailable");
+  return api.getLiveIndices();
+};
 
 /**
  * GET /api/market/live[?since=<epoch ms>] -> NIFTY 50 and SENSEX 1-minute bars with India VIX
