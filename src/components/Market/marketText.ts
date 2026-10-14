@@ -3,7 +3,7 @@
  * previous close and the market-phase sentence. Pure, so it is unit-tested.
  */
 import { fmtIstDay, fmtIstHm, fmtNum, fmtPct } from "@/components/shared/format";
-import { LAGGING_TRADE_MS, LIVE_POLL_MS, OFFLINE_AFTER_MS, type Freshness, type LiveIndex, type LiveIndicesFeed, type LiveVix } from "@/lib/market/liveIndices";
+import { feedName, LAGGING_TRADE_MS, LIVE_POLL_MS, OFFLINE_AFTER_MS, type Freshness, type LiveIndex, type LiveIndicesFeed, type LiveVix } from "@/lib/market/liveIndices";
 
 export { LAGGING_TRADE_MS };
 
@@ -53,7 +53,7 @@ export interface EntryFreshness {
  */
 export function entryFreshness(
   feed: LiveIndicesFeed | null,
-  entry: Pick<LiveIndex, "asOf" | "stale" | "fetchedAt"> | null,
+  entry: Pick<LiveIndex, "asOf" | "stale" | "fetchedAt" | "feed"> | null,
   freshness: Freshness,
   ageMs: number | null,
 ): EntryFreshness {
@@ -72,7 +72,7 @@ export function entryFreshness(
   if (feed.marketPhase === "OPEN" && entry) {
     const tradeAge = served - Date.parse(entry.asOf);
     if (Number.isFinite(tradeAge) && tradeAge > LAGGING_TRADE_MS) {
-      return { freshness: "stale", ageMs: tradeAge + ageMs, note: `No new trade from Yahoo Finance for ${fmtFeedAge(tradeAge + ageMs)}.` };
+      return { freshness: "stale", ageMs: tradeAge + ageMs, note: `No new trade from ${feedName(entry.feed)} for ${fmtFeedAge(tradeAge + ageMs)}.` };
     }
   }
   if (freshness === "stale") return { freshness, ageMs, note: `No update from the server for ${fmtFeedAge(ageMs)}.` };

@@ -6,8 +6,32 @@
 
 export type LiveIndexId = "NIFTY" | "SENSEX";
 
-/** Source of a previous close: Yahoo's daily chart, or the previous trading day's last 5-minute bar. */
-export type PrevCloseSource = "daily" | "intraday";
+/**
+ * Source of a previous close: Yahoo's daily chart, the previous trading day's last 5-minute bar, or the
+ * broker's own previous close (when the price came from the broker feed).
+ */
+export type PrevCloseSource = "daily" | "intraday" | "broker";
+
+/**
+ * Where a price came from: the broker's live feed through the engine ("upstox"; "mock" under the mock
+ * engine), or Yahoo's 1-minute charts. Absent means "yahoo" (payloads from before the broker feed).
+ */
+export type LiveQuoteFeed = "upstox" | "mock" | "yahoo";
+
+/** Human-readable sources for the feed's `source` and the entries' `source`. */
+export const BROKER_SOURCE = "Upstox (NSE/BSE live)";
+export const MOCK_BROKER_SOURCE = "Mock engine (simulated levels)";
+
+/** Short name of a quote's feed for sentences ("No new trade from Upstox for 4 min"). */
+export function feedName(feed: LiveQuoteFeed | undefined): string {
+  return feed === "upstox" ? "Upstox" : feed === "mock" ? "the mock engine" : "Yahoo Finance";
+}
+
+/** The feeds behind a payload's indices for a badge: "Upstox", "Yahoo Finance", or "Upstox + Yahoo Finance". */
+export function feedNamesOf(data: Pick<LiveIndicesFeed, "indices">): string {
+  const names = [...new Set(data.indices.map((i) => feedName(i.feed)))].map((n) => n.charAt(0).toUpperCase() + n.slice(1));
+  return names.length > 0 ? names.join(" + ") : "Yahoo Finance";
+}
 
 /** One 1-minute bar; `t` is the bar's open time in epoch ms. Index volume is always 0 on Yahoo. */
 export interface LiveIndexBar {
@@ -66,6 +90,10 @@ export interface LiveIndex {
   stale?: boolean;
   /** ISO time of the upstream fetch this entry came from. */
   fetchedAt?: string;
+  /** Where `price` (and `asOf`) came from; absent means "yahoo". */
+  feed?: LiveQuoteFeed;
+  /** Human-readable source of this entry, e.g. "Upstox (NSE/BSE live)"; absent means the feed's `source`. */
+  source?: string;
   /**
    * Set only in a `?since=` update: `bars` then holds just the bars from this time (epoch ms) on, and the
    * earlier ones are unchanged (see mergeBars). useLiveIndices merges them, so its data never carries it.
@@ -87,6 +115,18 @@ export interface LiveVix {
   stale?: boolean;
   /** ISO time of the upstream fetch this value came from. */
   fetchedAt?: string;
+  /** As on LiveIndex. */
+  feed?: LiveQuoteFeed;
+  source?: string;
+}
+
+/** How the broker feed fared for this payload (absent on payloads built without it). */
+export interface LiveBrokerStatus {
+  /** "live": at least one level used; "stale": its levels were older than BROKER_MAX_AGE_MS; "error": failed or empty. */
+  status: "live" | "stale" | "error";
+  /** ISO time the engine read the broker, when known. */
+  fetchedAt: string | null;
+  error: string | null;
 }
 
 export interface LiveIndicesFeed {
@@ -95,7 +135,10 @@ export interface LiveIndicesFeed {
   vix: LiveVix | null;
   /** Market phase by the exchange calendar at `generatedAt`. */
   marketPhase: "PRE_OPEN" | "OPEN" | "CLOSED" | "HOLIDAY";
-  /** Human-readable source, e.g. "Yahoo Finance · about 1–2 min delayed". */
+  /**
+   * Human-readable source, e.g. "Upstox (NSE/BSE live)" or "Yahoo Finance 1-minute charts · may lag the
+   * exchange"; when the indices come from different feeds, both (see each entry's `feed`).
+   */
   source: string;
   /** ISO time the server built this payload. */
   generatedAt: string;
@@ -109,6 +152,8 @@ export interface LiveIndicesFeed {
   holidayName?: string | null;
   /** IST ISO time of the next session open (09:15) by the exchange calendar. */
   nextOpenAt?: string;
+  /** The broker feed's state for this payload (see LiveBrokerStatus). */
+  broker?: LiveBrokerStatus;
 }
 
 /** Client poll interval while the market is open or in pre-open, and otherwise. */
@@ -117,8 +162,14 @@ export const IDLE_POLL_MS = 30_000;
 /** Feed age (since the last good response) at which the UI turns orange, then red. */
 export const STALE_AFTER_MS = 10_000;
 export const OFFLINE_AFTER_MS = 60_000;
-/** While the market is open, an index whose last trade is older than this (against the payload time) is stale. */
+/**
+ * While the market is open, an index whose last trade is older than this (against the payload time) is stale.
+ * A broker quote's `asOf` is the time the engine read the broker, so it stays fresh while that feed is live;
+ * broker levels older than BROKER_MAX_AGE_MS are dropped for Yahoo's, whose own trade time then applies.
+ */
 export const LAGGING_TRADE_MS = 3 * 60_000;
+/** Broker levels read longer ago than this (against the request time) are not used. */
+export const BROKER_MAX_AGE_MS = 30_000;
 
 export type Freshness = "loading" | "live" | "stale" | "offline";
 

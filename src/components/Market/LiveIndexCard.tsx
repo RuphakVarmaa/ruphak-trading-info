@@ -6,7 +6,7 @@ import { fmtIstDay, fmtIstTime, fmtNum } from "@/components/shared/format";
 import { SERIF } from "@/components/shared/theme";
 import { Dot, Panel } from "@/components/shared/ui";
 import { useClientNow } from "@/hooks/useEngineState";
-import { istTimeOn, type Freshness, type LiveIndex } from "@/lib/market/liveIndices";
+import { feedName, istTimeOn, type Freshness, type LiveIndex } from "@/lib/market/liveIndices";
 import { istDay } from "./chartGeometry";
 import FreshnessBadge from "./FreshnessBadge";
 import { changeText, closedLabel, rangeText } from "./marketText";
@@ -81,7 +81,12 @@ export default function LiveIndexCard({
           {index.prevClose != null ? (
             <>
               vs previous close {fmtNum(index.prevClose)} (
-              {index.prevCloseSource === "intraday" ? "last 5-minute bar of the previous session; Yahoo's daily close is not out yet" : "Yahoo daily chart"})
+              {index.prevCloseSource === "broker"
+                ? feedName(index.feed)
+                : index.prevCloseSource === "intraday"
+                  ? "last 5-minute bar of the previous session; Yahoo's daily close is not out yet"
+                  : "Yahoo daily chart"}
+              )
             </>
           ) : (
             <>Previous close not available yet from Yahoo, so no change is shown.</>
@@ -89,7 +94,7 @@ export default function LiveIndexCard({
         </div>
 
         <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(min(100%, 230px), 1fr))", columnGap: 20 }}>
-          <Stat label="Day range" value={rangeText(index.low, index.high)} title="Low and high of the session as Yahoo reports them" />
+          <Stat label="Day range" value={rangeText(index.low, index.high)} title={`Low and high of the session as ${feedName(index.feed)} reports them`} />
           <Stat label="VWAP" value={index.vwap != null ? fmtNum(index.vwap) : "—"} title="Mean typical price of the 1-minute bars (index volume is 0, so bars weigh the same)" />
           <Stat label="Opening range" value={or ? rangeText(or.low, or.high) : orForming ? "Forms by 09:30 IST" : "—"} title="Low and high of 09:15–09:29 IST" />
           <Stat label="Open" value={index.open != null ? fmtNum(index.open) : "—"} />
@@ -105,7 +110,7 @@ export default function LiveIndexCard({
         {children != null && <div style={{ minWidth: 0 }}>{children}</div>}
 
         <div className="tnum" style={{ fontSize: 12, color: C.muted2, lineHeight: 1.5 }}>
-          Last trade {fmtIstTime(index.asOf)} IST, {fmtIstDay(index.asOf)} · {source}
+          {index.feed === "upstox" || index.feed === "mock" ? "Price read" : "Last trade"} {fmtIstTime(index.asOf)} IST, {fmtIstDay(index.asOf)} · {index.source ?? source}
         </div>
       </div>
     </Panel>

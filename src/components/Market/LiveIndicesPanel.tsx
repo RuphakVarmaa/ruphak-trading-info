@@ -8,7 +8,7 @@ import { SERIF } from "@/components/shared/theme";
 import { Dot, EmptyState, Panel, Skeleton } from "@/components/shared/ui";
 import { useClientNow } from "@/hooks/useEngineState";
 import { useLiveIndices } from "@/hooks/useLiveIndices";
-import { LIVE_POLL_MS, pollIntervalFor, type LiveIndexId } from "@/lib/market/liveIndices";
+import { feedNamesOf, LIVE_POLL_MS, pollIntervalFor, type LiveIndexId } from "@/lib/market/liveIndices";
 import { istDay } from "./chartGeometry";
 import FreshnessBadge from "./FreshnessBadge";
 import LiveIndexCard from "./LiveIndexCard";
@@ -82,7 +82,7 @@ export default function LiveIndicesPanel() {
             {data ? phaseSentence(data) : `1-minute index bars from Yahoo Finance, refreshed every ${LIVE_POLL_MS / 1000} s while the market is open.`}
           </p>
         </div>
-        <FreshnessBadge freshness={feed.freshness} ageMs={feed.ageMs} source={data ? "Yahoo Finance" : undefined} closed={closed} />
+        <FreshnessBadge freshness={feed.freshness} ageMs={feed.ageMs} source={data ? feedNamesOf(data) : undefined} closed={closed} />
       </div>
 
       {status && (

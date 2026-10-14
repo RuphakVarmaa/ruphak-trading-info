@@ -20,8 +20,10 @@
 import type { CopyTicketView, GateResult, IndexId, OrderReason, PositionView, Regime, SessionPhase, SignalAdviceView, SignalView } from "@/engine/api-types";
 import { DEFAULT_CONFIG } from "@/engine/config";
 import { istParts } from "@/lib/ist";
-import { LAGGING_TRADE_MS, type Freshness, type LiveIndicesFeed } from "@/lib/market/liveIndices";
+import { feedName, LAGGING_TRADE_MS, type Freshness, type LiveIndicesFeed } from "@/lib/market/liveIndices";
 import { buyLimit, ceilTick, floorTick, indexLevel, indexPrice, rupees, wholeRupees } from "./prices";
+
+const capitalize = (s: string): string => s.charAt(0).toUpperCase() + s.slice(1);
 
 /** A trade younger than this can still be copied (if the index has not run past its skip level). */
 export const ENTER_WINDOW_MS = 10 * 60_000;
@@ -66,6 +68,8 @@ export interface FeedInput {
   sourceStale?: boolean;
   /** While the market is open: how long this index has gone without a new trade, when over LAGGING_TRADE_MS (else null). */
   tradeLagMs?: number | null;
+  /** Short name of the feed this index's price came from ("Upstox", "Yahoo Finance"); default Yahoo Finance. */
+  sourceName?: string;
   /** The tab is in the background, where the feed does not poll. */
   hidden?: boolean;
 }
@@ -82,6 +86,8 @@ export interface LiveFeedState {
 export function feedInput(live: LiveFeedState, index: IndexId, hidden: boolean): FeedInput {
   const quote = live.data?.indices.find((i) => i.index === index) ?? null;
   // A quote can keep arriving on time with a frozen price: judge the last trade against the payload time.
+  // A broker quote's asOf is when the engine read the broker (the server drops broker levels older than
+  // BROKER_MAX_AGE_MS for Yahoo's), so this pauses only when the feed in use has gone quiet.
   const tradeAge = quote && live.data?.marketPhase === "OPEN" ? Date.parse(live.data.generatedAt) - Date.parse(quote.asOf) : NaN;
   return {
     tradeLagMs: Number.isFinite(tradeAge) && tradeAge > LAGGING_TRADE_MS ? tradeAge : null,
@@ -90,6 +96,7 @@ export function feedInput(live: LiveFeedState, index: IndexId, hidden: boolean):
     price: quote?.price ?? null,
     error: live.error != null,
     sourceStale: live.data?.stale === true || quote?.stale === true,
+    ...(quote ? { sourceName: feedName(quote.feed) } : {}),
     hidden,
   };
 }
@@ -603,7 +610,7 @@ function pauseReason(input: ActionInput): { headline: string; sentence: string; 
   if (f.sourceStale) return { headline: "PAUSED — live feed stale (its source stopped updating)", sentence: `The live ${index} price is being repeated from an earlier fetch.`, quiet: false };
   if (f.tradeLagMs != null) {
     const lag = shortAge(f.tradeLagMs);
-    return { headline: `PAUSED — no new ${index} trade for ${lag}`, sentence: `Yahoo Finance has sent no new ${index} price for ${lag}, so the skip check cannot be confirmed.`, quiet: false };
+    return { headline: `PAUSED — no new ${index} trade for ${lag}`, sentence: `${capitalize(f.sourceName ?? "Yahoo Finance")} has sent no new ${index} price for ${lag}, so the skip check cannot be confirmed.`, quiet: false };
   }
   if (f.price == null || !(f.price > 0)) return { headline: `PAUSED — no live ${index} price`, sentence: `The live feed has no ${index} price right now.`, quiet: false };
   if (input.ticketsAgeMs == null || input.ticketsAgeMs > TICKETS_MAX_AGE_MS) {
