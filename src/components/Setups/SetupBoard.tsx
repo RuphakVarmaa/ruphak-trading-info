@@ -6,7 +6,8 @@
  * index levels and premiums, why, and what kills it. Decision support only; nothing is ordered.
  */
 import { chainPollMs } from "@/components/Options/chainView";
-import { useEffect } from "react";
+import { REFRESH_OTHER_MS } from "@/lib/refresh";
+import { useEffect, useState } from "react";
 import type { IndexId, SignalView, TradeSetupStatus, TradeSetupView } from "@/engine/api-types";
 import { alpha, C } from "@/components/shared/colors";
 import { fmtIstHm, fmtNum } from "@/components/shared/format";
@@ -204,8 +205,20 @@ function useSetupAlerts(signals: SignalView[] | null) {
   }, [keys, on]);
 }
 
+/** The poll interval for the market's state now (2 s open, 10 min closed), re-checked every minute. */
+function usePollMs(): number {
+  const [ms, setMs] = useState(REFRESH_OTHER_MS);
+  useEffect(() => {
+    const update = () => setMs(chainPollMs(Date.now()));
+    update();
+    const t = setInterval(update, 60_000);
+    return () => clearInterval(t);
+  }, []);
+  return ms;
+}
+
 export default function SetupBoard() {
-  const poll = useSharedPoll<SignalView[]>("/api/engine/signals", chainPollMs(Date.now()));
+  const poll = useSharedPoll<SignalView[]>("/api/engine/signals", usePollMs());
   useSetupAlerts(poll.data);
   return (
     <section aria-label="Trade setups" style={{ display: "grid", gap: 10, minWidth: 0 }}>
