@@ -104,7 +104,7 @@ function quoteSourceOf(plan: TradePlan | null): Quote["source"] | null {
   if (!plan) return null;
   if (plan.quoteSource) return plan.quoteSource;
   const detail = plan.gates.find((g) => g.gate === "quote")?.detail ?? "";
-  return detail.startsWith("groww") ? "groww" : detail.startsWith("synthetic") ? "synthetic" : null;
+  return detail.startsWith("groww") ? "groww" : detail.startsWith("upstox") ? "upstox" : detail.startsWith("synthetic") ? "synthetic" : null;
 }
 
 const hm = (ms: number) => {
@@ -177,7 +177,8 @@ export function copyTicketView(i: CopyTicketInput): CopyTicketView {
   const tick = c.tickSize > 0 ? c.tickSize : 0.05;
   const { stop, target, trailActivateAt } = entryLevels(p.avgEntry, tick, p.stops);
   const risk = (p.avgEntry - stop) * entryQty + p.entryCharges + computeCharges("SELL", stop, entryQty, c.exchange, istDate(p.entryMs)).total;
-  const priceSource = quoteSourceOf(plan) === "groww" ? "broker" : "model";
+  const source = quoteSourceOf(plan);
+  const priceSource = source === "groww" || source === "upstox" ? "broker" : "model";
   const open = p.status === "OPEN";
   const mark = p.markPremium > 0 ? p.markPremium : p.avgEntry;
   const rawTrail = open ? trailPrice(p) : null;

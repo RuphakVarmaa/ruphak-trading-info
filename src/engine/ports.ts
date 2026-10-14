@@ -194,7 +194,7 @@ export interface OptionChainRow {
 
 /** Live (or synthetic) option prices. */
 export interface OptionQuoteSource {
-  readonly kind: "groww" | "synthetic" | "replay";
+  readonly kind: "groww" | "upstox" | "synthetic" | "replay";
   quote(contract: OptionContract, ctx: { t: number; spot: number; vix: number }): Promise<Quote>;
   chain?(index: IndexId, expiry: string): Promise<{ underlyingLtp: number; rows: OptionChainRow[] }>;
 }
