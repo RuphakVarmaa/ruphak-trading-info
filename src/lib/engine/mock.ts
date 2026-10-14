@@ -74,6 +74,7 @@ import {
 } from "./fixtures";
 import { copyTicketView } from "@/engine/copy/copyTicket";
 import type { Position, TradePlan } from "@/engine/types";
+import { buildMockChain, weeklyExpiries } from "./mockChain";
 import { simulateBacktest } from "./mockBacktest";
 import { clamp, gauss, hashString, mulberry32, round2 } from "./random";
 
@@ -946,11 +947,17 @@ export class MockEngineApi implements EngineApi {
     return clone(buildTodayPlan({ nowMs: now, calendar: defaultCalendar, cfg, snapshot: null }));
   }
 
-  // TODO(agent D): a synthetic option chain and index levels for the mock.
+  /** A synthetic chain on the mock's own spot (see mockChain.ts): BS premiums, put skew, OI near round strikes. */
   async getOptionChain(index: IndexId, expiry?: string): Promise<OptionChainView> {
-    this.read();
-    void expiry;
-    return { index, expiry: "", expiries: [], lotSize: 0, spot: 0, atmStrike: 0, pcr: null, maxPain: null, rows: [], fetchedAt: new Date().toISOString(), source: "mock", error: "not implemented" };
+    const now = this.read();
+    return buildMockChain({
+      index,
+      spot: this.spot(index),
+      prevSpot: this.quoteSeed(index).prevClose,
+      nowMs: now,
+      expiries: weeklyExpiries(index, now, isMockHoliday),
+      expiry,
+    });
   }
 
   async getLiveIndices(): Promise<LiveIndexLevelsView> {

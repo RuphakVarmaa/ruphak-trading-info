@@ -33,14 +33,16 @@ export function ModeBadge({ mode, title }: { mode: EngineMode; title?: string })
   );
 }
 
-type Page = "desk" | "live" | "copy" | "backtest" | "metals";
+type Page = "desk" | "live" | "copy" | "options" | "backtest" | "metals" | "learn";
 
 const NAV: { href: string; label: string; page: Page }[] = [
   { href: "/", label: "Desk", page: "desk" },
   { href: "/live", label: "Live P&L", page: "live" },
   { href: "/copy", label: "Copy trade", page: "copy" },
+  { href: "/options", label: "Options", page: "options" },
   { href: "/backtest", label: "Backtest", page: "backtest" },
   { href: "/metals", label: "Metals", page: "metals" },
+  { href: "/learn", label: "Learn", page: "learn" },
 ];
 
 export default function SiteHeader({
