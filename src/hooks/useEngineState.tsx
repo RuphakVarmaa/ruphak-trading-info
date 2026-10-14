@@ -2,13 +2,14 @@
 
 /**
  * EngineProvider polls the /api/engine/* route handlers in three tiers:
- *   FAST  state, signals, positions              5 s while the market is OPEN/PRE_OPEN, else 30 s
- *   SLOW  events, orders, pnl, performance, plan 60 s
+ *   FAST  state, signals, positions              2 s while the market is OPEN/PRE_OPEN, else 10 min (src/lib/refresh.ts)
+ *   SLOW  events, orders, pnl, performance, plan same as FAST
  *   CAL   scheduled                              5 min
  * Each tier uses Promise.allSettled, pauses while the tab is hidden, refetches when it
  * becomes visible, and backs off (doubling, capped) while every request in it fails.
  * Last good data is never dropped. useNow() ticks once a second for countdown leaves only.
  */
+import { REFRESH_CLOSED_MS, REFRESH_OTHER_MS } from "@/lib/refresh";
 import {
   createContext,
   useCallback,
@@ -32,8 +33,8 @@ export const SCHEDULED_HOURS = 192;
 export const EVENTS_LIMIT = 60;
 export const PNL_DAYS = 30;
 
-const FAST_ACTIVE_MS = 5_000;
-const FAST_IDLE_MS = 30_000;
+const FAST_ACTIVE_MS = REFRESH_OTHER_MS;
+const FAST_IDLE_MS = REFRESH_CLOSED_MS;
 const BASE_MS: Record<Exclude<TierName, "fast">, number> = { slow: 60_000, cal: 300_000 };
 const CAP_MS: Record<TierName, number> = { fast: 60_000, slow: 180_000, cal: 600_000 };
 /** Client clocks within this distance of the engine clock are trusted as-is. */
@@ -202,7 +203,8 @@ export function EngineProvider({ initial, account, children }: { initial: Engine
     const timers: Record<TierName, ReturnType<typeof setTimeout> | null> = { fast: null, slow: null, cal: null };
     const inflight: Record<TierName, boolean> = { fast: false, slow: false, cal: false };
 
-    const baseInterval = (tier: TierName) => (tier === "fast" ? fastInterval(phaseRef.current) : BASE_MS[tier]);
+    // Open market: the SLOW tier refreshes as often as FAST (the owner's 2 s); closed: the 10-minute rate.
+    const baseInterval = (tier: TierName) => (tier === "fast" || tier === "slow" ? fastInterval(phaseRef.current) : BASE_MS[tier]);
 
     const publish = () => {
       setTiers(cloneMeta(metaRef.current));

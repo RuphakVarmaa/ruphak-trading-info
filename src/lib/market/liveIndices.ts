@@ -157,8 +157,8 @@ export interface LiveIndicesFeed {
 }
 
 /** Client poll interval while the market is open or in pre-open, and otherwise. */
-export const LIVE_POLL_MS = 1500;
-export const IDLE_POLL_MS = 30_000;
+export const LIVE_POLL_MS = REFRESH_IMPORTANT_MS;
+export const IDLE_POLL_MS = REFRESH_CLOSED_MS;
 /** Feed age (since the last good response) at which the UI turns orange, then red. */
 export const STALE_AFTER_MS = 10_000;
 export const OFFLINE_AFTER_MS = 60_000;
@@ -265,4 +265,5 @@ export function openingRangeOf(bars: readonly LiveIndexBar[], session: string): 
   const window = bars.filter((b) => b.t >= start && b.t < end);
   if (window.length === 0 || !bars.some((b) => b.t >= end)) return null;
   return { high: Math.max(...window.map((b) => b.h)), low: Math.min(...window.map((b) => b.l)) };
-}
+}import { REFRESH_CLOSED_MS, REFRESH_IMPORTANT_MS } from "@/lib/refresh";
+

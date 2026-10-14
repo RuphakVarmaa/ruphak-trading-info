@@ -4,6 +4,7 @@
  * /options: the live option chain for NIFTY or SENSEX (read-only), Groww style, with the engine's live
  * reading on top: when it says ENTER, that contract is highlighted on the chain.
  */
+import { REFRESH_CLOSED_MS, REFRESH_IMPORTANT_MS } from "@/lib/refresh";
 import Link from "next/link";
 import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import type { IndexId, LiveIndexLevelsView, OptionChainView, SignalView } from "@/engine/api-types";
@@ -39,8 +40,8 @@ export default function OptionsDesk({ initialIndex, initialExpiry }: { initialIn
   const [clockOffset, setClockOffset] = useState(0);
   const pollMs = chainPollMs(now + clockOffset);
   const chainPoll = useSharedPoll<OptionChainView>(url, pollMs);
-  const signalsPoll = useSharedPoll<SignalView[]>("/api/engine/signals", Math.max(pollMs, 5_000));
-  const levelsPoll = useSharedPoll<LiveIndexLevelsView>("/api/engine/live-indices", Math.max(pollMs, 5_000));
+  const signalsPoll = useSharedPoll<SignalView[]>("/api/engine/signals", pollMs);
+  const levelsPoll = useSharedPoll<LiveIndexLevelsView>("/api/engine/live-indices", pollMs === REFRESH_CLOSED_MS ? pollMs : REFRESH_IMPORTANT_MS);
   const chain = chainPoll.data && chainPoll.data.index === index && (!expiry || chainPoll.data.expiry === expiry) ? chainPoll.data : null;
 
   const fetchedAt = chain?.fetchedAt ?? null;

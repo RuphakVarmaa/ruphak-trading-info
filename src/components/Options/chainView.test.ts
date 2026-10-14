@@ -63,8 +63,8 @@ describe("market hours and polling", () => {
     expect(isMarketHours(istAt("2026-10-14", "09:14"))).toBe(false);
     expect(isMarketHours(istAt("2026-10-14", "15:30"))).toBe(false);
     expect(isMarketHours(istAt("2026-10-17", "11:00"))).toBe(false); // Saturday
-    expect(chainPollMs(istAt("2026-10-14", "11:42"))).toBe(3_000);
-    expect(chainPollMs(istAt("2026-10-14", "20:00"))).toBe(60_000);
+    expect(chainPollMs(istAt("2026-10-14", "11:42"))).toBe(2_000);
+    expect(chainPollMs(istAt("2026-10-14", "20:00"))).toBe(600_000);
   });
 });
 

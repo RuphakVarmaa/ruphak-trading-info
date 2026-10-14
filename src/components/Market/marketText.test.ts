@@ -118,7 +118,7 @@ describe("numbers in words", () => {
 
 describe("sentences", () => {
   it("says what the market is doing and which session the bars are", () => {
-    expect(phaseSentence(feed())).toBe("Market open. 1-minute bars, refreshed every 1.5 s.");
+    expect(phaseSentence(feed())).toBe("Market open. 1-minute bars, refreshed every 1 s.");
     const after = feed({ marketPhase: "CLOSED", generatedAt: "2026-10-08T19:11:00.000Z" }); // 00:41 IST on 10-09
     expect(phaseSentence(after)).toBe("Market closed. Showing the Thu 08 Oct session. Next open Fri 09 Oct, 09:15 IST.");
     expect(phaseSentence(feed({ marketPhase: "CLOSED" }))).toBe("Market closed. Showing today's session. Next open Fri 09 Oct, 09:15 IST.");

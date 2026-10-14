@@ -69,11 +69,11 @@ describe("pure helpers", () => {
     expect(freshnessOf(0, 60_001)).toBe("offline");
   });
 
-  it("does not call a feed stale between its own 30-second polls while the market is closed", () => {
-    expect(freshnessOf(0, 29_000, IDLE_POLL_MS)).toBe("live");
-    expect(freshnessOf(0, 38_500, IDLE_POLL_MS)).toBe("live");
-    expect(freshnessOf(0, 38_501, IDLE_POLL_MS)).toBe("stale");
-    expect(freshnessOf(0, 88_501, IDLE_POLL_MS)).toBe("offline");
+  it("does not call a feed stale between its own 10-minute polls while the market is closed", () => {
+    expect(freshnessOf(0, 599_000, IDLE_POLL_MS)).toBe("live");
+    expect(freshnessOf(0, 609_000, IDLE_POLL_MS)).toBe("live");
+    expect(freshnessOf(0, 609_001, IDLE_POLL_MS)).toBe("stale");
+    expect(freshnessOf(0, 659_001, IDLE_POLL_MS)).toBe("offline");
     expect(freshnessOf(0, 10_001, LIVE_POLL_MS)).toBe("stale");
   });
 

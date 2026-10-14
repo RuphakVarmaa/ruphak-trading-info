@@ -6,6 +6,7 @@
  * turned into one decisive action per index by deriveIndexAction(). It needs only the EngineProvider
  * and the live feed, so the action strip works on any page that has them.
  */
+import { REFRESH_CLOSED_MS, REFRESH_IMPORTANT_MS } from "@/lib/refresh";
 import { useEffect, useMemo } from "react";
 import type { CopyTicketView, EngineStateDTO, IndexId, PositionView, SessionPhase, SignalView } from "@/engine/api-types";
 import { useClientNow, useEngineState, useNow, type ConnectionStatus } from "@/hooks/useEngineState";
@@ -18,8 +19,8 @@ import { useSharedPoll, type PollState } from "./sharedPoll";
 export const INDICES: readonly IndexId[] = ["NIFTY", "SENSEX"];
 
 /** Ticket polls: every 5 s from pre-open to the close, every minute otherwise. */
-const ACTIVE_POLL_MS = 5_000;
-const IDLE_POLL_MS = 60_000;
+const ACTIVE_POLL_MS = REFRESH_IMPORTANT_MS;
+const IDLE_POLL_MS = REFRESH_CLOSED_MS;
 
 export interface CopyAccount {
   id: string;

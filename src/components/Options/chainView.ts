@@ -1,4 +1,5 @@
 /** Pure helpers for the /options chain (no React), unit-tested in chainView.test.ts. */
+import { REFRESH_CLOSED_MS, REFRESH_OTHER_MS } from "@/lib/refresh";
 import type { IndexId, OptionChainRowView, SignalAdviceView, SignalView } from "@/engine/api-types";
 import { istParts, SESSION } from "@/lib/ist";
 
@@ -79,7 +80,7 @@ export function isMarketHours(nowMs: number): boolean {
 }
 
 /** Poll every 3 s in market hours, every 60 s otherwise. */
-export const chainPollMs = (nowMs: number) => (isMarketHours(nowMs) ? 3_000 : 60_000);
+export const chainPollMs = (nowMs: number) => (isMarketHours(nowMs) ? REFRESH_OTHER_MS : REFRESH_CLOSED_MS);
 
 const MON = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
 
