@@ -22,6 +22,9 @@ import type {
   ScheduledEventView,
   SignalPerformanceRow,
   SignalView,
+  IndexId,
+  LiveIndexLevelsView,
+  OptionChainView,
   TodayPlanView,
 } from "../../../src/engine/api-types";
 import { parseAccountId, type AccountId } from "../../../src/engine/accounts";
@@ -114,6 +117,14 @@ export class EngineAdmin extends WorkerEntrypoint<Env> implements EngineApi {
   }
   getTodayPlan(): Promise<TodayPlanView> {
     return this.model().getTodayPlan();
+  }
+  // TODO(agent A): live Upstox option chain and index levels.
+  async getOptionChain(index: IndexId, expiry?: string): Promise<OptionChainView> {
+    void expiry;
+    return { index, expiry: "", expiries: [], lotSize: 0, spot: 0, atmStrike: 0, pcr: null, maxPain: null, rows: [], fetchedAt: new Date().toISOString(), source: "upstox", error: "not implemented" };
+  }
+  async getLiveIndices(): Promise<LiveIndexLevelsView> {
+    return { fetchedAt: new Date().toISOString(), source: "upstox", levels: [], error: "not implemented" };
   }
   getBacktest(runId: string): Promise<BacktestResult | null> {
     return getBacktest(this.env, String(runId));

@@ -38,6 +38,8 @@ import type {
   SourceHealthView,
   SourceName,
   SuggestedContract,
+  LiveIndexLevelsView,
+  OptionChainView,
   TodayPlanView,
 } from "@/engine/api-types";
 import { defaultCalendar } from "@/engine/calendar/calendar";
@@ -917,6 +919,18 @@ export class MockEngineApi implements EngineApi {
     const now = this.read();
     const cfg = { ...DEFAULT_CONFIG, gates: { ...DEFAULT_CONFIG.gates, expectedMoveModel: "calibrated" as const } };
     return clone(buildTodayPlan({ nowMs: now, calendar: defaultCalendar, cfg, snapshot: null }));
+  }
+
+  // TODO(agent D): a synthetic option chain and index levels for the mock.
+  async getOptionChain(index: IndexId, expiry?: string): Promise<OptionChainView> {
+    this.read();
+    void expiry;
+    return { index, expiry: "", expiries: [], lotSize: 0, spot: 0, atmStrike: 0, pcr: null, maxPain: null, rows: [], fetchedAt: new Date().toISOString(), source: "mock", error: "not implemented" };
+  }
+
+  async getLiveIndices(): Promise<LiveIndexLevelsView> {
+    this.read();
+    return { fetchedAt: new Date().toISOString(), source: "mock", levels: [], error: "not implemented" };
   }
 
   async getBacktest(runId: string): Promise<BacktestResult | null> {

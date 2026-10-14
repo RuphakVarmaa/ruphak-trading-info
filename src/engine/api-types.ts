@@ -668,6 +668,74 @@ export interface KillSwitchRequest {
  * `account` (optional, last argument) selects a paper account other than main, e.g. "small10k";
  * omitted means main. Events, scheduled events and backtests are not per account.
  */
+// ---------------------------------------------------------------------------
+// Live option chain (Upstox read-only Analytics Token; GET /v2/option/chain)
+// ---------------------------------------------------------------------------
+
+/** One side (CE or PE) of one strike, as the broker shows it. Null fields: not reported. */
+export interface OptionSideView {
+  /** e.g. "NSE_FO|47139". */
+  instrumentKey: string;
+  ltp: number | null;
+  /** Previous session's close; change = ltp - close. */
+  close: number | null;
+  change: number | null;
+  changePct: number | null;
+  bid: number | null;
+  ask: number | null;
+  bidQty: number | null;
+  askQty: number | null;
+  volume: number | null;
+  oi: number | null;
+  prevOi: number | null;
+  oiChange: number | null;
+  /** Implied volatility, percent. */
+  iv: number | null;
+  delta: number | null;
+  gamma: number | null;
+  theta: number | null;
+  vega: number | null;
+  /** Upstox's probability of profit, percent. */
+  pop: number | null;
+}
+
+export interface OptionChainRowView {
+  strike: number;
+  ce: OptionSideView | null;
+  pe: OptionSideView | null;
+}
+
+export interface OptionChainView {
+  index: IndexId;
+  /** YYYY-MM-DD. */
+  expiry: string;
+  /** Every listed expiry, nearest first (for the selector). */
+  expiries: string[];
+  lotSize: number;
+  /** Underlying index level at fetch time. */
+  spot: number;
+  /** Strike nearest the spot. */
+  atmStrike: number;
+  /** Put-call ratio on open interest (sum PE OI / sum CE OI); null without OI. */
+  pcr: number | null;
+  /** Strike where option buyers' total payoff at expiry is smallest; null without OI. */
+  maxPain: number | null;
+  rows: OptionChainRowView[];
+  /** When the engine fetched it (ISO, IST). */
+  fetchedAt: string;
+  source: "upstox" | "mock";
+  /** Set when the chain could not be fetched (rows are then empty). */
+  error: string | null;
+}
+
+/** Live index levels from the broker feed (Upstox LTP), for the dashboard's ticker. */
+export interface LiveIndexLevelsView {
+  fetchedAt: string;
+  source: "upstox" | "mock";
+  levels: { key: "NIFTY" | "SENSEX" | "INDIAVIX" | "BANKNIFTY"; price: number; open: number | null; high: number | null; low: number | null; prevClose: number | null; change: number | null; changePct: number | null }[];
+  error: string | null;
+}
+
 export interface EngineApi {
   getState(account?: string): Promise<EngineStateDTO>;
   getSignals(account?: string): Promise<SignalView[]>;
@@ -681,6 +749,10 @@ export interface EngineApi {
   getScheduled(hours: number): Promise<ScheduledEventView[]>;
   /** The plan's no-trade rules evaluated for today's session (or the next one), with the session's entry windows. */
   getTodayPlan(): Promise<TodayPlanView>;
+  /** The live option chain for an index; `expiry` defaults to the nearest one that is not expiring today after 15:30. */
+  getOptionChain(index: IndexId, expiry?: string): Promise<OptionChainView>;
+  /** Live index levels from the broker feed (null-free; `error` set when unavailable). */
+  getLiveIndices(): Promise<LiveIndexLevelsView>;
   getBacktest(runId: string): Promise<BacktestResult | null>;
   /** The account's trades opened on an IST date YYYY-MM-DD as copy tickets: open ones first, then newest first. */
   getCopyTickets(date: string, account?: string): Promise<CopyTicketView[]>;
