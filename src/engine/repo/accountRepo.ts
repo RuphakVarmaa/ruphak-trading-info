@@ -13,7 +13,7 @@ import { defaultSettings } from "../settings";
 import type { EngineSettings, IndexId, PlanDecision, TradingMode } from "../types";
 
 /** kv keys owned by one account; every other key (health, LLM usage, ingest cursors) is shared. */
-const ACCOUNT_KEY_PREFIXES = ["decision:", "alert:"];
+const ACCOUNT_KEY_PREFIXES = ["decision:", "alert:", "advice:"];
 
 type Persisted = Pick<EngineSettings, "killSwitch" | "killReason" | "updatedMs" | "updatedBy">;
 

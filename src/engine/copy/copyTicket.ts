@@ -7,7 +7,7 @@ import { SIGNAL_SOURCE_LABELS, contractLabel, type AccountView, type CopyTicketV
 import { computeCharges } from "../broker/charges";
 import { MINUTE_MS, istDate, istIso, istParts, weekdayOf } from "../clock";
 import { stopPrice, targetPrice, trailPrice } from "../strategy/exits";
-import type { IndicatorView, Order, OrderReason, Position, Quote, Regime, SignalComponent, TradePlan } from "../types";
+import type { IndicatorView, Order, OrderReason, Position, Quote, Regime, SignalComponent, StopsSpec, TradePlan } from "../types";
 import { roundToTick } from "../util/math";
 
 const MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
@@ -140,6 +140,31 @@ function lowestFiringTick(level: number, tick: number, fires: (bid: number) => b
   return g;
 }
 
+export interface EntryLevels {
+  stop: number;
+  target: number;
+  trailActivateAt: number;
+}
+
+/**
+ * Stop, target and trail start for a fill at `avgEntry`, on the contract's tick, at the first price
+ * where the engine's own check fires. It compares the bid (a tick price) with the raw float level,
+ * exactly as evaluateExits does: it sells at a bid at or below the stop or trail, at or above the
+ * target, and the trail starts once the bid reaches its start. Rounding alone can land a tick off
+ * (41.00 x 1.6 = 65.60000000000001, so the engine sells at 65.65, not 65.60), so each level is
+ * checked with that same comparison.
+ */
+export function entryLevels(avgEntry: number, tick: number, stops: StopsSpec): EntryLevels {
+  const p = { avgEntry, stops, peakPremium: 0 };
+  const stopAt = stopPrice(p);
+  const targetAt = targetPrice(p);
+  return {
+    stop: highestFiringTick(stopAt, tick, (bid) => bid <= stopAt),
+    target: lowestFiringTick(targetAt, tick, (bid) => bid >= targetAt),
+    trailActivateAt: lowestFiringTick(avgEntry * (1 + stops.trailActivatePct / 100), tick, (peak) => trailPrice({ ...p, peakPremium: peak }) !== null),
+  };
+}
+
 export function copyTicketView(i: CopyTicketInput): CopyTicketView {
   const { position: p, plan, account } = i;
   const c = p.contract;
@@ -149,17 +174,8 @@ export function copyTicketView(i: CopyTicketInput): CopyTicketView {
   const spot = plan?.refSpot ?? indicators?.spot ?? 0;
   const dir = p.side === "BULL" ? 1 : -1;
   const skipBeyondSpot = plan && plan.expectedMovePct > 0 && spot > 0 ? round2(spot * (1 + (dir * plan.expectedMovePct) / 200)) : null;
-  // Levels on the contract's tick, at the first price where the engine's own check fires. It
-  // compares the bid (a tick price) with the raw float level, exactly as evaluateExits does: it sells
-  // at a bid at or below the stop or trail, at or above the target, and the trail starts once the
-  // bid reaches its start. Rounding alone can land a tick off (41.00 x 1.6 = 65.60000000000001, so
-  // the engine sells at 65.65, not 65.60), so each level is checked with that same comparison.
   const tick = c.tickSize > 0 ? c.tickSize : 0.05;
-  const stopAt = stopPrice(p);
-  const targetAt = targetPrice(p);
-  const stop = highestFiringTick(stopAt, tick, (bid) => bid <= stopAt);
-  const target = lowestFiringTick(targetAt, tick, (bid) => bid >= targetAt);
-  const trailActivateAt = lowestFiringTick(p.avgEntry * (1 + p.stops.trailActivatePct / 100), tick, (peak) => trailPrice({ ...p, peakPremium: peak }) !== null);
+  const { stop, target, trailActivateAt } = entryLevels(p.avgEntry, tick, p.stops);
   const risk = (p.avgEntry - stop) * entryQty + p.entryCharges + computeCharges("SELL", stop, entryQty, c.exchange, istDate(p.entryMs)).total;
   const priceSource = quoteSourceOf(plan) === "groww" ? "broker" : "model";
   const open = p.status === "OPEN";

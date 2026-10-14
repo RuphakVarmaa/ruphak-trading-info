@@ -243,6 +243,51 @@ export interface SignalView {
   position: PositionView | null;
   /** Indicator readings the decision was made on (null for decisions stored before indicators existed). */
   indicators: IndicatorView | null;
+  /**
+   * Live entry advice while the measured-edge check pauses the engine's book: what it would buy
+   * right now on its own signal and trade checks. Null when the signal or another check says WAIT
+   * (the gates say why), when the engine is entering itself, or when the reading is old.
+   */
+  advice: SignalAdviceView | null;
+}
+
+/** The contract the engine would buy now, its reading's ask, and the levels it would manage it by. */
+export interface SignalAdviceView {
+  kind: "ENTER";
+  /** When the engine's reading was made (ISO, IST). Refreshed at least every minute while it says ENTER. */
+  at: string;
+  side: "BULL" | "BEAR";
+  contract: {
+    index: IndexId;
+    expiry: string;
+    strike: number;
+    optionType: OptionType;
+    tradingSymbol: string;
+    lotSize: number;
+    /** e.g. "NIFTY 13-OCT-2026 22600 CE". */
+    label: string;
+  };
+  /** The ask the reading saw. */
+  premium: number;
+  priceSource: "broker" | "model";
+  /** The index at the reading, and the level past which half of the expected move has happened (null when unknown). */
+  spot: number;
+  skipBeyondSpot: number | null;
+  /** The levels for a fill at `premium`, on the contract's tick, as the engine would manage it. */
+  levels: {
+    stopPct: number;
+    stop: number;
+    targetPct: number;
+    target: number;
+    trailActivatePct: number;
+    trailActivateAt: number;
+    trailGivebackPct: number;
+    timeStopAt: string;
+    timeStopMinPnlPct: number;
+    squareOffAt: string;
+  };
+  /** The checks pausing the engine's own entry, in its words ("Edge with measured move and realized vol ≥ 10% of premium"). */
+  pausedBy: string[];
 }
 
 // ---------------------------------------------------------------------------

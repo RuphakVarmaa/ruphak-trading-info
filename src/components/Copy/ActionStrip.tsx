@@ -1,7 +1,8 @@
 "use client";
 
 /**
- * What to do now, per index, in large type: ENTER NOW with the exact order and a copy button, PAUSED
+ * What to do now, per index, in large type: ENTER NOW with the exact order and a copy button, ENTER
+ * (the engine's live reading says buy while its paper book is paused, same order and levels), PAUSED
  * while the live price is stale, MANAGE, EXIT NOW, WAIT (the reason, and what would trigger an entry)
  * or DONE. One row per index on phones, side by side on wide screens.
  *
@@ -123,10 +124,10 @@ function IndexRow({ index, a, d, compact }: { index: IndexId; a: IndexAction | n
       {a.order && a.kind !== "PAUSED" && (
         <OrderText text={a.order} style={{ fontSize: a.kind === "MANAGE" ? (compact ? 14 : 16) : compact ? 16 : 20, fontWeight: a.kind === "MANAGE" ? 600 : 700, lineHeight: 1.35, color: C.textStrong }} />
       )}
-      {a.order && (a.kind === "ENTER_NOW" || a.kind === "EXIT_NOW" || a.kind === "MANAGE") && (
+      {a.order && (a.kind === "ENTER_NOW" || a.kind === "SIGNAL_ENTER" || a.kind === "EXIT_NOW" || a.kind === "MANAGE") && (
         <CopyAction
           text={a.order}
-          label={a.kind === "ENTER_NOW" ? "Copy order" : a.kind === "EXIT_NOW" ? "Copy sell order" : "Copy levels"}
+          label={a.kind === "ENTER_NOW" || a.kind === "SIGNAL_ENTER" ? "Copy order" : a.kind === "EXIT_NOW" ? "Copy sell order" : "Copy levels"}
           tone={a.kind === "MANAGE" ? "quiet" : "action"}
           style={{ width: "100%", maxWidth: compact ? 260 : 360, justifySelf: "start" }}
         />

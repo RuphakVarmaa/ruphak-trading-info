@@ -8,6 +8,7 @@ import { computePressure } from "../events/pressure";
 import { computeFeatures } from "../market/features";
 import type { EngineDeps } from "../ports";
 import { combineConviction } from "../strategy/conviction";
+import { recordAdvice } from "../strategy/advice";
 import { planEntry } from "../strategy/planner";
 import { publishedConviction, publishedSignal } from "../strategy/published";
 import { classifyRegime } from "../strategy/regime";
@@ -163,6 +164,8 @@ export async function runTradingCycle(deps: EngineDeps, opts: TradingCycleOption
       const decision = await planEntry({ index, t: now, features: f, pressure: p, conviction, risk, perf }, { ...deps, calendar });
       report.decisions.push(decision);
       if (await shouldPersistDecision(deps, decision, opts.decisionEveryMs ?? 5 * MINUTE_MS)) await repo.decisions.append(decision);
+      // Live ENTER/WAIT advice for the dashboard while the measured-edge check pauses the book (kv only).
+      await recordAdvice(repo, decision, f.spot, cfg);
 
       if (decision.plan && phase === "OPEN" && !halt && !noEntries) {
         const { order, position } = await submitEntry(deps, decision.plan, p);

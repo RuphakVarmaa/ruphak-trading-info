@@ -30,16 +30,16 @@ export function markPosition(p: Position, q: Quote, nowMs: number): Position {
   };
 }
 
-export function stopPrice(p: Position): number {
+export function stopPrice(p: Pick<Position, "avgEntry" | "stops">): number {
   return p.avgEntry * (1 + p.stops.stopPct / 100);
 }
 
-export function targetPrice(p: Position): number {
+export function targetPrice(p: Pick<Position, "avgEntry" | "stops">): number {
   return p.avgEntry * (1 + p.stops.targetPct / 100);
 }
 
 /** Trailing stop level once the trail is active, else null. */
-export function trailPrice(p: Position): number | null {
+export function trailPrice(p: Pick<Position, "avgEntry" | "stops" | "peakPremium">): number | null {
   const activate = p.avgEntry * (1 + p.stops.trailActivatePct / 100);
   if (p.peakPremium < activate) return null;
   return p.peakPremium - (p.peakPremium - p.avgEntry) * (p.stops.trailGivebackPct / 100);

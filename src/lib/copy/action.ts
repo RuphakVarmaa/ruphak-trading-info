@@ -6,6 +6,9 @@
  *   PAUSED     the same trade, but the live feed (or the engine data) is stale: never enter on old data.
  *   MANAGE     a trade is open but older than 10 min, or the index has passed the skip level.
  *   EXIT NOW   the engine closed a trade ≤ 10 min ago (or its 15:05 square-off time has come).
+ *   ENTER      nothing open, but the engine's live reading says it would buy now: the signal and every
+ *              trade check pass except the measured-edge check that pauses its book (SIGNAL_ENTER).
+ *              The exact order and levels, as for ENTER NOW; the engine books nothing and sends no exit.
  *   WAIT       nothing open: the main reason no entry is being made, and what would trigger one.
  *   DONE       nothing open after the last entry time (14:30 IST), or the market has closed.
  *   LOADING    today's trades have not loaded (or cannot be loaded).
@@ -14,7 +17,7 @@
  * branch is unit-tested. Gate and regime names are the engine's own (src/engine/strategy/gates.ts,
  * src/engine/risk/limits.ts, src/engine/strategy/planner.ts, src/engine/strategy/optionSelect.ts).
  */
-import type { CopyTicketView, GateResult, IndexId, OrderReason, PositionView, Regime, SessionPhase, SignalView } from "@/engine/api-types";
+import type { CopyTicketView, GateResult, IndexId, OrderReason, PositionView, Regime, SessionPhase, SignalAdviceView, SignalView } from "@/engine/api-types";
 import { DEFAULT_CONFIG } from "@/engine/config";
 import { istParts } from "@/lib/ist";
 import { LAGGING_TRADE_MS, type Freshness, type LiveIndicesFeed } from "@/lib/market/liveIndices";
@@ -26,16 +29,19 @@ export const ENTER_WINDOW_MS = 10 * 60_000;
 export const EXIT_WINDOW_MS = 10 * 60_000;
 /** Ticket data older than this cannot back an ENTER NOW (the page polls tickets every 5 s). */
 export const TICKETS_MAX_AGE_MS = 30_000;
+/** A live ENTER advice older than this shows as PAUSED: the engine refreshes it at least every minute. */
+export const ADVICE_FRESH_MS = 3 * 60_000;
 /** The engine stores a reading per closed 5-minute bar after a 90 s data lag: older than this is late. */
 export const SIGNAL_MAX_AGE_MS = 8 * 60_000;
 
-export type ActionKind = "ENTER_NOW" | "PAUSED" | "MANAGE" | "EXIT_NOW" | "WAIT" | "DONE" | "LOADING";
+export type ActionKind = "ENTER_NOW" | "SIGNAL_ENTER" | "PAUSED" | "MANAGE" | "EXIT_NOW" | "WAIT" | "DONE" | "LOADING";
 
 /** Statuses that chime and notify when they appear. */
-export const ALERT_KINDS: ReadonlySet<ActionKind> = new Set<ActionKind>(["ENTER_NOW", "PAUSED", "MANAGE", "EXIT_NOW"]);
+export const ALERT_KINDS: ReadonlySet<ActionKind> = new Set<ActionKind>(["ENTER_NOW", "SIGNAL_ENTER", "PAUSED", "MANAGE", "EXIT_NOW"]);
 
 export const KIND_LABEL: Record<ActionKind, string> = {
   ENTER_NOW: "ENTER NOW",
+  SIGNAL_ENTER: "ENTER",
   PAUSED: "PAUSED",
   MANAGE: "MANAGE",
   EXIT_NOW: "EXIT NOW",
@@ -242,11 +248,14 @@ export function lotsText(lots: number, qty: number): string {
 }
 
 /** The skip level as shown and checked: rounded down for calls (skip above), up for puts (skip below). */
-export function skipRule(t: CopyTicketView): SkipRule | null {
-  const raw = t.entry.skipBeyondSpot;
+export function skipRuleOf(raw: number | null | undefined, side: "BULL" | "BEAR"): SkipRule | null {
   if (raw == null || !Number.isFinite(raw) || raw <= 0) return null;
-  const above = t.side === "BULL";
+  const above = side === "BULL";
   return { level: above ? Math.floor(raw) : Math.ceil(raw), above };
+}
+
+export function skipRule(t: CopyTicketView): SkipRule | null {
+  return skipRuleOf(t.entry.skipBeyondSpot, t.side);
 }
 
 export function isPastSkip(price: number, skip: SkipRule): boolean {
@@ -281,6 +290,20 @@ export function buyOrderText(t: CopyTicketView): string {
   const skip = skipRule(t);
   const parts = [`BUY ${t.index} ${c.strike} ${c.optionType} ${expiryShort(c.expiry)}`, lotsText(t.lots, t.qty), `limit ≤ ${rupees(copyLimit(t).price)}`];
   if (skip) parts.push(`skip if ${t.index} ${skip.above ? ">" : "<"} ${indexLevel(skip.level)}`);
+  return parts.join(" · ");
+}
+
+/** The most to pay on a live advice: the reading's ask, rounded up to the tick, plus 2 % (see buyLimit). */
+export function adviceLimit(adv: SignalAdviceView): number {
+  return buyLimit(ceilTick(adv.premium));
+}
+
+/** "BUY NIFTY 22600 CE 13-Oct · 1 lot = 65 qty · limit ≤ ₹63.00 · skip if NIFTY > 22,631" for a live advice. */
+export function adviceOrderText(index: IndexId, adv: SignalAdviceView): string {
+  const c = adv.contract;
+  const skip = skipRuleOf(adv.skipBeyondSpot, adv.side);
+  const parts = [`BUY ${index} ${c.strike} ${c.optionType} ${expiryShort(c.expiry)}`, lotsText(1, c.lotSize), `limit ≤ ${rupees(adviceLimit(adv))}`];
+  if (skip) parts.push(`skip if ${index} ${skip.above ? ">" : "<"} ${indexLevel(skip.level)}`);
   return parts.join(" · ");
 }
 
@@ -550,7 +573,7 @@ function base(input: ActionInput, kind: ActionKind, ticket: CopyTicketView | nul
     order: null,
     details: [],
     trigger: null,
-    tone: kind === "ENTER_NOW" || kind === "EXIT_NOW" ? "action" : kind === "PAUSED" ? "stale" : kind === "MANAGE" ? "hold" : "idle",
+    tone: kind === "ENTER_NOW" || kind === "SIGNAL_ENTER" || kind === "EXIT_NOW" ? "action" : kind === "PAUSED" ? "stale" : kind === "MANAGE" ? "hold" : "idle",
     ticket,
     limit: null,
     skip: null,
@@ -715,6 +738,80 @@ function exitAction(input: ActionInput, t: CopyTicketView, others: string[]): In
   return a;
 }
 
+/**
+ * The engine's live reading says it would buy now, but its book is paused by the measured-edge
+ * check: the exact order and levels (ENTER), dimmed while the live feed or the reading is stale
+ * (PAUSED), or WAIT when the index has already run past the skip level.
+ */
+function adviceAction(input: ActionInput, s: SignalView, adv: SignalAdviceView, extra: string[]): IndexAction {
+  const { index, nowMs: now } = input;
+  const c = adv.contract;
+  const name = `${index} ${c.strike} ${c.optionType}`;
+  const order = adviceOrderText(index, adv);
+  const limit = adviceLimit(adv);
+  const skip = skipRuleOf(adv.skipBeyondSpot, adv.side);
+  const skipText = skip ? `skip if ${index} is ${skip.above ? "above" : "below"} ${indexLevel(skip.level)}` : null;
+  const key = `advice:${c.tradingSymbol}`;
+  const x = adv.levels;
+  const readingAge = now - msOf(adv.at);
+  const pause = pauseReason(input);
+  const price = input.feed.price;
+
+  if (Number.isFinite(readingAge) && readingAge > ADVICE_FRESH_MS) {
+    const a = base(input, "PAUSED", null);
+    a.statusKey = `PAUSED:${key}:stale`;
+    a.headline = `PAUSED — engine reading stale (${shortAge(readingAge)})`;
+    a.order = order;
+    a.limit = limit;
+    a.skip = skip;
+    a.details = [
+      `The engine's last ${index} reading said ENTER at ${hms(adv.at)} IST, but it refreshes every minute while it says so and has not: don't buy on old data.`,
+      ...extra,
+    ];
+    a.notice = { title: `PAUSED · ${index} signal`, body: `Engine reading stale (${shortAge(readingAge)}). ${order}` };
+    return a;
+  }
+  if (pause) {
+    const a = base(input, "PAUSED", null);
+    a.statusKey = `PAUSED:${key}`;
+    a.headline = pause.headline;
+    a.order = order;
+    a.limit = limit;
+    a.skip = skip;
+    a.alert = !pause.quiet;
+    a.details = [`${pause.sentence} Don't buy on old data.`, skipText ? `To check it yourself, look at ${index} in Groww: ${skipText}.` : `The engine gave no skip level: use the limit as the cap.`, ...extra];
+    a.notice = { title: `PAUSED · ${index} signal`, body: `${pause.headline.replace(/^PAUSED — /, "")}. ${order}` };
+    return a;
+  }
+  if (skip && price != null && isPastSkip(price, skip)) {
+    const a = base(input, "WAIT", null);
+    a.statusKey = `WAIT:${key}:chase`;
+    a.headline = "WAIT — don't chase";
+    a.details = [`The signal says buy ${name}, but ${index} ${indexPrice(price)} is past the skip level ${indexLevel(skip.level)}: half of the expected move has already happened.`, ...extra];
+    a.trigger = `A fresh engine reading (every minute while the signal holds) with ${index} back inside its skip level.`;
+    return a;
+  }
+
+  const a = base(input, "SIGNAL_ENTER", null);
+  a.statusKey = `SIGNAL_ENTER:${key}`;
+  a.headline = "ENTER — signal only (paper engine paused)";
+  a.order = order;
+  a.limit = limit;
+  a.skip = skip;
+  a.details = [
+    `The signal says buy ${name}: conviction ${signedScore(s.conviction)} (needs ±${s.entryThreshold.toFixed(2)}, ${s.regime}) and every trade check passes except the measured-edge check, which pauses the paper engine. It books no trade and sends no exit alert for this: manage it by these levels.`,
+    `Engine ask ${rupees(adv.premium)} at ${hms(adv.at)} IST${adv.priceSource === "model" ? ", a model price: Groww's will differ" : ""}. Limit = ask + 2%, rounded up to ₹0.05. Once filled: stop-loss ${rupees(x.stop)} (${x.stopPct}%), target ${rupees(x.target)} (+${x.targetPct}%), time stop ${hm(x.timeStopAt)} unless up ${x.timeStopMinPnlPct}%, out by ${hm(x.squareOffAt)}.`,
+    ...(price != null && skip ? [`${index} ${indexPrice(price)} is inside the skip level ${indexLevel(skip.level)}.`] : []),
+    ...(skip ? [] : ["The engine gave no skip level for this reading: the limit is the only cap."]),
+    `Paused by: ${adv.pausedBy.join("; ") || "the measured-edge check"}.`,
+    "No measured edge: these signals lost on average in every test (see Today's plan). Risk only what you can afford to lose.",
+    CANCEL_UNFILLED,
+    ...extra,
+  ];
+  a.notice = { title: `ENTER (signal) · ${index}`, body: order };
+  return a;
+}
+
 function daySummary(index: IndexId, tickets: CopyTicketView[]): { line: string; pnl: number } | null {
   const closed = tickets.filter((t) => t.index === index && t.exit);
   if (closed.length === 0) return null;
@@ -763,6 +860,7 @@ function idleAction(input: ActionInput, tickets: CopyTicketView[] | null, others
     return wait(`New entries start at ${entryFrom} IST`, s ? convictionTrigger(s) : null, extra);
   }
   if (!s) return wait(`No engine reading for ${index} yet`, null);
+  if (s.advice) return adviceAction(input, s, s.advice, [...(summary ? [summary.line] : []), ...others]);
 
   const age = now - msOf(s.computedAt);
   const stale = Number.isFinite(age) && age > SIGNAL_MAX_AGE_MS;
@@ -837,7 +935,10 @@ export function deriveIndexAction(input: ActionInput): IndexAction {
 
 /** The single "what to do now" line for a trade card. */
 export function nowLine(a: IndexAction | null, t: CopyTicketView | null): string {
-  if (!t) return a ? [a.headline, a.details[0]].filter(Boolean).join(": ") : "Nothing to do yet.";
+  if (!t) {
+    if (a?.kind === "SIGNAL_ENTER" && a.order) return `The signal says buy now (the paper engine is paused): ${a.order}. Then place the stop-loss from the levels shown.`;
+    return a ? [a.headline, a.details[0]].filter(Boolean).join(": ") : "Nothing to do yet.";
+  }
   const name = `${t.index} ${t.contract.strike} ${t.contract.optionType}`;
   const x = exitLevels(t);
   if (a && a.ticket?.id === t.id) {

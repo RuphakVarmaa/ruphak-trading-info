@@ -24,6 +24,7 @@ import {
   type PositionView,
   type ScheduledEventView,
   type Severity,
+  type SignalAdviceView,
   type SignalPerformanceRow,
   type SignalView,
   type SourceHealthView,
@@ -33,12 +34,14 @@ import {
 import type { TradingCalendar } from "../calendar/calendar";
 import { DAY_MS, HOUR_MS, MINUTE_MS, addDays, istAt, istDate, istIso, istMidnight } from "../clock";
 import type { EngineConfig } from "../config";
-import { copyTicketView } from "../copy/copyTicket";
+import { copyTicketView, entryLevels } from "../copy/copyTicket";
 import { classifySeverity } from "../events/lexicon";
 import { CONFIDENCE_VALUE, MAGNITUDE_MIDPOINT_PCT, MAGNITUDE_VALUE } from "../events/taxonomy";
 import type { Repository } from "../ports";
 import { displayMode } from "../settings";
+import { ADVICE_MAX_AGE_MS, adviceKey, type SignalAdvice, type SignalAdviceEnter } from "../strategy/advice";
 import { stopPrice, targetPrice, trailPrice } from "../strategy/exits";
+import { positionExitByMs } from "../strategy/rules";
 import { buildTodayPlan } from "../strategy/todayPlan";
 import {
   INDEX_IDS,
@@ -142,6 +145,55 @@ export function suggestedContract(c: OptionContract, lots: number, premium: numb
     premium: premium === null ? null : round2(premium),
     premiumAtRisk: premiumAtRisk === null ? null : Math.round(premiumAtRisk),
     label: contractLabel({ index: c.index, expiry: c.expiry, strike: c.strike, optionType: c.type }),
+  };
+}
+
+/** The dashboard's view of a live ENTER advice: the contract, the reading's ask and the levels for a fill at it. */
+export function adviceView(a: SignalAdviceEnter, d: PlanDecision, cfg: EngineConfig): SignalAdviceView {
+  const c = a.contract;
+  const tick = c.tickSize > 0 ? c.tickSize : 0.05;
+  const squareOffMs = positionExitByMs(a.t, cfg);
+  const stops = {
+    stopPct: cfg.exits.stopPct,
+    targetPct: cfg.exits.targetPct,
+    trailActivatePct: cfg.exits.trailActivatePct,
+    trailGivebackPct: cfg.exits.trailGivebackPct,
+    timeStopMs: a.t + a.horizonMin * MINUTE_MS,
+    squareOffMs,
+  };
+  const lv = entryLevels(a.premium, tick, stops);
+  const dir = a.side === "BULL" ? 1 : -1;
+  const byLabel = new Map(d.gates.map((g) => [g.gate, g.label]));
+  return {
+    kind: "ENTER",
+    at: istIso(a.t),
+    side: a.side,
+    contract: {
+      index: c.index,
+      expiry: c.expiry,
+      strike: c.strike,
+      optionType: c.type,
+      tradingSymbol: c.tradingSymbol,
+      lotSize: c.lotSize,
+      label: contractLabel({ index: c.index, expiry: c.expiry, strike: c.strike, optionType: c.type }),
+    },
+    premium: round2(a.premium),
+    priceSource: a.quoteSource === "groww" || a.quoteSource === "upstox" ? "broker" : "model",
+    spot: round2(a.spot),
+    skipBeyondSpot: a.expectedMovePct !== null && a.expectedMovePct > 0 && a.spot > 0 ? round2(a.spot * (1 + (dir * a.expectedMovePct) / 200)) : null,
+    levels: {
+      stopPct: stops.stopPct,
+      stop: round2(lv.stop),
+      targetPct: stops.targetPct,
+      target: round2(lv.target),
+      trailActivatePct: stops.trailActivatePct,
+      trailActivateAt: round2(lv.trailActivateAt),
+      trailGivebackPct: stops.trailGivebackPct,
+      timeStopAt: istIso(stops.timeStopMs),
+      timeStopMinPnlPct: cfg.exits.timeStopMinPnlPct,
+      squareOffAt: istIso(squareOffMs),
+    },
+    pausedBy: a.pausedBy.map((g) => byLabel.get(g) ?? g),
   };
 }
 
@@ -370,6 +422,18 @@ export class ReadModel {
     return parts.join(" ");
   }
 
+  /**
+   * The live ENTER advice for an index (strategy/advice.ts), or null: when it says WAIT, when the
+   * engine is entering itself, when it is older than ADVICE_MAX_AGE_MS (the loop has stopped), or
+   * when it is not from today's session.
+   */
+  private async advice(index: IndexId, d: PlanDecision): Promise<SignalAdviceView | null> {
+    const { repo, cfg } = this.ctx;
+    const a = await repo.state.get<SignalAdvice>(adviceKey(index));
+    if (!a || a.kind !== "ENTER" || d.plan || this.now - a.t > ADVICE_MAX_AGE_MS || istDate(a.t) !== istDate(this.now)) return null;
+    return adviceView(a, d, cfg);
+  }
+
   async getSignals(): Promise<SignalView[]> {
     const { repo, cfg } = this.ctx;
     const snap = await repo.snapshots.latest();
@@ -414,6 +478,7 @@ export class ReadModel {
         rationale: this.rationale(index, d, contributors),
         position: pos ? positionView(pos) : null,
         indicators: d.indicators ?? null,
+        advice: await this.advice(index, d),
       });
     }
     return out;

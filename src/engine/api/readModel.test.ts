@@ -145,6 +145,40 @@ describe("read model", () => {
     expect(sig.position?.id).toBe("pos1");
   });
 
+  it("shows the live ENTER advice with the levels for a fill at the reading's ask, and drops old ones", async () => {
+    const { repo, model } = await setup();
+    const gates = [
+      { gate: "conviction", label: "Conviction beyond threshold", passed: true, detail: "0.62 ≥ 0.45" },
+      { gate: "quote", label: "Usable option quote", passed: true, detail: "synthetic bid 101 / ask 101.5" },
+      { gate: "edge_calibrated", label: "Edge with measured move and realized vol ≥ 10% of premium", passed: false, detail: "2.1%" },
+    ];
+    const decision: PlanDecision = { id: "d1", index: "NIFTY", t: NOW - 20_000, conviction: conviction(-0.62), gates, plan: null, contract, refPremium: 101.5, expectedMovePct: 0.3, impliedMovePct: 0.4, edgeRatio: 0.1, noPlanReason: "Edge: 2.1%" };
+    await repo.decisions.append(decision);
+    const advice = { kind: "ENTER", t: NOW - 20_000, index: "NIFTY", decisionId: "d1", side: "BEAR", contract, premium: 101.5, spot: 22650, regime: "EVENT", expectedMovePct: 0.3, horizonMin: 180, quoteSource: "synthetic", pausedBy: ["edge_calibrated"] };
+    await repo.state.set("advice:latest:NIFTY", advice);
+    const [sig] = await model.getSignals();
+    expect(sig.advice).toMatchObject({
+      kind: "ENTER",
+      at: "2026-10-07T10:59:40+05:30",
+      side: "BEAR",
+      contract: { strike: 22600, optionType: "PE", lotSize: 65, label: "NIFTY 13-OCT-2026 22600 PE" },
+      premium: 101.5,
+      priceSource: "model",
+      spot: 22650,
+      skipBeyondSpot: 22616.03,
+      levels: { stopPct: -30, stop: 71.05, targetPct: 50, target: 152.25, trailActivateAt: 132, timeStopAt: "2026-10-07T13:59:40+05:30", timeStopMinPnlPct: 10, squareOffAt: "2026-10-07T15:05:00+05:30" },
+      pausedBy: ["Edge with measured move and realized vol ≥ 10% of premium"],
+    });
+    // Older than 15 minutes, or from another day: not shown.
+    await repo.state.set("advice:latest:NIFTY", { ...advice, t: NOW - 16 * 60_000 });
+    expect((await model.getSignals())[0].advice).toBeNull();
+    await repo.state.set("advice:latest:NIFTY", { ...advice, t: NOW - 24 * 3_600_000 });
+    expect((await model.getSignals())[0].advice).toBeNull();
+    // WAIT, or the engine entering itself: not shown.
+    await repo.state.set("advice:latest:NIFTY", { kind: "WAIT", t: NOW, index: "NIFTY", decisionId: "d1" });
+    expect((await model.getSignals())[0].advice).toBeNull();
+  });
+
   it("maps positions with stop, target and trail levels", () => {
     const v = positionView(position());
     expect(v).toMatchObject({ stopPrice: 70, targetPrice: 150, ltp: 120, pnl: 1272, qty: 65, openedAt: "2026-10-07T10:30:00+05:30" });

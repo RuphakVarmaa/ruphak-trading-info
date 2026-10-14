@@ -725,6 +725,7 @@ export class MockEngineApi implements EngineApi {
       rationale: seed.rationale,
       position: pos ? this.positionView(pos, now) : null,
       indicators: seed.indicators,
+      advice: null,
     };
   }
 

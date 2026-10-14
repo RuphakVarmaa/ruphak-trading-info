@@ -233,6 +233,8 @@ export function accountScopeContract(name: string, make: () => Promise<Repositor
       const small = scoped(base);
       await small.state.set("decision:last:NIFTY", { t: 1 });
       expect(await base.state.get("decision:last:NIFTY")).toBeNull();
+      await base.state.set("advice:latest:NIFTY", { kind: "WAIT" });
+      expect(await small.state.get("advice:latest:NIFTY")).toBeNull();
       await base.state.set("health:yahoo", { ok: true });
       expect(await small.state.get("health:yahoo")).toEqual({ ok: true });
       expect(await small.perf.all("PAPER")).toEqual(await base.perf.all("PAPER"));

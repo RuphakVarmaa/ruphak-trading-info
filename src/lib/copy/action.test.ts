@@ -1,7 +1,7 @@
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
-import type { CopyTicketView, OrderReason, PositionView, SessionPhase } from "@/engine/api-types";
+import type { CopyTicketView, OrderReason, PositionView, SessionPhase, SignalAdviceView } from "@/engine/api-types";
 import {
   buyOrderText,
   copyLimit,
@@ -304,6 +304,91 @@ describe("EXIT NOW", () => {
     expect(a.kind).toBe("EXIT_NOW");
     expect(a.ticket?.id).toBe("pos-nifty-1005");
     expect(a.details.join(" ")).toContain("Also open: NIFTY 22600 CE (since 10:07).");
+  });
+});
+
+describe("ENTER on the signal (paper engine paused)", () => {
+  const ADVICE: SignalAdviceView = {
+    kind: "ENTER",
+    at: at("11:41:10"),
+    side: "BULL",
+    contract: { index: "NIFTY", expiry: "2026-10-13", strike: 22600, optionType: "CE", tradingSymbol: "NIFTY26O1322600CE", lotSize: 65, label: "NIFTY 13-OCT-2026 22600 CE" },
+    premium: 61.75,
+    priceSource: "model",
+    spot: 22610,
+    skipBeyondSpot: 22631.4,
+    levels: { stopPct: -30, stop: 43.2, targetPct: 50, target: 92.65, trailActivatePct: 30, trailActivateAt: 80.3, trailGivebackPct: 50, timeStopAt: at("13:11:10"), timeStopMinPnlPct: 10, squareOffAt: at("15:05") },
+    pausedBy: ["Edge with measured move and realized vol ≥ 10% of premium"],
+  };
+  const live = signal({
+    conviction: 0.61,
+    stance: "BULLISH",
+    gates: withGate(withGate(rangeGates(0.61), "conviction", true, "score +0.61"), "edge_calibrated", false, "2.1%", "Edge with measured move and realized vol ≥ 10% of premium"),
+    advice: ADVICE,
+  });
+  const enter = (o: Partial<ActionInput> = {}) => deriveIndexAction(input({ signal: live, ...o }));
+
+  it("gives the exact order and levels from the engine's live reading", () => {
+    const a = enter();
+    expect(a.kind).toBe("SIGNAL_ENTER");
+    expect(a.headline).toBe("ENTER — signal only (paper engine paused)");
+    expect(a.order).toBe("BUY NIFTY 22600 CE 13-Oct · 1 lot = 65 qty · limit ≤ ₹63.00 · skip if NIFTY > 22,631");
+    expect(a.limit).toBe(63);
+    expect(a.skip).toEqual({ level: 22631, above: true });
+    expect(a.tone).toBe("action");
+    expect(a.alert).toBe(true);
+    expect(a.statusKey).toBe("SIGNAL_ENTER:advice:NIFTY26O1322600CE");
+    expect(a.notice).toEqual({ title: "ENTER (signal) · NIFTY", body: a.order });
+    expect(a.details[0]).toBe(
+      "The signal says buy NIFTY 22600 CE: conviction +0.61 (needs ±0.55, RANGE) and every trade check passes except the measured-edge check, which pauses the paper engine. It books no trade and sends no exit alert for this: manage it by these levels.",
+    );
+    expect(a.details[1]).toBe(
+      "Engine ask ₹61.75 at 11:41:10 IST, a model price: Groww's will differ. Limit = ask + 2%, rounded up to ₹0.05. Once filled: stop-loss ₹43.20 (-30%), target ₹92.65 (+50%), time stop 13:11 unless up 10%, out by 15:05.",
+    );
+    expect(a.details).toContain("NIFTY 22,610.00 is inside the skip level 22,631.");
+    expect(a.details).toContain("Paused by: Edge with measured move and realized vol ≥ 10% of premium.");
+    expect(a.details.join(" ")).toContain("No measured edge");
+    expect(a.ticket).toBeNull();
+    expect(nowLine(a, null)).toBe(`The signal says buy now (the paper engine is paused): ${a.order}. Then place the stop-loss from the levels shown.`);
+  });
+
+  it("pauses when the reading is more than 3 minutes old", () => {
+    const a = enter({ nowMs: ms("11:46") });
+    expect(a.kind).toBe("PAUSED");
+    expect(a.headline).toBe("PAUSED — engine reading stale (4 min)");
+    expect(a.order).toContain("BUY NIFTY 22600 CE 13-Oct");
+    expect(a.statusKey).toBe("PAUSED:advice:NIFTY26O1322600CE:stale");
+    expect(a.alert).toBe(true);
+    expect(a.details[0]).toContain("don't buy on old data");
+  });
+
+  it("pauses on a stale live feed, like an engine entry", () => {
+    const a = enter({ feed: { ...LIVE, freshness: "stale", ageMs: 14_000 } });
+    expect(a.kind).toBe("PAUSED");
+    expect(a.headline).toBe("PAUSED — live feed stale (14 s)");
+    expect(a.statusKey).toBe("PAUSED:advice:NIFTY26O1322600CE");
+    expect(a.details.join(" ")).toContain("skip if NIFTY is above 22,631");
+  });
+
+  it("says don't chase once the index is past the skip level", () => {
+    const a = enter({ feed: { ...LIVE, price: 22640 } });
+    expect(a.kind).toBe("WAIT");
+    expect(a.headline).toBe("WAIT — don't chase");
+    expect(a.alert).toBe(false);
+    expect(a.details[0]).toBe("The signal says buy NIFTY 22600 CE, but NIFTY 22,640.00 is past the skip level 22,631: half of the expected move has already happened.");
+    expect(a.trigger).toContain("back inside its skip level");
+  });
+
+  it("keeps the session rules first: no entries before 09:25 or after 14:30, and a real entry outranks it", () => {
+    expect(enter({ nowMs: ms("09:20") }).details[0]).toBe("New entries start at 09:25 IST");
+    expect(enter({ nowMs: ms("14:40") }).kind).toBe("DONE");
+    expect(enter({ tickets: [niftyTicket()], nowMs: ms("10:08") }).kind).toBe("ENTER_NOW");
+  });
+
+  it("is a plain WAIT without an advice, whatever the gates say", () => {
+    const a = deriveIndexAction(input({ signal: { ...live, advice: null } }));
+    expect(a.kind).toBe("WAIT");
+    expect(a.details[0]).toBe("Edge too small on measured moves and realized volatility: 2.1%");
   });
 });
 

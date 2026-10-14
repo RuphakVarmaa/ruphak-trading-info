@@ -38,6 +38,7 @@ export function unlockAudio(): void {
 
 const TONES: Record<ActionKind, number[]> = {
   ENTER_NOW: [660, 880, 1100],
+  SIGNAL_ENTER: [660, 880, 1100],
   EXIT_NOW: [1100, 880, 660],
   MANAGE: [700, 700],
   PAUSED: [440, 350],
@@ -73,7 +74,7 @@ export function chime(kind: ActionKind): void {
 
 function vibrate(kind: ActionKind): void {
   try {
-    navigator.vibrate?.(kind === "ENTER_NOW" || kind === "EXIT_NOW" ? [220, 120, 220] : [140]);
+    navigator.vibrate?.(kind === "ENTER_NOW" || kind === "SIGNAL_ENTER" || kind === "EXIT_NOW" ? [220, 120, 220] : [140]);
   } catch {
     // Not supported (desktop, iOS).
   }
@@ -116,7 +117,7 @@ function desktopNotice(title: string, body: string, tag: string, urgent: boolean
 export function announce(a: IndexAction): void {
   chime(a.kind);
   vibrate(a.kind);
-  if (a.notice) desktopNotice(a.notice.title, a.notice.body, `copy-${a.index}`, a.kind === "ENTER_NOW" || a.kind === "EXIT_NOW");
+  if (a.notice) desktopNotice(a.notice.title, a.notice.body, `copy-${a.index}`, a.kind === "ENTER_NOW" || a.kind === "SIGNAL_ENTER" || a.kind === "EXIT_NOW");
 }
 
 // ---------------------------------------------------------------------------
@@ -241,7 +242,7 @@ export function useMissedTradeAlerts(tickets: CopyTicketView[] | null, account: 
 /** "● ENTER NOW NIFTY" for the tab title, from the most urgent status (null when nothing is live). */
 export function titleBadge(actions: Record<IndexId, IndexAction> | null): string | null {
   if (!actions) return null;
-  const order: ActionKind[] = ["EXIT_NOW", "ENTER_NOW", "PAUSED", "MANAGE"];
+  const order: ActionKind[] = ["EXIT_NOW", "ENTER_NOW", "SIGNAL_ENTER", "PAUSED", "MANAGE"];
   for (const kind of order) {
     const a = INDICES.map((i) => actions[i]).find((x) => x.kind === kind);
     if (a) return `● ${KIND_LABEL[kind]} ${a.index}`;

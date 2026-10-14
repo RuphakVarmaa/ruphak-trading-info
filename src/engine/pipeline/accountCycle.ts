@@ -8,6 +8,7 @@ import type { TradingCalendar } from "../calendar/calendar";
 import { MINUTE_MS } from "../clock";
 import type { EngineDeps } from "../ports";
 import { haltReason } from "../risk/limits";
+import { recordAdvice } from "../strategy/advice";
 import { planEntry } from "../strategy/planner";
 import type { PlanDecision } from "../types";
 import { submitEntry } from "./execution";
@@ -52,6 +53,7 @@ export async function runFollowerEntries(deps: EngineDeps, signals: CycleReport,
       const decision = await planEntry({ index, t: now, features, pressure, conviction, risk, perf }, { ...deps, calendar, accountChecksFirst: true });
       report.decisions.push(decision);
       if (await shouldPersistDecision(deps, decision, opts.decisionEveryMs ?? 5 * MINUTE_MS)) await repo.decisions.append(decision);
+      await recordAdvice(repo, decision, features.spot, cfg);
 
       if (decision.plan && signals.phase === "OPEN" && !halt && !opts.noEntries) {
         const { order, position } = await submitEntry(deps, decision.plan, pressure);

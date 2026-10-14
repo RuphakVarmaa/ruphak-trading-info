@@ -178,6 +178,7 @@ export function signal(o: Partial<SignalView> = {}): SignalView {
     rationale: "",
     position: null,
     indicators: null,
+    advice: null,
     ...o,
   };
 }
