@@ -29,6 +29,7 @@ import type {
 } from "../../../src/engine/api-types";
 import { parseAccountId, type AccountId } from "../../../src/engine/accounts";
 import { ReadModel } from "../../../src/engine/api/readModel";
+import { UpstoxLive } from "../../../src/engine/market/upstoxLive";
 import { timingSafeEqual } from "../../../src/engine/util/hash";
 import { getBacktest, startBacktest } from "./backtestRunner";
 import { accountRuntime, accountViews, enabledAccounts, makeRuntime } from "./runtime";
@@ -45,6 +46,14 @@ export class AdminError extends Error {
     super(`${code}: ${message}`);
     this.name = "Error";
   }
+}
+
+// Per isolate: the Upstox caches, in-flight requests and request budget (src/engine/market/upstoxLive.ts).
+let live: { token: string | undefined; market: UpstoxLive } | null = null;
+function liveMarket(env: Env): UpstoxLive {
+  const token = env.UPSTOX_ANALYTICS_TOKEN || undefined;
+  if (!live || live.token !== token) live = { token, market: new UpstoxLive({ token }) };
+  return live.market;
 }
 
 function cleanActor(actor: string): string {
@@ -118,13 +127,13 @@ export class EngineAdmin extends WorkerEntrypoint<Env> implements EngineApi {
   getTodayPlan(): Promise<TodayPlanView> {
     return this.model().getTodayPlan();
   }
-  // TODO(agent A): live Upstox option chain and index levels.
-  async getOptionChain(index: IndexId, expiry?: string): Promise<OptionChainView> {
-    void expiry;
-    return { index, expiry: "", expiries: [], lotSize: 0, spot: 0, atmStrike: 0, pcr: null, maxPain: null, rows: [], fetchedAt: new Date().toISOString(), source: "upstox", error: "not implemented" };
+  getOptionChain(index: IndexId, expiry?: string): Promise<OptionChainView> {
+    if (index !== "NIFTY" && index !== "SENSEX") throw new AdminError("BAD_REQUEST", "index must be NIFTY or SENSEX");
+    if (expiry != null && expiry !== "" && (typeof expiry !== "string" || !/^\d{4}-\d{2}-\d{2}$/.test(expiry))) throw new AdminError("BAD_REQUEST", "expiry must be YYYY-MM-DD");
+    return liveMarket(this.env).getOptionChain(index, expiry || undefined);
   }
-  async getLiveIndices(): Promise<LiveIndexLevelsView> {
-    return { fetchedAt: new Date().toISOString(), source: "upstox", levels: [], error: "not implemented" };
+  getLiveIndices(): Promise<LiveIndexLevelsView> {
+    return liveMarket(this.env).getLiveIndices();
   }
   getBacktest(runId: string): Promise<BacktestResult | null> {
     return getBacktest(this.env, String(runId));
