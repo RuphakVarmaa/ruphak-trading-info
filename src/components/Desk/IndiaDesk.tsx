@@ -3,6 +3,7 @@
 import Link from "next/link";
 import { useEngineState } from "@/hooks/useEngineState";
 import IndexActionStrip from "@/components/Copy/ActionStrip";
+import SetupBoard from "@/components/Setups/SetupBoard";
 import { LiveIndicesPanel } from "@/components/Market";
 import PnlTiles from "@/components/Blotter/PnlTiles";
 import TradeBlotter from "@/components/Blotter/TradeBlotter";
@@ -32,6 +33,7 @@ export default function IndiaDesk() {
     <div id="desk" style={{ display: "grid", gridTemplateColumns: "minmax(0, 1fr)", gap: 28, minWidth: 0 }}>
       <DeskHeader />
       <IndexActionStrip compact />
+      <SetupBoard />
       <LiveIndicesPanel />
       <ConnectionBanner />
       <div style={{ display: "grid", gridTemplateColumns: "minmax(0, 1fr)", gap: 40, opacity: dim, transition: "opacity 0.3s", minWidth: 0 }}>

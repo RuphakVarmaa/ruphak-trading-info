@@ -40,6 +40,7 @@ import { CONFIDENCE_VALUE, MAGNITUDE_MIDPOINT_PCT, MAGNITUDE_VALUE } from "../ev
 import type { Repository } from "../ports";
 import { displayMode } from "../settings";
 import { ADVICE_MAX_AGE_MS, adviceKey, type SignalAdvice, type SignalAdviceEnter } from "../strategy/advice";
+import { SETUPS_MAX_AGE_MS, setupsKey, type SetupsRecord } from "../strategy/setups";
 import { stopPrice, targetPrice, trailPrice } from "../strategy/exits";
 import { positionExitByMs } from "../strategy/rules";
 import { buildTodayPlan } from "../strategy/todayPlan";
@@ -434,6 +435,13 @@ export class ReadModel {
     return adviceView(a, d, cfg);
   }
 
+  /** The trade-setup board for an index (strategy/setups.ts); empty when older than 3 minutes or from another session. */
+  private async setups(index: IndexId): Promise<Pick<SignalView, "setups" | "levels" | "setupNote">> {
+    const r = await this.ctx.repo.state.get<SetupsRecord>(setupsKey(index));
+    if (!r || this.now - r.t > SETUPS_MAX_AGE_MS || r.session !== istDate(this.now)) return { setups: [], levels: [], setupNote: null };
+    return { setups: r.setups, levels: r.levels, setupNote: r.note };
+  }
+
   async getSignals(): Promise<SignalView[]> {
     const { repo, cfg } = this.ctx;
     const snap = await repo.snapshots.latest();
@@ -479,6 +487,7 @@ export class ReadModel {
         position: pos ? positionView(pos) : null,
         indicators: d.indicators ?? null,
         advice: await this.advice(index, d),
+        ...(await this.setups(index)),
       });
     }
     return out;

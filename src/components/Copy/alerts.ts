@@ -249,3 +249,10 @@ export function titleBadge(actions: Record<IndexId, IndexAction> | null): string
   }
   return null;
 }
+
+/** Chime, vibrate and notify for a trade setup turning READY or TRIGGERED (the board keys it once per setup and status). */
+export function announceSetup(title: string, body: string, tag: string, triggered: boolean): void {
+  chime(triggered ? "SIGNAL_ENTER" : "MANAGE");
+  vibrate(triggered ? "SIGNAL_ENTER" : "MANAGE");
+  desktopNotice(title, body, tag, triggered);
+}

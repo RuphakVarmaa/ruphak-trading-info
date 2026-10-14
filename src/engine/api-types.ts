@@ -249,6 +249,97 @@ export interface SignalView {
    * (the gates say why), when the engine is entering itself, or when the reading is old.
    */
   advice: SignalAdviceView | null;
+  /**
+   * Level-based trade setups read off the 5-minute chart (strategy/setups.ts): decision support for a
+   * person buying options, not the engine's own entries. Empty when none is near, outside 09:25–14:30
+   * IST, or when the reading is older than 3 minutes.
+   */
+  setups?: TradeSetupView[];
+  /** The key levels (merged into zones) the setups were read from, nearest the price. */
+  levels?: KeyLevelView[];
+  /** Why there are no setups right now ("No new setups after 14:30 IST"), when that is the reason. */
+  setupNote?: string | null;
+}
+
+/** One key level, or several within ~0.05% of each other merged into one zone ("PDH + R1"). */
+export interface KeyLevelView {
+  price: number;
+  label: string;
+  /** The levels in the zone: PDH, PDL, PDC, ORH, ORL, HOD, LOD, VWAP, VWAP+1σ, P, R1, S1, ST, R22500... */
+  kinds: string[];
+  /** Summed weight of the levels in the zone (1 weak, 5+ strong). */
+  strength: number;
+}
+
+export type TradeSetupKind = "ORB" | "PDH_PDL" | "VWAP_PULLBACK" | "RANGE_REVERSAL";
+export type TradeSetupStatus = "WATCHING" | "READY" | "TRIGGERED" | "MISSED" | "INVALID";
+
+export interface SetupEvidenceView {
+  /** "ADX 26.4 (≥ 20: a trend is in place)". */
+  text: string;
+  supports: boolean;
+}
+
+/** The option to buy for a setup, with the index levels mapped to premiums (delta, gamma, theta). */
+export interface SetupOptionView {
+  contract: { index: IndexId; expiry: string; strike: number; optionType: OptionType; tradingSymbol: string; lotSize: number; label: string };
+  /** The ask now (quote), or the model price when no quote came back. */
+  premiumNow: number;
+  priceSource: "broker" | "model";
+  iv: number | null;
+  delta: number;
+  gamma: number;
+  /** Premium lost per minute to time decay (positive). */
+  decayPerMin: number;
+  /** Premiums on the contract's tick: entry at the trigger, stop and targets after the planned holding time. */
+  entry: number;
+  stop: number;
+  t1: number;
+  t2: number;
+  stopPct: number;
+  /** True when the index stop maps below the engine's −30% premium stop, so the stop is that instead. */
+  stopCapped: boolean;
+  riskPerLot: number;
+  rewardT1PerLot: number;
+  rewardT2PerLot: number;
+  holdMin: number;
+}
+
+export interface TradeSetupView {
+  /** Stable for the session: "2026-10-14:NIFTY:ORB:BULL". */
+  id: string;
+  index: IndexId;
+  kind: TradeSetupKind;
+  name: string;
+  side: "BULL" | "BEAR";
+  status: TradeSetupStatus;
+  /** When the current status began, and when the setup was first seen (ISO, IST). */
+  statusSince: string;
+  firstSeen: string;
+  score: number;
+  spot: number;
+  /** The index level that confirms the entry and the candle condition, in words. */
+  trigger: number;
+  condition: string;
+  /** Entry stays valid until the index is past this level (trigger ± 0.5 ATR); beyond it the setup is MISSED. */
+  chaseLimit: number;
+  /** Points from the price to the trigger in the trade's direction (negative once past it). */
+  distance: number;
+  /** The zone the setup is built on ("PDH + R1"). */
+  level: { price: number; label: string };
+  stop: number;
+  t1: number;
+  t2: number;
+  t1Label: string;
+  t2Label: string;
+  rr1: number;
+  rr2: number;
+  invalidation: string;
+  evidence: SetupEvidenceView[];
+  /** Today's-plan style warnings that would make the Desk wait (event blackout, VIX jump). */
+  cautions: string[];
+  atr: number;
+  option: SetupOptionView | null;
 }
 
 /** The contract the engine would buy now, its reading's ask, and the levels it would manage it by. */
