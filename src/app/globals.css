@@ -358,3 +358,16 @@ details.inline-disclosure > summary {
     font-size: 13px !important;
   }
 }
+
+/* Option chain: an LTP that moved since the last poll flashes briefly. */
+@keyframes chain-flash-up {
+  from { background-color: color-mix(in srgb, var(--c-green) 28%, transparent); }
+}
+@keyframes chain-flash-down {
+  from { background-color: color-mix(in srgb, var(--c-red) 26%, transparent); }
+}
+.chain-flash-up { animation: chain-flash-up 0.9s ease-out; }
+.chain-flash-down { animation: chain-flash-down 0.9s ease-out; }
+@media (prefers-reduced-motion: reduce) {
+  .chain-flash-up, .chain-flash-down { animation: none; }
+}
