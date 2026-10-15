@@ -35,6 +35,16 @@ import {
   type StrikeSelection,
 } from "./upstoxFeed";
 
+function isBlobLike(v: unknown): v is { arrayBuffer(): Promise<ArrayBuffer> } {
+  return typeof v === "object" && v !== null && typeof (v as { arrayBuffer?: unknown }).arrayBuffer === "function";
+}
+
+function typeName(v: unknown): string {
+  if (v === null) return "null";
+  if (typeof v !== "object") return typeof v;
+  return (v as { constructor?: { name?: string } }).constructor?.name || "object";
+}
+
 /** The subset of a WebSocket the client uses (Workers' WebSocket after accept(), or a test fake). */
 export interface FeedSocket {
   send(data: Uint8Array | string): void;
@@ -234,10 +244,24 @@ export class UpstoxFeedClient {
     const now = this.now();
     this.lastMessageAt = now;
     if (typeof data === "string") return; // Upstox sends protobuf; ignore any text frame.
-    let bytes: Uint8Array | null = null;
-    if (data instanceof ArrayBuffer) bytes = new Uint8Array(data);
-    else if (ArrayBuffer.isView(data)) bytes = new Uint8Array(data.buffer, data.byteOffset, data.byteLength);
-    if (!bytes) return;
+    if (data instanceof ArrayBuffer) return this.applyBytes(new Uint8Array(data), now);
+    if (ArrayBuffer.isView(data)) return this.applyBytes(new Uint8Array(data.buffer, data.byteOffset, data.byteLength), now);
+    // A Blob arrives when the socket's binaryType is "blob" (the Workers default at the engine's
+    // compatibility date); the opener sets "arraybuffer", and this keeps any other socket working.
+    if (isBlobLike(data)) {
+      data.arrayBuffer().then(
+        (buf) => {
+          if (sock === this.socket) this.applyBytes(new Uint8Array(buf), now);
+        },
+        (err: unknown) => this.fail(err),
+      );
+      return;
+    }
+    // Never drop frames silently: report the type in the status.
+    this.fail(new Error(`feed message of unexpected type ${typeName(data)} ignored`));
+  }
+
+  private applyBytes(bytes: Uint8Array, now: number): void {
     try {
       this.store.applyFrame(bytes, now);
       this.failures = 0;

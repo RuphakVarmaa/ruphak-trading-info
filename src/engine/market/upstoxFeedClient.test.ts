@@ -111,6 +111,18 @@ describe("UpstoxFeedClient", () => {
     expect(h.client.status().marketStatus.NSE_FO).toBe("NORMAL_CLOSE");
   });
 
+  it("decodes frames that arrive as Blob (a socket left on binaryType 'blob') and reports other types", async () => {
+    const h = harness();
+    await h.client.tick();
+    const s = h.sockets[0];
+    for (const f of FEED_FRAMES_B64) s.emit("message", { data: new Blob([b64(f)]) });
+    await new Promise((r) => setTimeout(r, 0));
+    expect(h.client.status()).toMatchObject({ frames: FEED_FRAMES_B64.length, lastError: null, marketStatus: { NSE_FO: "NORMAL_CLOSE" } });
+    expect(h.client.ticks(["NSE_INDEX|Nifty 50"]).ticks).toMatchObject([{ ltp: 22622.7 }]);
+    s.emit("message", { data: 42 });
+    expect(h.client.status()).toMatchObject({ frames: FEED_FRAMES_B64.length, lastError: "feed message of unexpected type number ignored" });
+  });
+
   it("lists the subscribed option strikes per index for the flow monitor", async () => {
     const h = harness();
     expect(h.client.optionBooks()).toEqual([]);

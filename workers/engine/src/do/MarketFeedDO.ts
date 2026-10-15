@@ -38,6 +38,9 @@ async function openWorkerSocket(url: string): Promise<FeedSocket> {
   const resp = await fetch(url.replace(/^wss:\/\//i, "https://"), { headers: { Upgrade: "websocket" } });
   const ws = resp.webSocket;
   if (!ws) throw new Error(`feed upgrade refused: HTTP ${resp.status}`);
+  // At this Worker's compatibility date (2026-09-30) binary messages arrive as Blob unless this is set
+  // (2024-era dates gave ArrayBuffer); the protobuf frames must arrive as ArrayBuffer, in order.
+  ws.binaryType = "arraybuffer";
   ws.accept();
   return ws as unknown as FeedSocket;
 }
