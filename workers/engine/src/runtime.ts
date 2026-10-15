@@ -67,6 +67,11 @@ export function engineConfig(env: Env): EngineConfig {
       enabled: llmAvailable(env),
       model: env.LLM_MODEL || (provider === "anthropic" ? "claude-opus-5-5" : DEFAULT_WORKERS_AI_MODEL),
       effort,
+      // LLM_ESCALATE_MODEL: a second model that re-scores LARGE/EXTREME stories (Anthropic only).
+      escalation:
+        provider === "anthropic" && env.LLM_ESCALATE_MODEL
+          ? { model: env.LLM_ESCALATE_MODEL, effort: env.LLM_ESCALATE_EFFORT === "low" || env.LLM_ESCALATE_EFFORT === "medium" ? env.LLM_ESCALATE_EFFORT : "high", maxPerCycle: num(env.LLM_ESCALATE_MAX_PER_CYCLE, 4) }
+          : null,
     },
   });
 }

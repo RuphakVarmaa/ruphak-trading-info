@@ -13,6 +13,8 @@ export interface ScoreRunResult {
   usage: LlmUsage;
   llmScored: number;
   fallbackScored: number;
+  /** Clusters re-scored by the escalation model. */
+  escalated: number;
   /** Clusters whose LLM attempt failed (refusal, error, missing from output). */
   failedClusterIds: string[];
   errors: string[];
@@ -63,7 +65,7 @@ export async function scoreClusters(
   cfg: EngineConfig,
   logger?: Logger,
 ): Promise<ScoreRunResult> {
-  const result: ScoreRunResult = { events: [], usage: { ...ZERO_USAGE }, llmScored: 0, fallbackScored: 0, failedClusterIds: [], errors: [] };
+  const result: ScoreRunResult = { events: [], usage: { ...ZERO_USAGE }, llmScored: 0, fallbackScored: 0, escalated: 0, failedClusterIds: [], errors: [] };
   const useLlm = llm !== null && cfg.llm.enabled;
   for (let i = 0; i < clusters.length; i += cfg.llm.batchSize) {
     const batch = clusters.slice(i, i + cfg.llm.batchSize);
@@ -93,6 +95,27 @@ export async function scoreClusters(
         const msg = err instanceof Error ? err.message : String(err);
         result.errors.push(msg);
         logger?.warn("LLM scoring batch failed; using lexicon scores", { error: msg, size: batch.length });
+      }
+    }
+    // The stories that can move a signal get a second, stronger read on their own (cfg.llm.escalation).
+    const esc = cfg.llm.escalation;
+    if (useLlm && esc) {
+      const big = (e: ScoredEvent) => (["LARGE", "EXTREME"] as string[]).includes(e.impact.NIFTY.magnitude) || (["LARGE", "EXTREME"] as string[]).includes(e.impact.SENSEX.magnitude);
+      for (const c of batch) {
+        const first = scored.get(c.id);
+        if (!first || !big(first) || result.escalated >= esc.maxPerCycle) continue;
+        try {
+          const resp = await llm.structured({ system: RUBRIC_SYSTEM_PROMPT, user: buildDigest([c], ctx), model: esc.model, effort: esc.effort, maxTokens: 16_000, schema: EventScoreBatchS });
+          result.usage.inputTokens += resp.usage.inputTokens;
+          result.usage.outputTokens += resp.usage.outputTokens;
+          result.usage.cacheReadTokens += resp.usage.cacheReadTokens;
+          result.usage.cacheCreationTokens += resp.usage.cacheCreationTokens;
+          result.escalated++;
+          const out = resp.parsed?.scores?.find((s) => s.cluster_id === c.id);
+          if (out) scored.set(c.id, fromLlmScore(out, c, cfg, resp.model, ctx.nowMs));
+        } catch (err) {
+          logger?.warn("escalation scoring failed; keeping the first score", { error: err instanceof Error ? err.message : String(err), cluster: c.id });
+        }
       }
     }
     for (const c of batch) {

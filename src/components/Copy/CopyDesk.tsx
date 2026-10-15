@@ -17,6 +17,7 @@ import { wholeRupees } from "@/lib/copy/prices";
 import { istParts } from "@/lib/ist";
 import IndexActionStrip from "./ActionStrip";
 import SetupBoard from "@/components/Setups/SetupBoard";
+import RecoCard from "@/components/Reco/RecoCard";
 import { titleBadge } from "./alerts";
 import { ALERTS_EXPLAINED } from "./AlertsToggle";
 import CopyChart from "./CopyChart";
@@ -155,6 +156,7 @@ export default function CopyDesk({ initialId, account }: { initialId: string | n
   return (
     <main style={{ width: "100%", maxWidth: 1240, margin: "0 auto", padding: "16px 16px 56px", display: "grid", gap: 18, boxSizing: "border-box", minWidth: 0 }}>
       <h1 style={SR_ONLY}>Copy trades{d.date ? `, ${fmtDateKey(d.date)}` : ""}</h1>
+      <RecoCard />
       <IndexActionStrip account={d.account.id} headerExtra={<AccountSwitcher basePath="/copy" />} />
       <SetupBoard />
 

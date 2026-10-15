@@ -97,6 +97,11 @@ export interface EngineConfig {
     batchSize: number;
     maxClustersPerCycle: number;
     timeoutMs: number;
+    /**
+     * Second opinion for the stories that can move a signal: after the batch scorer, a cluster whose
+     * NIFTY or SENSEX impact is LARGE or EXTREME is re-scored on its own by this model (null: off).
+     */
+    escalation: { model: string; effort: "low" | "medium" | "high"; maxPerCycle: number } | null;
   };
   ingest: {
     gnewsQueries: string[];
@@ -415,6 +420,7 @@ export const DEFAULT_CONFIG: EngineConfig = {
     batchSize: 10,
     maxClustersPerCycle: 40,
     timeoutMs: 60_000,
+    escalation: null,
   },
   ingest: {
     gnewsQueries: [

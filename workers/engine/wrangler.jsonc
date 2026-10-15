@@ -76,13 +76,17 @@
     "LIVE_TRADING": "false",
     "GROWW_DATA_VIA_RELAY": "false",
     // News scorer: "workers-ai" (AI binding) or "anthropic" (needs the ANTHROPIC_API_KEY secret).
-    "LLM_PROVIDER": "workers-ai",
-    "LLM_MODEL": "@cf/zai-org/glm-5.3",
+    "LLM_PROVIDER": "anthropic",
+    // Claude Sonnet 5.5 scores every story; Claude Opus 5.5 re-scores the LARGE/EXTREME ones (at most 4 a cycle).
+    "LLM_MODEL": "claude-sonnet-5-5",
     "LLM_EFFORT": "low",
+    "LLM_ESCALATE_MODEL": "claude-opus-5-5",
+    "LLM_ESCALATE_EFFORT": "high",
+    "LLM_ESCALATE_MAX_PER_CYCLE": "4",
     // Daily caps; the lexicon scorer takes over when one is reached. At GLM-5.3 list prices
     // ($1.40/M input, $4.40/M output) these cap spend at about $8.60 a day.
-    "LLM_DAILY_INPUT_TOKEN_BUDGET": "3000000",
-    "LLM_DAILY_OUTPUT_TOKEN_BUDGET": "1000000",
+    "LLM_DAILY_INPUT_TOKEN_BUDGET": "2000000",
+    "LLM_DAILY_OUTPUT_TOKEN_BUDGET": "300000",
     "CAPITAL_INR": "500000",
     // Indices the engine trades, comma-separated: "NIFTY,SENSEX" trades both. Both share the daily limits.
     "INDICES": "NIFTY,SENSEX",
