@@ -99,6 +99,21 @@ describe("getOptionChain with the market feed", () => {
     expect(h.count("/v2/option/chain")).toBe(2);
   });
 
+  it("keeps the 5 s REST refresh and the 'rest' label for an expiry the feed does not carry", async () => {
+    const h = harness(now);
+    // Only the index ticks are fresh: the feed's option strikes are for another expiry.
+    const store = new TickStore();
+    for (const f of FEED_FRAMES_B64) store.applyFrame(b64(f), now - 500);
+    const indexOnly: SnapshotFn = async () => ({ ticks: store.list().filter((t) => !t.key.startsWith("NSE_FO|")), connected: true, lastMessageAt: now - 100, at: now });
+    const v = await optionChainWithFeed(h.market, indexOnly, "NIFTY", "2026-10-19", now);
+    expect(v.feed).toBe("rest");
+    expect(v.spot).toBe(22622.7);
+    expect(v.rows.find((r) => r.strike === 22650)!.ce!.ltp).toBe(119.85);
+    h.clock.t += 6_000;
+    await optionChainWithFeed(h.market, indexOnly, "NIFTY", "2026-10-19", h.clock.t);
+    expect(h.count("/v2/option/chain")).toBe(2);
+  });
+
   it("uses REST alone with the 5 s TTL when the feed is stale", async () => {
     const h = harness(now);
     const stale = snapshotOf(now - 60_000, false, null);

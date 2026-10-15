@@ -385,7 +385,8 @@ function overlaySide(side: OptionSideView | null, t: FeedTick | undefined): Opti
 /**
  * The REST chain with fresher feed ticks laid over the subscribed strikes (LTP, change, bid/ask, volume, OI,
  * IV and greeks when present) and the spot from the underlying's tick. ATM, PCR and max pain are recomputed.
- * Returns the view unchanged (feed "rest") when no tick applies.
+ * Feed "websocket" only when an option tick applies; with only the spot's tick, the spot and ATM are updated
+ * and the view stays "rest" with REST's fetchedAt.
  */
 export function overlayChainTicks(view: OptionChainView, fresh: ReadonlyMap<string, FeedTick>, underlyingKey: string): OptionChainView {
   if (view.rows.length === 0 || fresh.size === 0) return { ...view, feed: "rest" };
@@ -400,7 +401,9 @@ export function overlayChainTicks(view: OptionChainView, fresh: ReadonlyMap<stri
   const u = fresh.get(underlyingKey);
   const spot = u?.ltp ?? view.spot;
   if (applied === null && !u) return { ...view, feed: "rest" };
-  const at = Math.max(applied ?? 0, u?.receivedAt ?? 0);
+  // Only the spot is live (an expiry the feed does not carry): the option prices are still REST's.
+  if (applied === null) return { ...view, spot, atmStrike: atmStrike(view.rows, spot), feed: "rest" };
+  const at = Math.max(applied, u?.receivedAt ?? 0);
   return {
     ...view,
     spot,

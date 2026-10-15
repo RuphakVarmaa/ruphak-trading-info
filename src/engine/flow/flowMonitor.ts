@@ -512,15 +512,19 @@ export class FlowMonitor {
       }
     }
 
-    // OI walls: the most call OI (resistance) and put OI (support).
+    // OI walls: the most call OI (resistance) and put OI (support). The snapshot holds only the subscribed
+    // strikes, which re-centre with the spot: a move is reported only when both strikes were in view both times.
     const walls = maxOiStrikes(cur);
+    const prevStrikes = prev ? new Set(prev.rows.map((r) => r.strike)) : null;
+    const curStrikes = new Set(cur.rows.map((r) => r.strike));
     for (const [k, label, who] of [
       ["ce", "Resistance", "call"],
       ["pe", "Support", "put"],
     ] as const) {
       const w = walls[k];
       const old = s.walls[k];
-      if (w && old !== null && w.strike !== old) {
+      const inView = prevStrikes !== null && w !== null && old !== null && prevStrikes.has(old) && prevStrikes.has(w.strike) && curStrikes.has(old);
+      if (w && old !== null && w.strike !== old && inView) {
         this.event(s, `wall:${k}:${w.strike}`, 15 * MINUTE_MS, cur.t, {
           kind: "WALL_SHIFT",
           strike: w.strike,

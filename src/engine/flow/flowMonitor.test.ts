@@ -120,6 +120,32 @@ describe("windows", () => {
     expect(s.fastestOiAdd.ce).toBeNull();
   });
 
+  it("reports a wall move only when both strikes stay in view, not when the window re-centres", () => {
+    const mon = new FlowMonitor({ stats: EMPTY_STATS });
+    const at = (m: number, strikes: number[], spot: number, putOi: (strike: number) => number): ChainSnapshot => ({
+      t: tAt(m),
+      index: "NIFTY",
+      expiry: "2026-10-20",
+      lotSize: 65,
+      spot,
+      rows: strikes.map((strike) => ({ strike, ce: q({ oi: 100_000 }), pe: q({ oi: putOi(strike), delta: -0.5 }) })),
+    });
+    const low = STRIKES;
+    const high = STRIKES.map((s) => s + 200);
+    // The put wall is 22350 (2M) while the window is 22350–22650.
+    for (let m = 0; m < 3; m++) mon.ingest(at(m, low, 22500, (s) => (s === 22350 ? 2_000_000 : s === 22550 ? 300_000 : 100_000)));
+    // The spot runs up and the window re-centres to 22550–22850: 22350 leaves the view and 22550 is now the
+    // most put OI in view, though no OI changed.
+    for (let m = 3; m < 6; m++) mon.ingest(at(m, high, 22700, (s) => (s === 22550 ? 300_000 : 100_000)));
+    expect(mon.view("NIFTY", tAt(5)).events.filter((e) => e.kind === "WALL_SHIFT")).toEqual([]);
+    expect(mon.view("NIFTY", tAt(5)).summary.support).toEqual({ strike: 22550, oi: 300_000 });
+    // Puts are then written at 22650, inside the window both minutes: that is a real move.
+    mon.ingest(at(6, high, 22700, (s) => (s === 22650 ? 500_000 : s === 22550 ? 300_000 : 100_000)));
+    const moves = mon.view("NIFTY", tAt(6)).events.filter((e) => e.kind === "WALL_SHIFT");
+    expect(moves.map((e) => e.strike)).toEqual([22650]);
+    expect(moves[0].text).toContain("Support moved 22550 → 22650");
+  });
+
   it("raises a plain-words event for a notable 5-minute build-up", () => {
     const mon = new FlowMonitor({ stats: EMPTY_STATS });
     putWriting(mon, 20);

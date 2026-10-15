@@ -318,6 +318,9 @@ export function ruleMatches(rule: RuleStats, x: RuleContext): boolean {
     });
   }
   if (id.startsWith("VOL_SPIKE")) {
+    // Only the up-spike rules have a live detector. DOWN_FADE (a down-tick spike on the other side) and DTE
+    // (a baseline matched on days to expiry) are conditions the monitor does not track, so they never match.
+    if (!/^VOL_SPIKE_(UP|ATM)(_ENGINE)?(_NIFTY|_SENSEX)?$/.test(id)) return false;
     const since = x.now - (p.windowMin ?? 5) * MINUTE_MS;
     return flow.events.some(
       (e) =>

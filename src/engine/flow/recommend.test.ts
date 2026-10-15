@@ -422,6 +422,10 @@ describe("flow reading and live rule detectors", () => {
     expect(ruleMatches(rule({ ...base, id: "VOL_SPIKE_ATM", params: { k: 5 } }), ctx)).toBe(true);
     expect(ruleMatches(rule({ ...base, id: "VOL_SPIKE_ATM", params: { k: 8 } }), ctx)).toBe(false);
     expect(ruleMatches(rule({ ...base, id: "VOL_SPIKE_ATM" }), { ...ctx, optionType: "PE" })).toBe(false);
+    expect(ruleMatches(rule({ ...base, id: "VOL_SPIKE_UP_ENGINE_NIFTY", params: { k: 5 } }), ctx)).toBe(true);
+    // No live detector for these conditions: a same-side up-spike must not count as them.
+    expect(ruleMatches(rule({ ...base, id: "VOL_SPIKE_DOWN_FADE_NIFTY", params: { k: 5 } }), ctx)).toBe(false);
+    expect(ruleMatches(rule({ ...base, id: "VOL_SPIKE_UP_DTE_NIFTY", params: { k: 5 } }), ctx)).toBe(false);
     expect(ruleMatches(rule({ ...base, id: "PCR_RISE" }), ctx)).toBe(true);
     expect(ruleMatches(rule({ ...base, id: "PCR_FALL" }), ctx)).toBe(false);
     expect(ruleMatches(rule({ ...base, id: "ATM_DRY_UP" }), ctx)).toBe(true);
