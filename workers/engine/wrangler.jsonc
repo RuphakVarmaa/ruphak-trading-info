@@ -75,6 +75,9 @@
     "ENGINE_ENV": "prod",
     "LIVE_TRADING": "false",
     "GROWW_DATA_VIA_RELAY": "false",
+    // Paper practice quota on the main account: one practice trade per hour window 09:30–14:30.
+    // "main" every session, "main:YYYY-MM-DD" that IST date only, "off" to stop.
+    "PRACTICE_QUOTA": "main:2026-10-15",
     // News scorer: "workers-ai" (AI binding) or "anthropic" (needs the ANTHROPIC_API_KEY secret).
     "LLM_PROVIDER": "anthropic",
     // Claude Sonnet 5.5 scores every story; Claude Opus 5.5 re-scores the LARGE/EXTREME ones (at most 4 a cycle).

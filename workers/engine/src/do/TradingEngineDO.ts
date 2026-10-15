@@ -42,6 +42,7 @@ import { applyExitFills, persistResult } from "../../../../src/engine/pipeline/e
 import { recordSourceHealth } from "../../../../src/engine/pipeline/ingestCycle";
 import { MarketContextStore } from "../../../../src/engine/pipeline/marketContext";
 import { runPositionCycle, type PositionReport } from "../../../../src/engine/pipeline/positionCycle";
+import { practiceQuotaOn } from "../../../../src/engine/pipeline/practiceCycle";
 import { quoteRows, runTradingCycle, type CycleReport } from "../../../../src/engine/pipeline/tradingCycle";
 import { SyntheticOptionQuotes } from "../../../../src/engine/pricing/syntheticOptionPricer";
 import { randomId, type Broker, type EngineDeps, type MarketDataSource, type OptionFlowSource, type OptionQuoteSource, type Repository } from "../../../../src/engine/ports";
@@ -517,7 +518,7 @@ export class TradingEngineDO extends DurableObject<Env> {
       }
     }
 
-    const report = await runTradingCycle(this.deps(mode), { noEntries, decisionEveryMs: 5 * MINUTE_MS, recommend: true });
+    const report = await runTradingCycle(this.deps(mode), { noEntries, decisionEveryMs: 5 * MINUTE_MS, recommend: true, practice: mode === "PAPER" && practiceQuotaOn(this.env.PRACTICE_QUOTA, now) });
     if (report.snapshot) {
       const age = report.snapshot.dataAgeSec;
       await recordSourceHealth(repo, "yahoo", age < 600, now, age < 600 ? undefined : `market data ${Math.round(age)} s old`);

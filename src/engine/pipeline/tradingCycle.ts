@@ -10,6 +10,7 @@ import type { EngineDeps } from "../ports";
 import { combineConviction } from "../strategy/conviction";
 import { recordAdvice } from "../strategy/advice";
 import { refreshSetups } from "./setupsCycle";
+import { runPracticeQuota } from "./practiceCycle";
 import { refreshRecommendation } from "./recoCycle";
 import type { SetupsRecord } from "../strategy/setups";
 import { planEntry } from "../strategy/planner";
@@ -52,6 +53,8 @@ export interface TradingCycleOptions {
    * tick only: it quotes a few contracts, so backtests and follower books leave it off.
    */
   recommend?: boolean;
+  /** Paper practice quota (pipeline/practiceCycle.ts): one practice trade per hour window 09:30–14:30. */
+  practice?: boolean;
 }
 
 export interface CycleReport {
@@ -154,6 +157,7 @@ export async function runTradingCycle(deps: EngineDeps, opts: TradingCycleOption
   const noEntries = opts.noEntries ?? (published && deps.mode === "LIVE" ? `strategy ${strategyMode(cfg)} is for paper books only` : null);
   // --- WP3/WP4 published strategies: end ---
   report.halted = halt?.detail ?? noEntries ?? null;
+  const setupsByIndex: Partial<Record<IndexId, SetupsRecord | null>> = {};
   const regimes: Partial<Record<IndexId, Regime>> = {};
 
   for (const index of cfg.indices) {
@@ -178,6 +182,7 @@ export async function runTradingCycle(deps: EngineDeps, opts: TradingCycleOption
       let setups: SetupsRecord | null = null;
       try {
         setups = await refreshSetups(deps, index, f, snap, regime, calendar);
+        setupsByIndex[index] = setups;
       } catch (err) {
         logger.warn("setups error", { index, error: err instanceof Error ? err.message : String(err) });
       }
@@ -204,6 +209,17 @@ export async function runTradingCycle(deps: EngineDeps, opts: TradingCycleOption
       const msg = `${index}: ${err instanceof Error ? err.message : String(err)}`;
       report.errors.push(msg);
       logger.error("trading cycle error", { error: msg });
+    }
+  }
+
+  if (opts.practice && phase === "OPEN" && !halt && !noEntries) {
+    try {
+      const note = await runPracticeQuota({ ...deps, calendar }, { now, features: report.features, convictions: report.convictions, pressure: report.pressure, setups: setupsByIndex, risk, perf });
+      if (note) logger.info(note);
+    } catch (err) {
+      const msg = `practice: ${err instanceof Error ? err.message : String(err)}`;
+      report.errors.push(msg);
+      logger.error("practice quota error", { error: msg });
     }
   }
 
