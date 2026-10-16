@@ -14,6 +14,7 @@ import type {
   IndexId,
   RecommendationStatus,
   Regime,
+  ScheduledEventView,
   SignalView,
 } from "@/engine/api-types";
 import { DEFAULT_CONFIG } from "@/engine/config";
@@ -76,6 +77,8 @@ export const MAP_COLORS = {
   cpQuiet: "#8a8981",
   cpInNews: "#b5650d",
   cpHeavy: "#7a3410",
+  /** The dark outline of a marker whose story drives a signal now. */
+  ring: "#1f1e1d",
 } as const;
 
 export interface GeoMarkerItem {
@@ -102,6 +105,8 @@ export interface GeoMarker {
   ring: boolean;
   /** One line under the name in the popup. */
   summary: string;
+  /** How many stories or headlines sit at this place (a chokepoint: its headlines in the window). `items` holds the first few. */
+  itemCount: number;
   items: GeoMarkerItem[];
 }
 
@@ -158,6 +163,7 @@ export function eventMarkers(placed: readonly PlacedEvent[], driving: ReadonlySe
       hollow: false,
       ring: sorted.some((p) => driving.has(p.event.clusterId)),
       summary: `${sorted.length} engine stor${sorted.length === 1 ? "y" : "ies"} · NIFTY ${dirWord(dir)} on balance`,
+      itemCount: sorted.length,
       items: sorted.slice(0, 4).map((p) => ({
         title: p.event.title,
         href: `/events/${encodeURIComponent(p.event.clusterId)}`,
@@ -198,6 +204,7 @@ export function headlineMarkers(items: readonly IntelItem[], nowMs: number | nul
       hollow: false,
       ring: false,
       summary: `${sorted.length} headline${sorted.length === 1 ? "" : "s"} in the feed · context, not scored`,
+      itemCount: sorted.length,
       items: sorted.slice(0, 3).map(({ item, match }) => ({
         title: item.title,
         href: item.url || null,
@@ -223,8 +230,39 @@ export function chokepointMarkers(chokepoints: readonly ChokepointNews[], nowMs:
     hollow: true,
     ring: false,
     summary: `${cp.count} headline${cp.count === 1 ? "" : "s"} in ${CHOKEPOINT_WINDOW_HOURS} h · news level, not vessel data`,
+    itemCount: cp.count,
     items: cp.latest ? [{ title: cp.latest.title, href: cp.latest.url || null, external: true, meta: [cp.latest.source, ageText(cp.latest.publishedAt, nowMs)].filter(Boolean).join(" · ") }] : [],
   }));
+}
+
+/**
+ * The count on a map layer's toggle: the stories or headlines placed and the places they sit at
+ * ("5 · 4 places"), the number of chokepoints, or "no data" while the layer's feed has not loaded
+ * (a 0 there would claim the feed is empty).
+ */
+export function layerChipText(layer: GeoLayer, markers: readonly GeoMarker[], ready: boolean): string {
+  if (!ready) return "no data";
+  const mine = markers.filter((m) => m.layer === layer);
+  if (layer === "chokepoint") return String(mine.length);
+  const items = mine.reduce((a, m) => a + m.itemCount, 0);
+  return items === 0 ? "0" : `${items} · ${mine.length} place${mine.length === 1 ? "" : "s"}`;
+}
+
+// ---------------------------------------------------------------------------
+// The 30-day calendar
+// ---------------------------------------------------------------------------
+
+/** Rows the 8-day ScheduledEventsStrip shows: it renders `scheduled.slice(0, 8)`. */
+export const STRIP_ROWS = 8;
+
+/**
+ * The 30-day calendar minus the events the strip already shows, still ahead of now, in time order.
+ * It excludes by id, not by date, so a busy week whose 9th event falls inside the strip's 8-day
+ * window still appears here. With no strip data yet, nothing is excluded.
+ */
+export function moreScheduled(month: readonly ScheduledEventView[], strip: readonly ScheduledEventView[] | null, nowMs: number): ScheduledEventView[] {
+  const shown = new Set((strip ?? []).slice(0, STRIP_ROWS).map((e) => e.id));
+  return month.filter((e) => !shown.has(e.id) && Date.parse(e.at) > nowMs).sort((a, b) => Date.parse(a.at) - Date.parse(b.at));
 }
 
 // ---------------------------------------------------------------------------
@@ -290,7 +328,13 @@ export function pressureWords(epi: number): PressureWords {
 // ---------------------------------------------------------------------------
 
 export type EngineVerdict =
-  | { kind: "HOLDING"; contractLabel: string; eventLed: boolean }
+  | {
+      kind: "HOLDING";
+      contractLabel: string;
+      eventLed: boolean;
+      /** +1 for an open CE (gains when the index rises), -1 for an open PE. */
+      side: 1 | -1;
+    }
   | { kind: "ENTERING"; contractLabel: string }
   | { kind: "ENTER_ADVICE"; contractLabel: string; pausedBy: string[] }
   | { kind: "WAIT"; reason: string; trigger: string | null }
@@ -301,7 +345,9 @@ export function engineVerdict(s: SignalView | null, nowMs: number | null): Engin
   if (!s) return { kind: "NO_SIGNAL" };
   const at = Date.parse(s.computedAt);
   if (nowMs != null && Number.isFinite(at) && nowMs - at > SIGNAL_MAX_AGE_MS) return { kind: "STALE", ageMs: nowMs - at };
-  if (s.position) return { kind: "HOLDING", contractLabel: s.position.contract.label, eventLed: s.position.dominantSource === "EVENT" };
+  if (s.position) {
+    return { kind: "HOLDING", contractLabel: s.position.contract.label, eventLed: s.position.dominantSource === "EVENT", side: s.position.contract.optionType === "CE" ? 1 : -1 };
+  }
   if (s.allGatesPassed && s.contract && s.contract.lots > 0) return { kind: "ENTERING", contractLabel: s.contract.label };
   if (s.advice) return { kind: "ENTER_ADVICE", contractLabel: s.advice.contract.label, pausedBy: s.advice.pausedBy };
   const first = blocksFor(s, DEFAULT_CONFIG.gates.noEntryBeforeIst, DEFAULT_CONFIG.gates.noEntryAfterIst)[0];
@@ -309,11 +355,19 @@ export function engineVerdict(s: SignalView | null, nowMs: number | null): Engin
   return { kind: "WAIT", reason: s.noPlanReason ?? "The engine has no plan for this index right now.", trigger: null };
 }
 
-export type GeoAnswerKind = "news_in_entry" | "news_supports_engine_waits" | "news_against_reading" | "news_silent" | "news_not_used" | "no_reading";
+export type GeoAnswerKind =
+  | "news_in_entry"
+  | "holding_news_with"
+  | "holding_news_against"
+  | "news_supports_engine_waits"
+  | "news_against_reading"
+  | "news_silent"
+  | "news_not_used"
+  | "no_reading";
 
 export interface GeoAnswer {
   kind: GeoAnswerKind;
-  /** "Yes" / "Not yet" / "No" / "Unknown": the short word before the sentence. */
+  /** "Yes" / "Holding" / "Not yet" / "No" / "Unknown": the short word before the sentence. */
   word: string;
   text: string;
   tone: "action" | "hold" | "idle" | "stale";
@@ -331,30 +385,57 @@ export function geoTradeAnswer(index: IndexId, vote: EventVote, verdict: EngineV
     return { kind: "news_not_used", word: "No", text: `The news signal is not part of ${index}'s decision right now${vote.kind === "disabled" ? " (switched off)" : ""}.`, tone: "idle" };
   }
   if (vote.kind === "abstain") {
-    return { kind: "news_silent", word: "No", text: `The news has no net direction for ${index} now (${stripDot(vote.notes)}).`, tone: "idle" };
+    // The engine's notes already say why ("no live events", "6 live stories, no net direction (EPI −0.02)").
+    return { kind: "news_silent", word: "No", text: `The news signal abstains for ${index}: ${stripDot(vote.notes)}.`, tone: "idle" };
+  }
+  if (vote.epi === 0) {
+    return { kind: "news_silent", word: "No", text: `The news signal has no net direction for ${index} (EPI 0.00).`, tone: "idle" };
   }
   const lean = vote.epi > 0 ? "bullish" : "bearish";
-  if (vote.sameSide === false || vote.sameSide == null) {
+  const epi = `EPI ${signed2(vote.epi)}`;
+  // An open position is judged against its own side: the engine keeps holding after its conviction flips.
+  if (verdict.kind === "HOLDING") {
+    if (Math.sign(vote.epi) === verdict.side) {
+      return {
+        kind: "holding_news_with",
+        word: "Holding",
+        text: `The engine already holds ${verdict.contractLabel}; news supplies ${pct(vote.sharePct)} of the current pull, on the same side. No new entry while it is open.`,
+        tone: "hold",
+      };
+    }
+    return { kind: "holding_news_against", word: "Holding", text: `The news now leans ${lean} (${epi}), against the open ${verdict.contractLabel}.`, tone: "stale" };
+  }
+  if (vote.sameSide == null) {
+    // Conviction 0: the engine zeroes the score when too little weight votes, so nothing outweighs the news.
+    const why = verdict.kind === "WAIT" ? ` The engine waits: ${stripDot(verdict.reason)}.${verdict.trigger ? ` It would enter when: ${stripDot(verdict.trigger)}.` : ""}` : "";
     return {
-      kind: "news_against_reading",
-      word: "No",
-      text: `The news leans ${lean} (EPI ${signed2(vote.epi)}), against the engine's overall reading; the other signals outweigh it.`,
+      kind: "news_supports_engine_waits",
+      word: "Not yet",
+      text: `News leans ${lean} (${epi}), but the engine's conviction is 0: too little signal weight has a view.${why}`,
       tone: "idle",
     };
   }
-  if (verdict.kind === "HOLDING" || verdict.kind === "ENTERING" || verdict.kind === "ENTER_ADVICE") {
-    const what = verdict.kind === "HOLDING" ? `the open ${verdict.contractLabel}` : verdict.kind === "ENTERING" ? `the engine's entry on ${verdict.contractLabel}` : `the engine's ENTER advice on ${verdict.contractLabel}`;
+  if (vote.sameSide === false) {
+    return {
+      kind: "news_against_reading",
+      word: "No",
+      text: `The news leans ${lean} (${epi}), against the engine's overall reading; the other signals outweigh it.`,
+      tone: "idle",
+    };
+  }
+  if (verdict.kind === "ENTERING" || verdict.kind === "ENTER_ADVICE") {
+    const what = verdict.kind === "ENTERING" ? `the engine's entry on ${verdict.contractLabel}` : `the engine's ENTER advice on ${verdict.contractLabel}`;
     return {
       kind: "news_in_entry",
       word: "Yes",
       text: `News supplies ${pct(vote.sharePct)} of the pull behind ${what}. Not a profit promise; the news signal has no measured edge yet.`,
-      tone: verdict.kind === "HOLDING" ? "hold" : "action",
+      tone: "action",
     };
   }
   return {
     kind: "news_supports_engine_waits",
     word: "Not yet",
-    text: `News leans ${lean} (EPI ${signed2(vote.epi)}), but the engine waits: ${stripDot(verdict.reason)}.${verdict.trigger ? ` It would enter when: ${stripDot(verdict.trigger)}.` : ""}`,
+    text: `News leans ${lean} (${epi}), but the engine waits: ${stripDot(verdict.reason)}.${verdict.trigger ? ` It would enter when: ${stripDot(verdict.trigger)}.` : ""}`,
     tone: "idle",
   };
 }

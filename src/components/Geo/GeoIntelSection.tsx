@@ -4,7 +4,7 @@ import Link from "next/link";
 import dynamic from "next/dynamic";
 import { useMemo, useState } from "react";
 import type { IndexId, ScheduledEventView, SourceName } from "@/engine/api-types";
-import { SCHEDULED_HOURS, useClientNow, useEngineState, useNow } from "@/hooks/useEngineState";
+import { useClientNow, useEngineState, useNow } from "@/hooks/useEngineState";
 import { usePolled } from "@/hooks/usePolled";
 import type { HeadlineFeed } from "@/lib/market/headlines";
 import { chokepointNews } from "@/utils/api";
@@ -18,7 +18,19 @@ import { alpha, C, impactColor } from "@/components/shared/colors";
 import { fmtIstDay, fmtIstHm } from "@/components/shared/format";
 import { Disclosure, EmptyState, PageHeader, Panel, PanelHeader, Pill, Section } from "@/components/shared/ui";
 import EngineLinkCard from "./EngineLinkCard";
-import { ageText, chokepointMarkers, drivingIds, engineLinkFor, eventMarkers, headlineMarkers, MAP_COLORS, placeEvents, type GeoLayer } from "./geoView";
+import {
+  ageText,
+  chokepointMarkers,
+  drivingIds,
+  engineLinkFor,
+  eventMarkers,
+  headlineMarkers,
+  layerChipText,
+  MAP_COLORS,
+  moreScheduled,
+  placeEvents,
+  type GeoLayer,
+} from "./geoView";
 
 const GeoMap = dynamic(() => import("./GeoMap"), {
   ssr: false,
@@ -34,29 +46,35 @@ const PIPELINE: { key: SourceName; label: string }[] = [
   { key: "claude", label: "Scorer" },
 ];
 
-const LAYERS: { id: GeoLayer; label: string; swatch: string; hollow?: boolean }[] = [
-  { id: "engine", label: "Engine stories", swatch: MAP_COLORS.bear },
+// The engine swatch is neutral: its markers take the bull/bear/flat colour of their stories.
+const LAYERS: { id: GeoLayer; label: string; swatch: string; ring?: string; hollow?: boolean }[] = [
+  { id: "engine", label: "Engine stories", swatch: MAP_COLORS.flat, ring: MAP_COLORS.ring },
   { id: "headline", label: "Geo headlines", swatch: MAP_COLORS.headline },
   { id: "chokepoint", label: "Chokepoints", swatch: MAP_COLORS.cpInNews, hollow: true },
 ];
 
-function Swatch({ color, hollow = false, size = 10 }: { color: string; hollow?: boolean; size?: number }) {
-  return <span aria-hidden style={{ width: size, height: size, borderRadius: "50%", display: "inline-block", flexShrink: 0, background: hollow ? "transparent" : color, border: `2px ${hollow ? "dashed" : "solid"} ${color}` }} />;
+function Swatch({ color, ring, hollow = false, size = 10 }: { color: string; ring?: string; hollow?: boolean; size?: number }) {
+  return <span aria-hidden style={{ width: size, height: size, borderRadius: "50%", display: "inline-block", flexShrink: 0, background: hollow ? "transparent" : color, border: `2px ${hollow ? "dashed" : "solid"} ${ring ?? color}` }} />;
 }
 
-/** Scheduled releases beyond the first days (the strip above shows those), up to 30 days out. */
-function LaterThisMonth({ events, error, now }: { events: ScheduledEventView[] | null; error: string | null; now: number | null }) {
-  const cutoff = now == null ? null : now + SCHEDULED_HOURS * 3_600_000;
-  const later = events == null || cutoff == null ? null : events.filter((e) => Date.parse(e.at) > cutoff);
+const MORE_ROWS = 12;
+
+/**
+ * The 30-day calendar beyond the rows the 8-day strip beside it shows. It leaves out the strip's
+ * rows by id, so an event the strip's window holds but does not show still appears here.
+ */
+function MoreScheduled({ events, error, now }: { events: ScheduledEventView[] | null; error: string | null; now: number | null }) {
+  const { scheduled } = useEngineState();
+  const more = events == null || now == null ? null : moreScheduled(events, scheduled, now);
   return (
     <Panel>
-      <PanelHeader title={`Later, to 30 days`} right={later ? <span style={{ fontSize: 11, color: C.muted3, textTransform: "none" }}>{later.length} scheduled</span> : undefined} />
-      {later == null ? (
+      <PanelHeader title="More, to 30 days" right={more ? <span style={{ fontSize: 11, color: C.muted3, textTransform: "none" }}>{more.length} scheduled</span> : undefined} />
+      {more == null ? (
         <EmptyState>{error && events == null ? "No data: the 30-day calendar did not load." : "Loading the 30-day calendar…"}</EmptyState>
-      ) : later.length === 0 ? (
+      ) : more.length === 0 ? (
         <EmptyState>No data: nothing else scheduled in the engine&apos;s calendar for the next 30 days.</EmptyState>
       ) : (
-        later.slice(0, 12).map((e) => (
+        more.slice(0, MORE_ROWS).map((e) => (
           <div key={e.id} style={{ display: "grid", gridTemplateColumns: "88px minmax(0, 1fr)", gap: 10, padding: "10px 16px", borderTop: `1px solid ${C.borderSoft}`, alignItems: "baseline" }}>
             <span className="tnum" style={{ fontSize: 12, color: C.muted, fontFamily: "var(--font-num)" }}>
               {fmtIstDay(e.at)}
@@ -69,6 +87,9 @@ function LaterThisMonth({ events, error, now }: { events: ScheduledEventView[] |
             </span>
           </div>
         ))
+      )}
+      {more != null && more.length > MORE_ROWS && (
+        <div style={{ padding: "10px 16px", borderTop: `1px solid ${C.borderSoft}`, fontSize: 12.5, color: C.muted3 }}>+{more.length - MORE_ROWS} more in the next 30 days</div>
       )}
     </Panel>
   );
@@ -87,14 +108,21 @@ export default function GeoIntelSection() {
   const items = useMemo(() => headlines.data?.items ?? [], [headlines.data]);
   const driving = useMemo(() => drivingIds(signals), [signals]);
   const { placed, unplaced } = useMemo(() => placeEvents(events ?? []), [events]);
-  // The 72-hour chokepoint window needs the browser clock: until hydration every level reads quiet.
-  const chokepoints = useMemo(() => chokepointNews(clientNow == null ? [] : items, clientNow ?? 0), [items, clientNow]);
+  const headlinesLoaded = headlines.data != null;
+  // Chokepoint levels need the headline feed and the browser clock (the 72-hour window). Until both are
+  // in, a level would read "quiet, 0 headlines", which is made up: the map leaves them off and says "no data".
+  const chokepointsReady = headlinesLoaded && clientNow != null;
+  const chokepoints = useMemo(() => chokepointNews(chokepointsReady ? items : [], clientNow ?? 0), [chokepointsReady, items, clientNow]);
   const markers = useMemo(
-    () => [...chokepointMarkers(chokepoints, clientNow), ...headlineMarkers(items, clientNow), ...eventMarkers(placed, driving, now)],
-    [chokepoints, items, placed, driving, now, clientNow],
+    () => [...(chokepointsReady ? chokepointMarkers(chokepoints, clientNow) : []), ...headlineMarkers(items, clientNow), ...eventMarkers(placed, driving, now)],
+    [chokepointsReady, chokepoints, items, placed, driving, now, clientNow],
   );
-  const counts: Record<GeoLayer, number> = { engine: 0, headline: 0, chokepoint: 0 };
-  for (const m of markers) counts[m.layer] += 1;
+  const chips: Record<GeoLayer, string> = {
+    engine: layerChipText("engine", markers, events != null),
+    headline: layerChipText("headline", markers, headlinesLoaded),
+    chokepoint: layerChipText("chokepoint", markers, chokepointsReady),
+  };
+  const headlinesFailed = !headlinesLoaded && headlines.error != null;
   const links = INDICES.map((i) => engineLinkFor(i, signals?.find((s) => s.index === i) ?? null, events, now));
   const newestStory = (events ?? []).reduce<string | null>((m, e) => (m == null || Date.parse(e.lastSeenAt) > Date.parse(m) ? e.lastSeenAt : m), null);
 
@@ -179,10 +207,10 @@ export default function GeoIntelSection() {
                     border: `1px solid ${on ? C.borderStrong : C.border}`,
                   }}
                 >
-                  <Swatch color={l.swatch} hollow={l.hollow} />
+                  <Swatch color={l.swatch} ring={l.ring} hollow={l.hollow} />
                   {l.label}
                   <span className="tnum" style={{ fontFamily: "var(--font-num)", color: C.muted3, fontSize: 11.5 }}>
-                    {counts[l.id]}
+                    {chips[l.id]}
                   </span>
                 </button>
               );
@@ -192,6 +220,7 @@ export default function GeoIntelSection() {
             <GeoMap markers={markers} visible={visible} />
           </div>
           <div style={{ display: "grid", gap: 6, padding: "12px 14px", borderTop: `1px solid ${C.border}`, fontSize: 12.5, color: C.muted, lineHeight: 1.5 }}>
+            {headlinesFailed && <div style={{ color: C.orange }}>Headline feed did not load: no data for the headline and chokepoint layers.</div>}
             <div style={{ display: "flex", flexWrap: "wrap", gap: "6px 16px", alignItems: "center" }}>
               <span style={{ display: "inline-flex", gap: 6, alignItems: "center" }}>
                 <Swatch color={MAP_COLORS.bull} /> bullish for NIFTY
@@ -203,7 +232,7 @@ export default function GeoIntelSection() {
                 <Swatch color={MAP_COLORS.flat} /> no net direction
               </span>
               <span style={{ display: "inline-flex", gap: 6, alignItems: "center" }}>
-                <Swatch color="#1f1e1d" hollow /> dark outline: drives a signal now
+                <Swatch color={MAP_COLORS.ring} hollow /> dark outline: drives a signal now
               </span>
               <span style={{ display: "inline-flex", gap: 6, alignItems: "center" }}>
                 <Swatch color={MAP_COLORS.headline} /> headline (context)
@@ -253,14 +282,14 @@ export default function GeoIntelSection() {
           <MarketStrip />
           <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(min(100%, 380px), 1fr))", gap: 20, alignItems: "start" }}>
             <ScheduledEventsStrip />
-            <LaterThisMonth events={month.data} error={month.error} now={now} />
+            <MoreScheduled events={month.data} error={month.error} now={now} />
           </div>
         </div>
       </Section>
 
       <Disclosure id="headlines" title="Chokepoints and headline list" note="Bing headlines on metals, oil and shipping: context only, they do not feed the engine">
         <Panel>
-          <ChokepointMonitor chokepoints={chokepoints} selected={selectedCp} onSelect={setSelectedCp} ready={headlines.data != null && clientNow != null} />
+          <ChokepointMonitor chokepoints={chokepoints} selected={selectedCp} onSelect={setSelectedCp} ready={chokepointsReady} />
         </Panel>
         <Panel style={{ height: 520, display: "flex", flexDirection: "column" }}>
           <IntelFeed items={items} loading={headlines.data == null && headlines.error == null} error={headlines.data == null ? headlines.error : null} stale={headlines.data?.stale ?? false} />

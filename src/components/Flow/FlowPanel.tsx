@@ -398,8 +398,12 @@ function EntryTimesHistory({ index, minuteOfDay }: { index: IndexId; minuteOfDay
 
 export interface FlowPanelProps {
   variant?: "full" | "compact";
-  /** Controlled index (the /options page passes its own); uncontrolled when omitted. */
+  /**
+   * Controlled index: the page passes its own and shows the one NIFTY/SENSEX toggle (as /options does), so the
+   * panel shows none. Uncontrolled when omitted: the panel keeps its own index and shows its own toggle.
+   */
   index?: IndexId;
+  /** Uncontrolled only: called when the panel's own toggle changes the index. */
   onIndexChange?: (index: IndexId) => void;
   /** The engine-clock offset (ms) when the page knows a better one than the engine provider's. */
   clockOffsetMs?: number;
@@ -453,7 +457,7 @@ export default function FlowPanel({ variant = "full", index: controlled, onIndex
         </span>
       </div>
       {flow && <Pill color={flow.source === "mock" ? C.purple : flow.source === "feed" ? C.green : C.blue}>{SOURCE_WORDS[flow.source]}</Pill>}
-      <Segmented size="sm" label="Index" value={index} options={INDEX_OPTIONS} onChange={setIndex} />
+      {controlled == null && <Segmented size="sm" label="Index" value={index} options={INDEX_OPTIONS} onChange={setIndex} />}
       <Segmented size="sm" label="Window" value={win} options={WINDOW_OPTIONS} onChange={setWin} />
     </div>
   );

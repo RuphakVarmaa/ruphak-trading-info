@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import type { EventClusterView, ImpactView, SignalComponentView, SignalView } from "@/engine/api-types";
+import type { EventClusterView, ImpactView, ScheduledEventView, SignalComponentView, SignalView } from "@/engine/api-types";
 import type { IntelItem } from "@/utils/api";
 import {
   activeImpact,
@@ -10,9 +10,12 @@ import {
   eventVote,
   geoTradeAnswer,
   headlineMarkers,
+  layerChipText,
   MAP_COLORS,
+  moreScheduled,
   placeEvents,
   pressureWords,
+  STRIP_ROWS,
   type EngineVerdict,
   type EventVote,
 } from "./geoView";
@@ -99,6 +102,7 @@ describe("eventMarkers", () => {
     expect(iran.items).toHaveLength(2);
     expect(iran.items[0].href).toBe("/events/strong");
     expect(iran.summary).toMatch(/^2 engine stories/);
+    expect(iran.itemCount).toBe(2);
     expect(iran.color).toBe(MAP_COLORS.bear);
     expect(iran.ring).toBe(true);
     expect(iran.radius).toBe(11);
@@ -143,6 +147,44 @@ describe("headlineMarkers and chokepointMarkers", () => {
     expect(red.color).toBe(MAP_COLORS.cpHeavy);
     expect(markers.find((m) => m.placeId === "SUEZ")!.color).toBe(MAP_COLORS.cpQuiet);
   });
+  it("layer chips count items and their places, and say 'no data' before the feed loads", () => {
+    const { placed } = placeEvents([ev("a", "Iran warns shipping"), ev("b", "Iranian strike on tanker"), ev("c", "China stimulus")]);
+    const hl = headlineMarkers([item("1", "Saudi Arabia raises crude prices"), item("2", "Saudi output steady"), item("3", "Japan's exports rise")], NOW);
+    const cps = chokepointMarkers(chokepointNews([], NOW), NOW);
+    const markers = [...eventMarkers(placed, new Set(), NOW), ...hl, ...cps];
+    expect(layerChipText("engine", markers, true)).toBe("3 · 2 places");
+    expect(layerChipText("headline", markers, true)).toBe("3 · 2 places");
+    expect(layerChipText("chokepoint", markers, true)).toBe(String(cps.length));
+    expect(layerChipText("headline", [], true)).toBe("0");
+    expect(layerChipText("headline", markers, false)).toBe("no data");
+    expect(layerChipText("chokepoint", markers, false)).toBe("no data");
+  });
+});
+
+describe("moreScheduled", () => {
+  const sched = (id: string, hoursAhead: number): ScheduledEventView => ({
+    id,
+    title: id,
+    kind: "OTHER",
+    at: new Date(NOW + hoursAhead * 3_600_000).toISOString(),
+    impact: "MED",
+    approx: false,
+    blackoutStart: null,
+    blackoutEnd: null,
+    indices: ["NIFTY"],
+  });
+  it("leaves out only the rows the strip shows, so a busy week leaves no gap", () => {
+    // Ten events inside the strip's 8-day window: the strip shows 8, the 9th and 10th belong here.
+    const week = Array.from({ length: 10 }, (_, i) => sched(`w${i}`, 6 + i * 12));
+    const later = [sched("m1", 24 * 12), sched("m2", 24 * 20)];
+    const past = sched("past", -1);
+    const more = moreScheduled([...later, past, ...week], week, NOW);
+    expect(STRIP_ROWS).toBe(8);
+    expect(more.map((e) => e.id)).toEqual(["w8", "w9", "m1", "m2"]);
+  });
+  it("excludes nothing while the strip has no data", () => {
+    expect(moreScheduled([sched("a", 2), sched("b", 300)], null, NOW).map((e) => e.id)).toEqual(["a", "b"]);
+  });
 });
 
 describe("eventVote", () => {
@@ -178,13 +220,15 @@ describe("pressureWords", () => {
 });
 
 describe("engineVerdict", () => {
-  const position = { contract: { label: "NIFTY 27-OCT-2026 22600 CE" }, dominantSource: "EVENT" } as unknown as SignalView["position"];
+  const position = { contract: { label: "NIFTY 27-OCT-2026 22600 CE", optionType: "CE" }, dominantSource: "EVENT" } as unknown as SignalView["position"];
   it("stale beats holding", () => {
     expect(engineVerdict(signal({ computedAt: iso(20), position }), NOW).kind).toBe("STALE");
     expect(engineVerdict(null, NOW).kind).toBe("NO_SIGNAL");
   });
   it("holding, then entering, then advice", () => {
-    expect(engineVerdict(signal({ position }), NOW)).toEqual({ kind: "HOLDING", contractLabel: "NIFTY 27-OCT-2026 22600 CE", eventLed: true });
+    expect(engineVerdict(signal({ position }), NOW)).toEqual({ kind: "HOLDING", contractLabel: "NIFTY 27-OCT-2026 22600 CE", eventLed: true, side: 1 });
+    const pe = { contract: { label: "NIFTY 27-OCT-2026 22600 PE", optionType: "PE" }, dominantSource: "TREND" } as unknown as SignalView["position"];
+    expect(engineVerdict(signal({ position: pe }), NOW)).toMatchObject({ kind: "HOLDING", side: -1, eventLed: false });
     const contract = { label: "NIFTY 27-OCT-2026 22700 CE", lots: 1 } as SignalView["contract"];
     expect(engineVerdict(signal({ allGatesPassed: true, contract }), NOW).kind).toBe("ENTERING");
     expect(engineVerdict(signal({ allGatesPassed: true, contract: { ...contract!, lots: 0 } }), NOW).kind).toBe("WAIT");
@@ -201,12 +245,18 @@ describe("engineVerdict", () => {
 describe("geoTradeAnswer", () => {
   const voting = (sameSide: boolean | null): EventVote => ({ kind: "voting", epi: -0.34, weight: 0.3, pull: -0.1, sharePct: 31, sameSide });
   const wait: EngineVerdict = { kind: "WAIT", reason: "Conviction too low.", trigger: "Conviction above 0.35." };
+  const holdPe: EngineVerdict = { kind: "HOLDING", contractLabel: "NIFTY X PE", eventLed: true, side: -1 };
+  const holdCe: EngineVerdict = { kind: "HOLDING", contractLabel: "NIFTY X CE", eventLed: false, side: 1 };
   const cases: [EventVote, EngineVerdict, string][] = [
     [{ kind: "absent" }, wait, "news_not_used"],
     [{ kind: "abstain", notes: "no live events", outOfRegime: false }, wait, "news_silent"],
     [voting(false), wait, "news_against_reading"],
+    [voting(null), wait, "news_supports_engine_waits"],
     [voting(true), { kind: "ENTER_ADVICE", contractLabel: "NIFTY X PE", pausedBy: [] }, "news_in_entry"],
     [voting(true), wait, "news_supports_engine_waits"],
+    [voting(true), holdPe, "holding_news_with"],
+    [voting(true), holdCe, "holding_news_against"],
+    [voting(false), holdPe, "holding_news_with"],
     [voting(true), { kind: "STALE", ageMs: 1e6 }, "no_reading"],
   ];
   it.each(cases)("%# gives the right kind and never promises profit", (vote, verdict, kind) => {
@@ -216,8 +266,40 @@ describe("geoTradeAnswer", () => {
   });
   it("names the share and the contract when news is behind an entry", () => {
     const a = geoTradeAnswer("NIFTY", voting(true), { kind: "ENTER_ADVICE", contractLabel: "NIFTY X PE", pausedBy: [] });
+    expect(a.word).toBe("Yes");
     expect(a.text).toContain("31%");
     expect(a.text).toContain("NIFTY X PE");
+  });
+  it("while holding, compares the news with the open position's side, not the conviction", () => {
+    // A CE is still open after the conviction flipped bearish: the bearish news is against the trade.
+    const ce = { contract: { label: "NIFTY 20-OCT-2026 22600 CE", optionType: "CE" }, dominantSource: "TREND" } as unknown as SignalView["position"];
+    const against = engineLinkFor("NIFTY", signal({ conviction: -0.3, position: ce, components: [comp("EVENT", -0.4, 0.3), comp("ORB", -0.1, 0.15)] }), [], NOW).answer;
+    expect(against).toMatchObject({ kind: "holding_news_against", word: "Holding", tone: "stale" });
+    expect(against.text).toBe("The news now leans bearish (EPI −0.40), against the open NIFTY 20-OCT-2026 22600 CE.");
+    // A PE with bearish news: same side, but no new entry while it is open.
+    const pe = { contract: { label: "NIFTY 20-OCT-2026 22600 PE", optionType: "PE" }, dominantSource: "EVENT" } as unknown as SignalView["position"];
+    const withIt = engineLinkFor("NIFTY", signal({ conviction: -0.3, position: pe, components: [comp("EVENT", -0.4, 0.3), comp("ORB", -0.1, 0.15)] }), [], NOW).answer;
+    expect(withIt).toMatchObject({ kind: "holding_news_with", word: "Holding", tone: "hold" });
+    expect(withIt.text).toBe("The engine already holds NIFTY 20-OCT-2026 22600 PE; news supplies 89% of the current pull, on the same side. No new entry while it is open.");
+    for (const a of [against, withIt]) expect(a.word).not.toBe("Yes");
+  });
+  it("gives conviction 0 its own 'Not yet', without claiming other signals outweigh the news", () => {
+    // EVENT is the only voter and its weight is under the engine's minimum, so the score is forced to 0.
+    const a = geoTradeAnswer("NIFTY", { kind: "voting", epi: 0.5, weight: 0.24, pull: 0.5, sharePct: 100, sameSide: null }, wait);
+    expect(a).toMatchObject({ kind: "news_supports_engine_waits", word: "Not yet", tone: "idle" });
+    expect(a.text).toBe(
+      "News leans bullish (EPI +0.50), but the engine's conviction is 0: too little signal weight has a view. The engine waits: Conviction too low. It would enter when: Conviction above 0.35.",
+    );
+    expect(a.text).not.toMatch(/outweigh/);
+    const viaLink = engineLinkFor("NIFTY", signal({ conviction: 0, components: [comp("EVENT", 0.5, 0.24)] }), [], NOW).answer;
+    expect(viaLink.word).toBe("Not yet");
+    expect(viaLink.text).toContain("conviction is 0");
+  });
+  it("states an abstaining news signal once, with the engine's own notes and no nested brackets", () => {
+    const a = geoTradeAnswer("SENSEX", { kind: "abstain", notes: "6 live stories, no net direction (EPI −0.02)", outOfRegime: false }, wait);
+    expect(a).toMatchObject({ kind: "news_silent", word: "No" });
+    expect(a.text).toBe("The news signal abstains for SENSEX: 6 live stories, no net direction (EPI −0.02).");
+    expect(geoTradeAnswer("NIFTY", { kind: "abstain", notes: "no live events.", outOfRegime: false }, wait).text).toBe("The news signal abstains for NIFTY: no live events.");
   });
 });
 
