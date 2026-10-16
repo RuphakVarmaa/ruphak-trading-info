@@ -37,7 +37,7 @@ export default function IndexLevels({ data, error, ageMs, index }: IndexLevelsPr
               aria-current={chosen ? "true" : undefined}
               style={{
                 minWidth: 0,
-                padding: "10px 14px",
+                padding: "10px 12px",
                 borderRadius: 12,
                 background: C.panel,
                 border: `1px solid ${chosen ? alpha(C.gold, 0.6) : C.border}`,
@@ -47,7 +47,7 @@ export default function IndexLevels({ data, error, ageMs, index }: IndexLevelsPr
               <div style={{ ...microLabel, color: chosen ? C.gold : C.muted2 }}>{label}</div>
               {l ? (
                 <>
-                  <div className="tnum" style={{ fontSize: 19, fontWeight: 650, color: C.textStrong, lineHeight: 1.25, overflowWrap: "anywhere" }}>
+                  <div className="tnum" style={{ fontSize: "clamp(14px, 4vw, 19px)", fontWeight: 650, color: C.textStrong, lineHeight: 1.25, whiteSpace: "nowrap" }}>
                     {fmtNum(l.price, 2)}
                   </div>
                   <div className="tnum" style={{ fontSize: 12.5, fontWeight: 600, color: l.change != null ? dirColor(l.change) : C.muted2 }}>

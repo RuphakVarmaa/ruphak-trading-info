@@ -73,7 +73,7 @@ export default function OptionsDesk({ initialIndex, initialExpiry }: { initialIn
   };
 
   return (
-    <main style={{ width: "100%", maxWidth: 1240, margin: "0 auto", padding: "20px 16px 56px", display: "grid", gap: 32, boxSizing: "border-box", minWidth: 0 }}>
+    <main style={{ width: "100%", maxWidth: 1240, margin: "0 auto", padding: "20px 16px 56px", display: "grid", gridTemplateColumns: "minmax(0, 1fr)", gap: 32, boxSizing: "border-box", minWidth: 0 }}>
       <PageHeader
         eyebrow="Options · read-only market data"
         title="Options: build-up now and the month ahead"
