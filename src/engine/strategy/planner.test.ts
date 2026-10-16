@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { accountConfig } from "../accounts";
 import { roundTripChargesPerUnit } from "../broker/charges";
 import { addDays, istAt, istDate, weekdayOf } from "../clock";
@@ -8,7 +8,7 @@ import { loadRiskState } from "../pipeline/riskState";
 import { loadMarketFixtures } from "../testing/fixtures";
 import { createReplayDeps } from "../testing/replayHarness";
 import { MARKET_SYMBOLS, type Conviction, type IndexId, type PlanDecision, type Position, type RiskState, type TradeSide } from "../types";
-import { planEntry } from "./planner";
+import { planEntry, type PlanContext } from "./planner";
 
 const fixtures = loadMarketFixtures();
 const T = istAt("2026-10-07", "11:00");
@@ -192,5 +192,60 @@ describe("WP2/WP5 gates in the planner (main account)", () => {
     const strict = await planMain(withOverrides(open, { gates: { volCheapness: { enabled: true, k: 20 } } }), daily);
     expect(gate(strict, "vol_cheapness")?.passed).toBe(false);
     expect(strict.plan).toBeNull();
+  });
+});
+
+describe("pickContract (the agent account picks its own contract)", () => {
+  // Main's config with the market gates opened, as above, so a plan is made.
+  const open = makeConfig({ gates: { minEdgeRatio: -0.5, maxDataAgeSec: 100_000, minOi: 0, maxSpreadPct: 100 } });
+
+  async function planWith(c: EngineConfig, extra: Partial<PlanContext> = {}) {
+    const deps = createReplayDeps({ cfg: c, startMs: T, candles: fixtures.candles, daily: fixtures.daily });
+    const snap = await deps.market.snapshot(T);
+    const features = computeFeatures("NIFTY", snap, deps.calendar, c);
+    const risk = await loadRiskState(deps.repo, c, await deps.repo.settings.get(), T, "BACKTEST");
+    const decision = await planEntry({ index: "NIFTY", t: T, features, pressure: null, conviction: conviction("NIFTY", "BULL"), risk, perf: [] }, { ...deps, ...extra });
+    return { decision, spot: features.spot };
+  }
+
+  it("leaves main's plans unchanged: without it, or with it unset, the configured selection plans as before", async () => {
+    const before = await planWith(open);
+    expect(before.decision.plan, before.decision.noPlanReason ?? "").not.toBeNull();
+    expect((await planWith(open, { pickContract: undefined })).decision).toEqual(before.decision);
+  });
+
+  it("is asked for the contract, and a plan on the same contract is otherwise identical", async () => {
+    const before = await planWith(open);
+    const pick = vi.fn(async () => before.decision.contract);
+    const picked = await planWith(open, { pickContract: pick });
+    expect(pick).toHaveBeenCalledTimes(1);
+    expect(pick).toHaveBeenCalledWith("NIFTY", before.spot, "BULL", T);
+    expect(picked.decision).toEqual(before.decision);
+  });
+
+  it("plans the contract it returns, bypassing the configured premium band", async () => {
+    const atm = (await planWith(open)).decision.contract!;
+    const deps = createReplayDeps({ cfg: open, startMs: T, candles: fixtures.candles, daily: fixtures.daily });
+    const otm = await deps.instruments.resolve("NIFTY", atm.expiry, atm.strike + 100, "CE");
+    expect(otm).not.toBeNull();
+    const d = (await planWith(open, { pickContract: async () => otm })).decision;
+    expect(d.contract).toEqual(otm);
+    expect(d.plan?.contract).toEqual(otm);
+    // A premium-band account would search for a strike; a picked contract skips that search.
+    const band = (await planWith(cfg, { pickContract: async () => otm })).decision;
+    expect(band.contract).toEqual(otm);
+    expect(band.gates.find((g) => g.gate === "premium_band")).toBeUndefined();
+  });
+
+  it("refuses the entry when the contract is not available", async () => {
+    const none = (await planWith(open, { pickContract: async () => null })).decision;
+    expect(none.plan).toBeNull();
+    expect(gate(none, "contract")).toMatchObject({ passed: false, detail: "the account's contract is not available" });
+    const failing = async (): Promise<null> => {
+      throw new Error("not in the instrument master");
+    };
+    const thrown = (await planWith(open, { pickContract: failing })).decision;
+    expect(thrown.plan).toBeNull();
+    expect(gate(thrown, "contract")?.detail).toBe("the account's contract is not available (not in the instrument master)");
   });
 });
