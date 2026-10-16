@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { SNAPSHOT_TOKEN_LIMIT } from "@/engine/agent/constants";
+import { instructionVersion } from "@/engine/agent/prompt";
 import { istAt } from "@/lib/ist";
 import { MockEngineApi } from "./mock";
 import { MockAgent, MOCK_AGENT_MODEL } from "./mockAgent";
@@ -132,7 +133,7 @@ describe("MockAgent candidate and re-arm", () => {
     expect(after.candidate).toMatchObject({ status: "APPROVED", decidedBy: "test" });
     expect(after.candidate?.decidedAt).toBe("2026-10-16T15:45:00+05:30");
     expect(after.instructionVersion).not.toBe(before.instructionVersion);
-    expect(after.instructionVersion).toMatch(/^core-1\/[0-9a-f]{8}$/);
+    expect(after.instructionVersion).toBe(instructionVersion(after.candidate!.guidance));
     // Decided once: a second decision is refused.
     expect(agent.decideCandidate(id, "reject", "test").ok).toBe(false);
   });

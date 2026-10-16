@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import type { AdvisorFactor, AdvisorIdea, AdvisorReport } from "../api-types";
 import { istAt, istIso } from "../clock";
 import { AGENT_POLICY } from "./constants";
-import { FINALIST_TEXT, briefAsOf, briefContext, clipText, compileFinalists, finalistPrompt, genericFinalist } from "./finalists";
+import { FINALIST_TEXT, briefAsOf, briefContext, clipText, compileFinalists, genericFinalist } from "./finalists";
 
 // Mon 19 Oct 2026: NIFTY's weekly expires today (Tue 20 Oct is a holiday); SENSEX's on Thu 22 Oct.
 const DAY = "2026-10-19";
@@ -156,29 +156,6 @@ describe("compileFinalists", () => {
     expect(old).toMatchObject({ condition: null, bearCase: null });
     expect(clipText(42, 10)).toBe("");
     expect(clipText("abcdef", 4)).toBe("abc…");
-  });
-});
-
-describe("finalistPrompt", () => {
-  it("gives a generic its id, kind and index only", () => {
-    expect(finalistPrompt(genericFinalist("SENSEX"))).toEqual({ id: "gen:SENSEX", kind: "GENERIC", index: "SENSEX" });
-  });
-
-  it("gives an idea its side, contract, buy-zone top and texts", () => {
-    const x = idea({ why: ["one"] }, { strike: 25_100 });
-    const f = compileFinalists({ indices: ["NIFTY"], nowMs: T, brief: brief(istAt(DAY, "09:25"), [x]) })[1];
-    expect(finalistPrompt(f)).toEqual({
-      id: `idea:adv-202610190925:${x.id}`,
-      kind: "IDEA",
-      index: "NIFTY",
-      side: "LONG",
-      contract: "NIFTY 25100 CE 27 Oct",
-      buyZoneTop: 110.5,
-      condition: x.condition,
-      wrongIf: x.wrongIf,
-      bearCase: x.bearCase,
-      why: ["one"],
-    });
   });
 });
 

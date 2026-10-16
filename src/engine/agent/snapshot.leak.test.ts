@@ -13,7 +13,8 @@ import type { ChainRow, ChainSnapshot } from "../flow/flowMonitor";
 import { ReplayMarketDataSource } from "../market/replayMarketData";
 import { loadMarketFixtures } from "../testing/fixtures";
 import { MARKET_SYMBOLS, type Candle, type IndexId, type MarketSnapshot, type ScoredEvent } from "../types";
-import { briefContext, compileFinalists, finalistPrompt } from "./finalists";
+import { briefContext, compileFinalists } from "./finalists";
+import { promptFinalist } from "./prompt";
 import { flowViewAsOf } from "./flowAsOf";
 import { buildIndexSnapshot, encodeSnapshot, type SnapshotInput } from "./snapshot";
 import type { AgentBookState } from "./types";
@@ -217,7 +218,7 @@ describe("leak test: bar T is the same with and without data after T", () => {
       sources: [],
       honesty: "No measured edge.",
     });
-    const request = (b: AdvisorReport | null) => JSON.stringify({ finalists: compileFinalists({ indices: INDICES, nowMs: T, brief: b }).map(finalistPrompt), brief: briefContext(b, T) });
+    const request = (b: AdvisorReport | null) => JSON.stringify({ finalists: compileFinalists({ indices: INDICES, nowMs: T, brief: b }).map(promptFinalist), brief: briefContext(b, T) });
     expect(request(brief(T + 30_000))).toBe(request(null));
     // Control: the same brief written before the close is used.
     expect(request(brief(T - 30_000))).not.toBe(request(null));

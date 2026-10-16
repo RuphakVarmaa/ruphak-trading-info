@@ -15,10 +15,10 @@ const account: AccountView = { id: "agent", label: "Agent ₹5L", shortLabel: "A
 
 const snap = (o: Partial<IndexSnapshot> = {}): IndexSnapshot => ({
   c: 25_012, r5: 12, r15: -8, r60: 31, ro: 45, vw: 18, vz: 0.9, orh: -11, orl: 21, ors: "I", pdh: -35, pdl: 64, pdc: 45,
-  rsi: 58, adx: 24, di: 6, st: 1, rv: 11, atr: 8, vix: 13.4, vixc: -2.1,
-  o: { k: 25_000, cm: 112.4, cs: 89, pm: 98.1, ps: 102, iv: 13, ivx: -0.4, pcr: 0.92, mp: -5, cw: 40, pw: -60, bc: [3, 5, 1, 2], bp: [2, 1, 4, 0], oa: 58 },
+  rsi: 58, adx: 24, di: 6, st: 1, rv: 11, atr: 0.08, vix: 13.4, vixc: -2.1,
+  o: { k: 25_000, cm: 112.4, cs: 0.89, pm: 98.1, ps: 1.02, iv: 13, ivx: -0.4, pcr: 0.92, mp: -5, cw: 40, pw: -60, bc: [3, 5, 1, 2], bp: [2, 1, 4, 0], oa: 58 },
   cv: 0.21, rg: "TU", pv: "C", pn: "kkckb", ew: 1, dte: 3, xd: 0,
-  bk: { pos: "L", lots: 1, pnl: 4.2, dd: 115, dl: 35 },
+  bk: { pos: "L", lots: 1, pnl: 4.2, dd: 1.15, dl: 0.35 },
   ...o,
 });
 
@@ -52,7 +52,8 @@ describe("gateWords", () => {
   });
 
   it("marks information lines and keeps unknown checks readable", () => {
-    expect(gateWords({ gate: "book_imbalance", passed: null, detail: "bid 75 vs ask 1,950" })).toBe("For information: Buyers versus sellers waiting at the best prices (bid 75 vs ask 1,950)");
+    expect(gateWords({ gate: "one_sided_book", passed: null, detail: "75 bid vs 1950 offered" })).toBe("For information: Buyers versus sellers waiting in the order book (noted, never a block) (75 bid vs 1950 offered)");
+    expect(gateWords({ gate: "quote_toxic", passed: false, detail: "no quantity bid or offered" })).toBe("Blocked: The live option price is not usable (no quantity bid or offered)");
     expect(gateWords({ gate: "some_new_check", passed: false, detail: "x" })).toBe("Blocked: some new check (x)");
   });
 });
@@ -139,7 +140,7 @@ describe("buildAgentView", () => {
   const fired = s.decision({
     id: "d-n", barCloseMs: T, finalistId: "gen:NIFTY", directionConfidence: 0.86, setupQuality: 3,
     execution: s.execution({
-      gate: { fired: true, lines: [{ gate: "confidence", passed: true, detail: "0.86 > 0.80" }, { gate: "book_imbalance", passed: null, detail: "bid 900 vs ask 650" }], codeToxic: [], codeRisk: "SAFE", effectiveRisk: "SAFE" },
+      gate: { fired: true, lines: [{ gate: "confidence", passed: true, detail: "0.86 > 0.80" }, { gate: "one_sided_book", passed: null, detail: "900 bid vs 650 offered" }], codeToxic: [], codeRisk: "SAFE", effectiveRisk: "SAFE" },
       action: "ENTERED", detail: "1 lot", planId: "plan-1", positionId: "pos-1", tradingSymbol: "NIFTY26O2325000CE",
       edge: { passed: false, rows: [{ gate: "move_vs_breakeven", label: "Move this option needs vs the move the index usually makes", passed: false, detail: "needs 0.31%, usually 0.18%" }] },
       sizing: { p: 0.58, b: 1, kelly: 0.16, quarterKelly: 0.04, riskPct: 1, lots: 1, riskRupees: 2_925, limitedBy: "risk budget" },
@@ -159,7 +160,7 @@ describe("buildAgentView", () => {
   const full = () =>
     buildAgentView(
       input({
-        bars: [s.bar({ barCloseMs: T, close: 25_012, snapshot: snap(), tokensEst: 290 }), s.bar({ barCloseMs: T, index: "SENSEX", close: 81_900, snapshot: snap({ bk: { pos: "-", lots: 0, pnl: null, dd: 115, dl: 35 } }) })],
+        bars: [s.bar({ barCloseMs: T, close: 25_012, snapshot: snap(), tokensEst: 290 }), s.bar({ barCloseMs: T, index: "SENSEX", close: 81_900, snapshot: snap({ bk: { pos: "-", lots: 0, pnl: null, dd: 1.15, dl: 0.35 } }) })],
         batches: [s.batch(T - 5 * MINUTE_MS), batch],
         decisions: [superseded, fired, ideaRow, sensex],
         escalations: [s.escalation({ id: "e1", status: "DONE", callId: "c-esc", appliedBarMs: T, decision: { finalistId: "gen:NIFTY", regime: "TRENDING", direction: "LONG", directionConfidence: 0.86, toxicFlow: false, setupQuality: 3, riskState: "SAFE", reason: "trend and flow agree" } })],
@@ -194,7 +195,7 @@ describe("buildAgentView", () => {
       summary: "Every check passed",
       lines: [
         { gate: "confidence", passed: true, words: "Passed: The model's confidence is above 80% (0.86 > 0.80)" },
-        { gate: "book_imbalance", passed: null, words: "For information: Buyers versus sellers waiting at the best prices (bid 900 vs ask 650)" },
+        { gate: "one_sided_book", passed: null, words: "For information: Buyers versus sellers waiting in the order book (noted, never a block) (900 bid vs 650 offered)" },
       ],
     });
     expect(d.action).toBe("ENTERED");

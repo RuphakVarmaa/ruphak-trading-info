@@ -130,19 +130,8 @@ describe("accountViews", () => {
   });
 });
 
-// The defaults and bounds live in the engine package's parser (src/engine/agent/config.ts). Until it lands, its
-// placeholder throws "not implemented" and this block waits for it.
-const agentParser = (() => {
-  try {
-    agentSettings(env({}));
-    return true;
-  } catch (err) {
-    if (err instanceof Error && /not implemented/.test(err.message)) return false;
-    throw err;
-  }
-})();
-
-describe.skipIf(!agentParser)("agentSettings (the AGENT_* vars)", () => {
+// The defaults and bounds live in the engine package's parser (src/engine/agent/config.ts).
+describe("agentSettings (the AGENT_* vars)", () => {
   it("defaults to off with a $3 cap and 8 escalations a day, and passes the model vars through", () => {
     const s = agentSettings(env({}));
     expect(s).toMatchObject({ mode: "off", dailyUsdCap: 3, escalationsPerDay: 8 });

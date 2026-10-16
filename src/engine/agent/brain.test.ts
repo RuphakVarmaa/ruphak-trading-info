@@ -7,7 +7,7 @@ import { DEFAULT_CONFIG } from "../config";
 import { sequentialIds, silentLogger, type LlmUsage } from "../ports";
 import type { IndexId } from "../types";
 import { AGENT_META, AgentBrain, type AgentBrainDeps } from "./brain";
-import { AGENT_POLICY, REVIEW_CALL, USER_MESSAGE_TOKEN_LIMIT } from "./constants";
+import { AGENT_POLICY, ESCALATION, REVIEW_CALL, USER_MESSAGE_TOKEN_LIMIT } from "./constants";
 import { worstCaseUsd } from "./cost";
 import type { DeepJudge, DeepRequest, DeepResponse, ReflexJudge, ReflexRequest, ReflexResponse } from "./judge";
 import { instructionVersion } from "./prompt";
@@ -66,8 +66,8 @@ const answerAll = (over: Record<string, Partial<ReflexDecision>> = {}) => (req: 
 
 const snapshot = (index: IndexId, close: number): IndexSnapshot => ({
   c: close, r5: 8, r15: 12, r60: 20, ro: 30, vw: -10, vz: 0.6, orh: -5, orl: 25, ors: "U", pdh: -40, pdl: 70, pdc: 30,
-  rsi: 60, adx: 26, di: 8, st: 1, rv: 12, atr: 8, vix: 13.2, vixc: -1.5,
-  o: { k: index === "NIFTY" ? 25_000 : 82_000, cm: 110, cs: 60, pm: 95, ps: 70, iv: 13, ivx: -0.2, pcr: 0.9, mp: -5, cw: 40, pw: -60, bc: [1, 0, 2, 0], bp: [0, 2, 0, 1], oa: 45 },
+  rsi: 60, adx: 26, di: 8, st: 1, rv: 12, atr: 0.08, vix: 13.2, vixc: -1.5,
+  o: { k: index === "NIFTY" ? 25_000 : 82_000, cm: 110, cs: 0.6, pm: 95, ps: 0.7, iv: 13, ivx: -0.2, pcr: 0.9, mp: -5, cw: 40, pw: -60, bc: [1, 0, 2, 0], bp: [0, 2, 0, 1], oa: 45 },
   cv: 0.2, rg: "TU", pv: "C", pn: "kkkkk", ew: 1, dte: 5, xd: 0, bk: { pos: "-", lots: 0, pnl: null, dd: 0, dl: 0 },
 });
 const closeAt = (index: IndexId, ms: number) => (index === "NIFTY" ? 25_000 : 82_000) + Math.round((ms - istAt(DAY, "09:15")) / (5 * MINUTE_MS)) * (index === "NIFTY" ? 10 : 30);
@@ -382,7 +382,7 @@ describe("AgentBrain: escalations", () => {
     expect(esc).toMatchObject({ trigger: "LOW_CONFIDENCE", status: "DONE", finalistId: "gen:NIFTY", appliedBarMs: null });
     expect(esc.decision?.directionConfidence).toBe(0.88);
     expect(h.deep.calls).toHaveLength(1);
-    expect(h.deep.calls[0].effort).toBe("medium");
+    expect(h.deep.calls[0]).toMatchObject({ effort: "medium", abortMs: ESCALATION.abortMs });
 
     await step(h, 1);
     const b1 = (await h.store.batch(bar(1)))!;
@@ -392,6 +392,20 @@ describe("AgentBrain: escalations", () => {
     expect(rows.find((d) => d.finalistId === "gen:NIFTY" && d.source === "REFLEX")?.effective).toBe(false);
     expect((await h.store.escalation(esc.id))?.appliedBarMs).toBe(bar(1));
     expect((await h.store.calls(DAY)).map((c) => c.kind).slice(0, 3)).toEqual(["REFLEX", "ESCALATION", "REFLEX"]);
+  });
+
+  it("checks the deep model's answer like a reflex decision: another finalist or a confidence outside 0..1 is FAILED and never applied", async () => {
+    for (const bad of [dec("gen:SENSEX", { direction: "LONG", directionConfidence: 0.88, setupQuality: 3 }), dec("gen:NIFTY", { direction: "LONG", directionConfidence: 1.4, setupQuality: 3 })]) {
+      const h = harness({ answer: answerAll(lowConf), deep: () => ({ decision: bad, reason: "a confident call" }) });
+      await step(h, 0);
+      const [esc] = await h.store.escalations(DAY);
+      expect(esc).toMatchObject({ status: "FAILED", decision: null, reason: expect.stringMatching(/^the answer was not a valid decision: /) });
+      expect(esc.callId).not.toBeNull();
+      await step(h, 1);
+      const b1 = (await h.store.batch(bar(1)))!;
+      expect(b1.decisions.find((d) => d.finalistId === "gen:NIFTY")).toMatchObject({ source: "REFLEX", effective: true });
+      expect(b1.exitOnly).toEqual([]);
+    }
   });
 
   it("marks an escalation LATE when the next bar's reflex ran first", async () => {
@@ -411,7 +425,8 @@ describe("AgentBrain: escalations", () => {
     const escWorst = worstCaseUsd(DEEP_MODEL, 2 * USER_MESSAGE_TOKEN_LIMIT, 8_000);
     const tight = harness({ answer: answerAll(lowConf), deep: deepAnswer, settings: { dailyUsdCap: escWorst + 0.01 } });
     await step(tight, 0);
-    expect((await tight.store.escalations(DAY))[0]).toMatchObject({ status: "SKIPPED", reason: "cost cap: the rest of the day's reflex calls come first" });
+    // escalationAllowed's budget: spent + the rest of the day's reflex calls at their worst + this one's worst case.
+    expect((await tight.store.escalations(DAY))[0]).toMatchObject({ status: "SKIPPED", reason: expect.stringMatching(/^cost cap: \$0\.\d{3} spent \+ \$\d+\.\d{3} kept for the reflex \+ \$\d+\.\d{3} worst case is over \$\d+\.\d{2}$/) });
     expect(tight.deep.calls).toHaveLength(0);
     expect((await tight.store.batch(bar(0)))?.status).toBe("OK");
 
@@ -514,7 +529,7 @@ describe("AgentBrain: the nightly review, the replay and the approval gate", () 
     expect(done).toMatchObject({ status: "DONE", model: DEEP_MODEL, report: review });
     expect(done.calibration?.graded).toBeGreaterThan(0);
     expect(await h.store.getMeta(AGENT_META.calibration)).toEqual(done.calibration);
-    expect(h.deep.calls[0]).toMatchObject({ effort: "high", maxTokens: 32_000 });
+    expect(h.deep.calls[0]).toMatchObject({ effort: "high", maxTokens: 32_000, abortMs: REVIEW_CALL.abortMs });
 
     const graded = (await h.store.decisions(DAY)).filter((d) => d.finalistId === "gen:NIFTY");
     // Rising closes: a LONG call six bars before the end of the data is a hit, graded from the archive.

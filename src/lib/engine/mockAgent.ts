@@ -28,7 +28,7 @@ import type {
   IndexId,
 } from "@/engine/api-types";
 import { AGENT_HONESTY, AGENT_LIMITS, AGENT_POLICY, CHARS_PER_TOKEN_BOUND, ESCALATION } from "@/engine/agent/constants";
-import { BUILTIN_GUIDANCE } from "@/engine/agent/prompt";
+import { BUILTIN_GUIDANCE, instructionVersion } from "@/engine/agent/prompt";
 import type { IndexSnapshot } from "@/engine/agent/types";
 import { fnv1aHex } from "@/engine/util/hash";
 import { addDays, isTradingDay, istAt, istDate, MINUTE_MS, nextWeeklyExpiry, prevTradingDay, sessionPhaseAt, toIstIso } from "@/lib/ist";
@@ -100,10 +100,8 @@ const DEMO_CANDIDATE_GUIDANCE = [
   "- Treat an option block older than 120 seconds as a reason for lower confidence, not only a missing one.",
 ].join("\n");
 
-/** The demo's version label, in the engine's format (`core-1/` and the guidance's FNV-1a hash). */
-function versionOf(guidance: string): string {
-  return `core-1/${fnv1aHex(guidance).slice(0, 8)}`;
-}
+/** The demo's version label: the engine's own (its core version and the guidance's FNV-1a hash). */
+const versionOf = instructionVersion;
 
 // ---------------------------------------------------------------------------
 // Small formatters (the view carries plain strings)
@@ -212,7 +210,8 @@ function snapshotAt(path: DayPath, T: number, levels: MockAgentLevels, book: { d
     di: Math.round(Math.max(-25, Math.min(25, r60 / 4)) * 10) / 10,
     st: r60 > 6 ? 1 : r60 < -6 ? -1 : 0,
     rv: Math.round((10.5 + 2 * rand()) * 10) / 10,
-    atr: 7 + Math.round(3 * rand()),
+    // % of the price, as the engine's snapshot writes it (only returns and distances are basis points).
+    atr: (7 + Math.round(3 * rand())) / 100,
     vix,
     vixc: Math.round((vix / levels.vixPrevClose - 1) * 10_000) / 100,
     o: {
@@ -270,7 +269,7 @@ function snapshotFields(s: IndexSnapshot): AgentSnapshotFieldView[] {
     f("di", "+DI minus −DI: which way the trend points", signed(s.di, 1)),
     f("st", "Supertrend", s.st > 0 ? "up" : s.st < 0 ? "down" : "flat"),
     f("rv", "Realized volatility, last 2 hours (a year)", `${s.rv.toFixed(1)}%`),
-    f("atr", "Average 5-minute range", `${(s.atr / 100).toFixed(2)}%`),
+    f("atr", "Average 5-minute range", `${s.atr.toFixed(2)}%`),
     f("vix", "India VIX (the fear gauge)", s.vix == null ? "unknown" : s.vix.toFixed(2)),
     f("vixc", "India VIX change today", signed(s.vixc, 2, "%")),
   ];

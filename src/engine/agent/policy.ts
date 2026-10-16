@@ -1,8 +1,8 @@
 /**
  * The code gate and the agent's decision exits (SPEC §5.1, §5.7, as amended). The model only judges: every
  * threshold here is a code constant (constants.ts), every gate line is recorded with the decision, and nothing
- * the model returns can loosen one. The snapshot's option spreads (cs, ps) are basis points of the mid and its
- * option age (oa) is seconds, as snapshot.ts encodes them.
+ * the model returns can loosen one. The snapshot's option spreads (cs, ps) are percent of the mid and its option age
+ * (oa) is seconds, as snapshot.ts writes them (only returns and distances are basis points).
  */
 import type { Quote } from "../types";
 import { AGENT_LIMITS, AGENT_POLICY } from "./constants";
@@ -22,8 +22,6 @@ import type {
 
 /** Comparisons at a limit allow for floating-point noise (0.8 × 3 is 2.4000000000000004). */
 const EPS = 1e-9;
-/** The snapshot's option spread limit in its own unit (basis points of the mid). */
-export const SNAPSHOT_SPREAD_LIMIT_BP = AGENT_POLICY.maxSnapshotSpreadPct * 100;
 
 /** Plain-English names of the code gate's lines, in the order they are checked. */
 export const GATE_LABELS = {
@@ -78,7 +76,7 @@ export function codeToxicity(s: IndexSnapshot | null, side: "LONG" | "SHORT" | n
   const flags: string[] = [];
   if (!(s.o.oa <= AGENT_POLICY.maxOptionAgeSec)) flags.push("STALE_OPTIONS");
   const spreads = side === "LONG" ? [s.o.cs] : side === "SHORT" ? [s.o.ps] : [s.o.cs, s.o.ps];
-  if (spreads.some((x) => x === null || !(x >= 0 && x <= SNAPSHOT_SPREAD_LIMIT_BP))) flags.push("WIDE_SPREAD");
+  if (spreads.some((x) => x === null || !(x >= 0 && x <= AGENT_POLICY.maxSnapshotSpreadPct))) flags.push("WIDE_SPREAD");
   return flags;
 }
 
@@ -130,7 +128,7 @@ export function quoteGateLines(q: Quote | null, opts: { acceptSyntheticQuotes?: 
   const toxic: GateLine = {
     gate: "quote_toxic",
     passed: flags.length === 0,
-    detail: flags.length === 0 ? `Live quote usable (${q?.source ?? "none"})` : `Live quote not usable: ${flags.map((f) => QUOTE_FLAG_WORDS[f] ?? f).join("; ")}`,
+    detail: flags.length === 0 && q ? `Live quote usable (${q.source} bid ${q.bid} / ask ${q.ask})` : `Live quote not usable: ${flags.map((f) => QUOTE_FLAG_WORDS[f] ?? f).join("; ")}`,
   };
   if (q == null) return [toxic, { gate: "one_sided_book", passed: null, detail: "Information only: no quote" }];
   const { bid, ask, from } = bookQuantities(q);
@@ -179,7 +177,7 @@ export function codeRiskState(r: AgentRiskSnapshot, openOnIndex: number, entries
 
 /** A codeToxicity flag in plain English. */
 function toxicWords(s: IndexSnapshot | null, side: "LONG" | "SHORT" | null, flag: string): string {
-  const spread = (x: number | null, which: string) => `${which} spread ${x === null ? "unknown" : `${num(x / 100)}%`}`;
+  const spread = (x: number | null, which: string) => `${which} spread ${x === null ? "unknown" : `${num(x)}%`}`;
   if (flag === "NO_OPTION_DATA") return "no option data in the snapshot";
   if (flag === "STALE_OPTIONS") return `option data ${num(s?.o?.oa ?? NaN, 0)} s old at the close (limit ${AGENT_POLICY.maxOptionAgeSec} s)`;
   if (flag === "WIDE_SPREAD") {
@@ -224,7 +222,7 @@ export function modelGateLines(d: ReflexDecision, f: Finalist, s: IndexSnapshot 
       gate: "toxic_code",
       passed: toxicOk,
       detail: toxicOk
-        ? `Option data ${o?.oa ?? "?"} s old${typeof spreadNow === "number" ? `, spread ${num(spreadNow / 100)}%` : ""} (limits ${P.maxOptionAgeSec} s, ${P.maxSnapshotSpreadPct}%)`
+        ? `Option data ${o?.oa ?? "?"} s old${typeof spreadNow === "number" ? `, spread ${num(spreadNow)}%` : ""} (limits ${P.maxOptionAgeSec} s, ${P.maxSnapshotSpreadPct}%)`
         : `Option data not usable: ${toxic.map((t) => toxicWords(s, side, t)).join("; ")}`,
     },
   ];

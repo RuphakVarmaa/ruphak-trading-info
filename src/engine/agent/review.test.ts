@@ -111,10 +111,10 @@ describe("candidateFrom", () => {
 
 const snapshot = (o: Partial<NonNullable<IndexSnapshot["o"]>> | null = {}): IndexSnapshot => ({
   c: 25000, r5: 12, r15: -8, r60: 31, ro: 45, vw: 18, vz: 0.9, orh: -11, orl: 21, ors: "I", pdh: -35, pdl: 64, pdc: 45,
-  rsi: 58, adx: 24, di: 6, st: 1, rv: 11, atr: 8, vix: 13.4, vixc: -2.1,
-  o: o === null ? null : { k: 25000, cm: 112.5, cs: 89, pm: 98.1, ps: 102, iv: 13, ivx: -0.6, pcr: 0.92, mp: -5, cw: 40, pw: -60, bc: [3, 5, 1, 2], bp: [2, 1, 4, 0], oa: 58, ...o },
+  rsi: 58, adx: 24, di: 6, st: 1, rv: 11, atr: 0.08, vix: 13.4, vixc: -2.1,
+  o: o === null ? null : { k: 25000, cm: 112.5, cs: 0.89, pm: 98.1, ps: 1.02, iv: 13, ivx: -0.6, pcr: 0.92, mp: -5, cw: 40, pw: -60, bc: [3, 5, 1, 2], bp: [2, 1, 4, 0], oa: 58, ...o },
   cv: 0.21, rg: "TU", pv: "C", pn: "kkckk", ew: 1, dte: 3, xd: 0,
-  bk: { pos: "-", lots: 0, pnl: null, dd: 115, dl: 35 },
+  bk: { pos: "-", lots: 0, pnl: null, dd: 1.15, dl: 0.35 },
 });
 
 const finalist = (id: string, index: IndexId, side: "LONG" | "SHORT" | null = null): Finalist => ({
@@ -136,7 +136,7 @@ describe("modelFires", () => {
     expect(modelFires(call("gen:NIFTY", "LONG", 0.85, { regime: "CRISIS" }), snapshot(), gN)).toBe(false);
     expect(modelFires(call("gen:NIFTY", "LONG", 0.85, { toxicFlow: true }), snapshot(), gN)).toBe(false);
     expect(modelFires(call("gen:NIFTY", "LONG", 0.85, { riskState: "NEAR_LIMIT" }), snapshot(), gN)).toBe(false);
-    expect(modelFires(call("gen:NIFTY", "LONG", 0.85), snapshot({ cs: 300 }), gN)).toBe(false);
+    expect(modelFires(call("gen:NIFTY", "LONG", 0.85), snapshot({ cs: 3 }), gN)).toBe(false);
     expect(modelFires(call("gen:NIFTY", "LONG", 0.85), null, gN)).toBe(false);
     expect(modelFires(call("gen:SENSEX", "LONG", 0.85), snapshot(), gN)).toBe(false);
     const idea = finalist("idea:b:1", "NIFTY", "LONG");

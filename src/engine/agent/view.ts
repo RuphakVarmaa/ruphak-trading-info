@@ -128,7 +128,7 @@ const GATE_WORDS: Record<string, { pass: string; fail: string }> = {
   kelly: { pass: "Sizing found a measured edge, so the size is above zero", fail: "No measured edge yet, so the size is zero" },
   plan: { pass: "The engine's own entry checks passed (time window, data, quote, spread, limits)", fail: "The engine's own entry checks blocked it" },
   kelly_cap: { pass: "The trade risks no more than the sizing allows", fail: "Even one lot would risk more than the sizing allows" },
-  quote: { pass: "The live option price is real and has buyers and sellers", fail: "The live option price is not usable" },
+  quote_toxic: { pass: "The live option price is real and has buyers and sellers", fail: "The live option price is not usable" },
   idea_contract: { pass: "The plan uses the idea's own contract", fail: "The plan did not use the idea's own contract" },
   idea_band: { pass: "The price is inside the brief's buy zone", fail: "The price is above the brief's buy zone" },
   kill_switch: { pass: "No kill switch or drawdown halt is on", fail: "A kill switch or the drawdown halt is on" },
@@ -137,8 +137,7 @@ const GATE_WORDS: Record<string, { pass: string; fail: string }> = {
 
 /** Labels for lines that only inform (passed: null). */
 const INFO_WORDS: Record<string, string> = {
-  book_imbalance: "Buyers versus sellers waiting at the best prices",
-  one_sided_book: "The order book is lopsided (noted, not a block)",
+  one_sided_book: "Buyers versus sellers waiting in the order book (noted, never a block)",
   edge: "The measured-edge check this account skips",
 };
 
@@ -193,7 +192,7 @@ export function snapshotFields(s: IndexSnapshot): AgentSnapshotFieldView[] {
     f("di", "+DI minus −DI (positive leans up)", signed(s.di, 0)),
     f("st", "Supertrend", s.st > 0 ? "up" : s.st < 0 ? "down" : "none"),
     f("rv", "Realized volatility over 2 hours (yearly %)", `${num(s.rv)}%`),
-    f("atr", "Typical 5-minute range (ATR)", `${(s.atr / 100).toFixed(2)}% of the price`),
+    f("atr", "Typical 5-minute range (ATR)", `${s.atr.toFixed(2)}% of the price`),
     f("vix", "India VIX (expected volatility)", unknownOr(s.vix, (v) => v.toFixed(1))),
     f("vixc", "India VIX change today", `${signed(s.vixc, 1)}%`),
   ];
@@ -203,9 +202,9 @@ export function snapshotFields(s: IndexSnapshot): AgentSnapshotFieldView[] {
     out.push(
       f("o.k", "At-the-money strike", num(o.k)),
       f("o.cm", "Call price (mid)", unknownOr(o.cm, (v) => `₹${v.toFixed(1)}`)),
-      f("o.cs", "Call bid-ask spread", unknownOr(o.cs, (v) => `${(v / 100).toFixed(2)}% of the price`)),
+      f("o.cs", "Call bid-ask spread", unknownOr(o.cs, (v) => `${v.toFixed(2)}% of the price`)),
       f("o.pm", "Put price (mid)", unknownOr(o.pm, (v) => `₹${v.toFixed(1)}`)),
-      f("o.ps", "Put bid-ask spread", unknownOr(o.ps, (v) => `${(v / 100).toFixed(2)}% of the price`)),
+      f("o.ps", "Put bid-ask spread", unknownOr(o.ps, (v) => `${v.toFixed(2)}% of the price`)),
       f("o.iv", "Implied volatility at the money", unknownOr(o.iv, (v) => `${num(v)}%`)),
       f("o.ivx", "Implied volatility minus VIX (positive: options are dear)", unknownOr(o.ivx, (v) => signed(v, 1))),
       f("o.pcr", "Put-call ratio of open interest", unknownOr(o.pcr, (v) => v.toFixed(2))),
@@ -228,8 +227,8 @@ export function snapshotFields(s: IndexSnapshot): AgentSnapshotFieldView[] {
     f("bk.pos", "Agent's position on this index", POS_WORDS[s.bk.pos]),
     f("bk.lots", "Lots held", num(s.bk.lots)),
     f("bk.pnl", "Open profit or loss (% of premium)", s.bk.pnl === null ? "flat" : `${signed(s.bk.pnl, 1)}%`),
-    f("bk.dd", "Account drawdown from its peak", `${(s.bk.dd / 100).toFixed(2)}%`),
-    f("bk.dl", "Today's loss used (% of equity)", `${(s.bk.dl / 100).toFixed(2)}%`),
+    f("bk.dd", "Account drawdown from its peak", `${s.bk.dd.toFixed(2)}%`),
+    f("bk.dl", "Today's loss used (% of equity)", `${s.bk.dl.toFixed(2)}%`),
   );
   return out;
 }

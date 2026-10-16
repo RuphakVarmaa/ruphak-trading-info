@@ -251,13 +251,13 @@ function rollDay(hot: AgentHot, date: string): void {
   hot.tagged = Object.fromEntries(Object.entries(hot.tagged).filter(([id]) => open.has(id)));
 }
 
-/** Every effective decision of a batch that was not executed (for example, too old by the time TE took it). */
+/** Every decision of a batch that was not executed, its exit-only ones too (for example, too old by the time TE took it). */
 function notExecuted(batch: ReflexBatch, risk: AgentRiskSnapshot, nowMs: number, detail: string): ExecutionRecord {
   const gate: GateVerdict = { fired: false, lines: [{ gate: "fresh", passed: false, detail }], codeToxic: [], codeRisk: risk.codeRisk, effectiveRisk: risk.codeRisk };
   return {
     barCloseMs: batch.barCloseMs,
     t: nowMs,
-    decisions: batch.decisions.map((d) => ({
+    decisions: [...batch.decisions, ...batch.exitOnly].map((d) => ({
       decisionId: d.id,
       execution: { t: nowMs, gate, action: "NOT_EXECUTED", detail, planId: null, positionId: null, tradingSymbol: null, edge: null, sizing: null },
     })),

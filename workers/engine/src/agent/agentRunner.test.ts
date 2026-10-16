@@ -429,14 +429,18 @@ describe("AgentRunner.step", () => {
     expect(h.agentDo.submits).toHaveLength(1);
   });
 
-  it("records a batch taken more than 4 minutes after its close as not executed", async () => {
+  it("records a batch taken more than 4 minutes after its close as not executed, its exit-only decisions too", async () => {
     const h = setup();
     const old = BAR - 5 * 60_000;
-    h.agentDo.batches = [batch({ barCloseMs: old })];
+    h.agentDo.batches = [batch({ barCloseMs: old, exitOnly: [decision({ id: "x-esc", barCloseMs: old, source: "ESCALATION", effective: false })] })];
     await h.runner.step(report(), calendar, false, LATER);
     expect(executeAgentBatch).not.toHaveBeenCalled();
     const [rec] = h.agentDo.records;
     expect(rec.barCloseMs).toBe(old);
+    expect(rec.decisions.map((d) => [d.decisionId, d.execution.action])).toEqual([
+      [`d-${old}`, "NOT_EXECUTED"],
+      ["x-esc", "NOT_EXECUTED"],
+    ]);
     expect(rec.decisions[0].execution).toMatchObject({ action: "NOT_EXECUTED", gate: { fired: false, lines: [{ gate: "fresh", passed: false }] } });
     expect(rec.decisions[0].execution.detail).toMatch(/^stale: taken 345 s after the candle closed/);
     expect(h.hot().lastExecutedBarMs).toBe(old);

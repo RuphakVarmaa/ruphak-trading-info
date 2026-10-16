@@ -15,15 +15,15 @@ import { BAR_5M_MS } from "../market/candles";
 import type { LlmUsage, Logger } from "../ports";
 import type { IndexId } from "../types";
 import { calibrationSummary, sizingProbability } from "./calibration";
-import { AGENT_POLICY, ESCALATION, OUTCOME, REFLEX_CALL, RETENTION_DAYS, REVIEW_CALL, USER_MESSAGE_TOKEN_LIMIT } from "./constants";
-import { callCostUsd, capAllows, iterationsCostUsd, worstCaseUsd } from "./cost";
+import { AGENT_POLICY, ESCALATION, REFLEX_CALL, RETENTION_DAYS, REVIEW_CALL, USER_MESSAGE_TOKEN_LIMIT } from "./constants";
+import { capAllows, reflexReserveUsd, responseCostUsd, worstCaseUsd } from "./cost";
 import { escalationAllowed, escalationTriggers, mergeEscalation } from "./escalation";
 import { briefContext, compileFinalists } from "./finalists";
 import type { DeepJudge, DeepRequest, DeepResponse, ReflexJudge, ReflexRequest, ReflexResponse } from "./judge";
 import { payoffRatio } from "./kelly";
-import { labelDecision } from "./outcomes";
+import { archiveClosesMap } from "./outcomes";
 import { BUILTIN_GUIDANCE, ESCALATION_SYSTEM, escalationUser, instructionVersion, REVIEW_SYSTEM, reflexSystem, reflexUser, reviewUser } from "./prompt";
-import { candidateFrom, replayScore, type ReplayBar } from "./review";
+import { candidateFrom, gradeDay, replayScore, type ReplayBar } from "./review";
 import { EscalationSchema, ReviewSchema } from "./schema";
 import { estimateTokens } from "./snapshot";
 import type {
@@ -38,7 +38,6 @@ import type {
   CallRecord,
   CallStatus,
   CandidateRecord,
-  DecisionOutcome,
   DecisionRecord,
   EscalationRecord,
   ExecutionRecord,
@@ -51,6 +50,7 @@ import type {
   ReplayResult,
   StoredBar,
 } from "./types";
+import { validateEscalation } from "./validate";
 import { buildAgentView } from "./view";
 
 export interface AgentBrainDeps {
@@ -104,7 +104,6 @@ const INTERRUPTED = "interrupted: the agent restarted while this call was runnin
 const REPLAY_NEXT_SLICE_MS = 1_000;
 
 const errText = (err: unknown) => (err instanceof Error ? err.message : String(err));
-const isGraded = (s: DecisionOutcome["status"]) => s === "HIT" || s === "MISS" || s === "NEUTRAL";
 
 interface BriefCache {
   date: string;
@@ -512,7 +511,11 @@ export class AgentBrain {
     return out;
   }
 
-  /** Escalation triggers on this bar's reflex rows: queued when allowed (rate, daily cap, start deadline, cost with the reflex reserve), else SKIPPED. */
+  /**
+   * Escalation triggers on this bar's reflex rows: queued when allowed (rate, daily cap, start deadline, and the cost:
+   * spent plus the rest of the day's reflex reserve plus this escalation's worst case under the cap; escalationAllowed's
+   * budget), else SKIPPED. Escalations queued on this bar count against the budget of the next.
+   */
   private async queueEscalations(T: number, reflexRows: DecisionRecord[], now: number): Promise<void> {
     const { store, settings } = this.d;
     const date = istDate(T);
@@ -520,11 +523,15 @@ export class AgentBrain {
     const triggers = escalationTriggers(reflexRows, previous);
     if (!triggers.length) return;
     const today = await store.escalations(date);
+    const worstUsd = worstCaseUsd(this.d.escalation?.model ?? settings.escalationModel, ESCALATION_INPUT_BOUND, ESCALATION.maxTokens);
+    const reserve = await this.reflexReserve(now);
+    let spentUsd = await store.spentUsd(istDate(now));
     for (const t of triggers) {
-      const allowed = escalationAllowed(t.decision.index, T, now, today, settings.escalationsPerDay, this.d.calendar);
+      const budget = { spentUsd, worstUsd, reflexReserveUsd: reserve, capUsd: settings.dailyUsdCap };
+      const allowed = escalationAllowed(t.decision.index, T, now, today, settings.escalationsPerDay, this.d.calendar, budget);
       let reason = allowed.ok ? null : (allowed.reason ?? "not allowed");
       if (!reason && !this.d.escalation) reason = "no API key for the deep model";
-      if (!reason && !(await this.escalationFits(ESCALATION_INPUT_BOUND, now))) reason = "cost cap: the rest of the day's reflex calls come first";
+      if (!reason) spentUsd += worstUsd;
       const rec: EscalationRecord = {
         id: this.d.newId(),
         date,
@@ -579,15 +586,13 @@ export class AgentBrain {
     const res = await this.callDeep(judge, { system: ESCALATION_SYSTEM, user, effort: ESCALATION.effort, maxTokens: ESCALATION.maxTokens, timeoutMs: ESCALATION.timeoutMs, schema: EscalationSchema }, ESCALATION.abortMs);
     await this.closeCall(call, res, worst);
     const callId = call.id;
-    const out = res.parsed;
-    const c = out?.decision.directionConfidence;
-    if (res.status !== "OK" || !out || !(typeof c === "number" && Number.isFinite(c) && c >= 0 && c <= 1)) {
-      return put({ status: "FAILED", callId, reason: res.status !== "OK" ? `${res.status}: ${res.error ?? "no answer"}` : "the answer was not a valid decision" });
-    }
-    const decision: ReflexDecision = { ...out.decision, finalistId: esc.finalistId, reason: out.decision.reason.slice(0, 200) };
+    if (res.status !== "OK" || !res.parsed) return put({ status: "FAILED", callId, reason: `${res.status}: ${res.error ?? "no answer"}` });
+    // Checked like a reflex decision (validate.ts): this finalist's id, a confidence within 0..1, cleaned text.
+    const out = validateEscalation(res.parsed, finalist);
+    if (!out.ok) return put({ status: "FAILED", callId, reason: `the answer was not a valid decision: ${out.error}` });
     // Finished after the next bar's reflex ran: recorded, never applied.
     const late = (await store.batch(nextBar)) !== null;
-    await put({ status: late ? "LATE" : "DONE", callId, decision, reason: out.reason.slice(0, 600) });
+    await put({ status: late ? "LATE" : "DONE", callId, decision: out.decision, reason: out.reason });
   }
 
   /**
@@ -606,17 +611,9 @@ export class AgentBrain {
     }
     await store.putReview({ ...review, status: "RUNNING", startedMs: now, error: null });
 
-    // 1. Grade every decision: both ends from the archive when both rows exist, otherwise the stored closes for both.
-    const decisions = await store.decisions(date);
-    const updates: { id: string; outcome: DecisionOutcome }[] = [];
-    for (const d of decisions) {
-      const end = d.barCloseMs + OUTCOME.horizonBars * BAR_5M_MS;
-      const archive = closes.archive.get(d.index);
-      const useArchive = !!archive && archive.has(d.barCloseMs) && archive.has(end);
-      const o = labelDecision(d, (useArchive ? archive : closes.stored.get(d.index)) ?? new Map(), this.d.calendar, now);
-      updates.push({ id: d.id, outcome: { ...o, source: isGraded(o.status) ? (useArchive ? "BARS_5M" : "STORED") : null } });
-    }
-    await store.updateOutcomes(updates);
+    // 1. Grade every decision whose window has ended (review.ts gradeDay): both ends from the archive when both rows
+    //    exist, otherwise the stored closes for both; a regrade never downgrades a label.
+    await store.updateOutcomes(gradeDay(await store.decisions(date), closes.stored, this.d.calendar, now, closes.archive));
 
     // 2. Calibration over the retention window, weighted to the active text.
     const instruction = await this.instruction();
@@ -735,14 +732,14 @@ export class AgentBrain {
     const decisions = await store.decisions(cand.date);
     const live = done.map((b) => decisions.filter((d) => d.barCloseMs === b.barCloseMs && d.source === "REFLEX"));
     const closes = await this.closesFor(cand.date);
-    const scoring = new Map<IndexId, ReadonlyMap<number, number>>();
-    for (const index of this.d.cfg.indices) scoring.set(index, (closes.archiveReady ? closes.archive.get(index) : closes.stored.get(index)) ?? new Map());
     const result: ReplayResult = replayScore({
       bars,
       candidate: done.map((b) => state.candidate[String(b.barCloseMs)] ?? []),
       current: live,
       currentReplayed: done.map((b) => state.current[String(b.barCloseMs)] ?? []),
-      closes: scoring,
+      // Each label from one source: the archive when it has both bars, else the stored closes.
+      closes: closes.stored,
+      archive: closes.archive,
       calendar: this.d.calendar,
       nowMs: this.d.now(),
       costUsd: state.costUsd,
@@ -777,9 +774,8 @@ export class AgentBrain {
    */
   private async closeCall(rec: CallRecord, res: CallResult, worstUsd: number): Promise<number> {
     const model = res.model || rec.model;
-    const whole = res.usage ? callCostUsd(res.usage, model) : null;
-    const attempts = res.iterations?.length ? iterationsCostUsd(res.iterations) : null;
-    const costUsd = whole === null && attempts === null ? (res.status === "NO_KEY" ? 0 : worstUsd) : Math.max(whole ?? 0, attempts ?? 0);
+    const priced = responseCostUsd({ usage: res.usage, model, iterations: res.iterations ?? null });
+    const costUsd = priced ?? (res.status === "NO_KEY" ? 0 : worstUsd);
     await this.d.store.putCall({ ...rec, model, latencyMs: res.latencyMs, status: res.status, error: res.error, usage: res.usage, costUsd });
     return costUsd;
   }
@@ -806,7 +802,8 @@ export class AgentBrain {
     const ac = new AbortController();
     const timer = setTimeout(() => ac.abort(), abortMs);
     try {
-      return await judge.structured<T>({ ...req, signal: ac.signal });
+      // The judge's own deadline is the job's (its default would be longer than REVIEW_CALL.abortMs).
+      return await judge.structured<T>({ ...req, abortMs, signal: ac.signal });
     } catch (err) {
       return { status: ac.signal.aborted ? "TIMEOUT" : "ERROR", parsed: null, usage: null, model: judge.model, latencyMs: this.d.now() - started, error: errText(err) };
     } finally {
@@ -814,21 +811,21 @@ export class AgentBrain {
     }
   }
 
-  /** The worst case of the rest of today's reflex calls (bar closes after now, up to 15:05): escalations never eat it (#11). */
-  private async reflexReserveUsd(now: number): Promise<number> {
-    const date = istDate(now);
-    if (!this.d.calendar.isTradingDay(date) || !this.d.reflex) return 0;
+  /**
+   * The worst case of the rest of today's reflex calls (cost.ts reflexReserveUsd: the bar closes still to come up to
+   * 15:05), each at its largest input: escalations never eat it (#11). Nothing on a day without a session or a key.
+   */
+  private async reflexReserve(now: number): Promise<number> {
+    if (!this.d.calendar.isTradingDay(istDate(now)) || !this.d.reflex) return 0;
     const instruction = await this.instruction();
-    const per = worstCaseUsd(this.d.reflex.model, estimateTokens(reflexSystem(instruction.guidance)) + USER_MESSAGE_TOKEN_LIMIT, REFLEX_CALL.maxTokens);
-    let bars = 0;
-    for (let t = istAt(date, AGENT_POLICY.reflexFirstBarIst); t <= istAt(date, AGENT_POLICY.reflexLastBarIst); t += BAR_5M_MS) if (t > now) bars++;
-    return bars * per;
+    return reflexReserveUsd(now, worstCaseUsd(this.d.reflex.model, estimateTokens(reflexSystem(instruction.guidance)) + USER_MESSAGE_TOKEN_LIMIT, REFLEX_CALL.maxTokens));
   }
 
+  /** An escalation about to run, with its real prompt: capAllows(spent + the reflex reserve, its worst case, the cap). */
   private async escalationFits(inputEst: number, now: number): Promise<boolean> {
     const model = this.d.escalation?.model ?? this.d.settings.escalationModel;
     const spent = await this.d.store.spentUsd(istDate(now));
-    return capAllows(spent + (await this.reflexReserveUsd(now)), worstCaseUsd(model, inputEst, ESCALATION.maxTokens), this.d.settings.dailyUsdCap);
+    return capAllows(spent + (await this.reflexReserve(now)), worstCaseUsd(model, inputEst, ESCALATION.maxTokens), this.d.settings.dailyUsdCap);
   }
 
   // -------------------------------------------------------------------------
@@ -1022,8 +1019,7 @@ export class AgentBrain {
       } catch (err) {
         this.d.logger.warn("agent: bar archive read failed", { index, error: errText(err) });
       }
-      const m = new Map<number, number>();
-      for (const r of rows) if (Number.isFinite(r.c) && r.c > 0) m.set(r.t + BAR_5M_MS, r.c);
+      const m = archiveClosesMap(rows);
       archive.set(index, m);
       if (!m.has(close)) ready = false;
       stored.set(index, new Map());

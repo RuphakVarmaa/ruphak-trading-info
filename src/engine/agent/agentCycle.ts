@@ -40,7 +40,7 @@ import {
 import { causalEvents, causalMarketSnapshot } from "./causal";
 import { AGENT_LIMITS, AGENT_POLICY } from "./constants";
 import { agentRiskPct } from "./kelly";
-import { agentExitTriggers, codeGate, gateSummary, quoteToxicity } from "./policy";
+import { agentExitTriggers, codeGate, gateSummary, quoteGateLines, quoteToxicity } from "./policy";
 import { riskSnapshotFrom } from "./risk";
 import { buildIndexSnapshot, encodeSnapshot, estimateTokens } from "./snapshot";
 import type {
@@ -253,21 +253,6 @@ const KIND_ORDER: Record<Finalist["kind"], number> = { IDEA: 0, GENERIC: 1 };
 const MODE_EXIT: Record<ExecuteContext["mode"], AgentAction> = { paper: "EXITED", shadow: "SHADOW_EXIT" };
 const rupees = (x: number) => `₹${Math.round(x).toLocaleString("en-IN")}`;
 const sameContract = (a: OptionContract, b: NonNullable<Finalist["contract"]>) => a.expiry === b.expiry && a.strike === b.strike && a.type === b.type;
-
-/** The order book's quantities (summed depth when present, else the best prices) as information only (AMENDMENTS #27, D4). */
-function imbalanceLine(q: Quote): GateLine {
-  const depth = !!(q.depth?.buy?.length && q.depth?.sell?.length);
-  const bid = depth ? q.depth!.buy.reduce((s, l) => s + l.qty, 0) : q.bidQty;
-  const ask = depth ? q.depth!.sell.reduce((s, l) => s + l.qty, 0) : q.askQty;
-  const total = bid + ask;
-  const imb = total > 0 ? Math.abs(bid - ask) / total : null;
-  const oneSided = imb !== null && imb > AGENT_POLICY.oneSidedBookImbalance;
-  return {
-    gate: "book_imbalance",
-    passed: null,
-    detail: `${depth ? "summed depth" : "best prices"}: ${bid.toLocaleString("en-IN")} to buy vs ${ask.toLocaleString("en-IN")} to sell` + (imb === null ? "" : `, imbalance ${imb.toFixed(2)}${oneSided ? " (one-sided)" : ""}`),
-  };
-}
 
 interface Attempt {
   gate: GateVerdict;
@@ -489,10 +474,10 @@ async function tryEntry(
   if (!capOk) return out(v, lines, "NO_ENTRY", `one lot risks ${rupees(plan.riskRupees)}, more than the ${rupees(budget)} quarter Kelly allows`, more);
 
   const q = await deps.optionQuotes.quote(plan.contract, { t: now, spot: f.spot, vix: f.vix });
-  const flagsQ = quoteToxicity(q, { acceptSyntheticQuotes: x.acceptSyntheticQuotes });
-  const blocking = flagsQ.filter((g: string) => g !== "ONE_SIDED_BOOK");
-  lines.push({ gate: "quote", passed: blocking.length === 0, detail: blocking.length ? blocking.join(", ") : `${q.source} bid ${q.bid} / ask ${q.ask}` });
-  lines.push(imbalanceLine(q));
+  // policy.ts: quote_toxic blocks (no quote, a model price, no depth); one_sided_book is information only (#27, D4).
+  const quoteOpts = { acceptSyntheticQuotes: x.acceptSyntheticQuotes };
+  const blocking = quoteToxicity(q, quoteOpts);
+  lines.push(...quoteGateLines(q, quoteOpts));
   if (blocking.length) return out(v, lines, "NO_ENTRY", `the live quote is not usable: ${blocking.join(", ")}`, more);
   if (ideaContract) {
     if (finalist.entryHigh === null) lines.push({ gate: "idea_band", passed: null, detail: "the brief gave no buy zone" });

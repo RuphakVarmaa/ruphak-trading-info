@@ -30,16 +30,8 @@ function freshStore(): SqlAgentStore {
   return new SqlAgentStore(sql);
 }
 
-// The shared AgentStore contract (src/engine/agent/storeContract.ts) is written with MemoryAgentStore. Until it
-// lands its stub throws while the suite is collected; the direct tests below cover this store meanwhile.
-try {
-  agentStoreContract("sql (node:sqlite)", async () => freshStore());
-} catch (err) {
-  if (!(err instanceof Error && /not implemented/.test(err.message))) throw err;
-  describe.skip("agentStoreContract over SqlAgentStore (waits for the engine package's contract)", () => {
-    it("runs once the contract exists", () => {});
-  });
-}
+// The shared AgentStore contract (src/engine/agent/storeContract.ts), the same suite MemoryAgentStore passes.
+agentStoreContract("sql (node:sqlite)", async () => freshStore());
 
 const D = "2026-10-19";
 const T0 = Date.parse("2026-10-19T04:05:00Z"); // 09:35 IST

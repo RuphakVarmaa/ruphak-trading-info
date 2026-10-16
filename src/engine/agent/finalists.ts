@@ -126,26 +126,6 @@ export function compileFinalists(a: { indices: readonly IndexId[]; nowMs: number
 }
 
 /**
- * A finalist as the reflex model reads it (SPEC §4.3): the id, kind and index of a generic; an idea adds its fixed
- * side, the contract, the buy-zone top (rupees), the condition, wrongIf, bear case and up to two reasons.
- */
-export function finalistPrompt(f: Finalist): Record<string, unknown> {
-  if (f.kind === "GENERIC") return { id: f.id, kind: f.kind, index: f.index };
-  return {
-    id: f.id,
-    kind: f.kind,
-    index: f.index,
-    side: f.side,
-    contract: f.contract ? contractText(f.contract, f.index) : null,
-    buyZoneTop: f.entryHigh === null ? null : Math.round(f.entryHigh * 100) / 100,
-    condition: f.condition,
-    wrongIf: f.wrongIf,
-    bearCase: f.bearCase,
-    why: f.why,
-  };
-}
-
-/**
  * The brief's headline and up to four factors ("label: reading — detail") for the bar at nowMs; null without a
  * brief that existed then (briefAsOf). Factors without data are left out. Context for the model, not data.
  */

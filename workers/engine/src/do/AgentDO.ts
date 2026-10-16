@@ -155,12 +155,15 @@ export class AgentDO extends DurableObject<Env> {
     return this.brain.view(String(date), account);
   }
 
-  /** /ops/agent-review: queues a review of `date` now. It only enqueues (the alarm runs it), and never in the session. */
+  /**
+   * /ops/agent-review: queues a review of `date` now, again if one already ran (the brain's `force`; one queued or
+   * running is left alone). It only enqueues (the alarm runs it), and never in the session.
+   */
   async runReviewNow(date: string): Promise<{ ok: boolean; message: string }> {
     const d = String(date);
     if (!DATE.test(d)) return { ok: false, message: "date must be YYYY-MM-DD" };
     if (this.inSession(Date.now(), { preOpen: true })) return { ok: false, message: "a review runs only outside the session (it would hold up the reflex calls); ask again after 15:30 IST" };
-    await this.brain.scheduleReview(d);
+    await this.brain.scheduleReview(d, { force: true });
     await this.wakeAt(await this.store.nextJobMs());
     return { ok: true, message: `review of ${d} queued (on the session's own day it waits for 16:20 IST)` };
   }

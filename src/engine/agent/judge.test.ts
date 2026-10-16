@@ -19,10 +19,10 @@ const T = istAt("2026-10-19", "10:35");
 const snapshot: IndexSnapshot = {
   c: 25012, r5: 12, r15: -8, r60: 31, ro: 45, vw: -18, vz: 0.9,
   orh: -11, orl: 21, ors: "I", pdh: -35, pdl: 64, pdc: 45,
-  rsi: 58, adx: 24, di: 6, st: 1, rv: 11, atr: 8, vix: 13.4, vixc: -2.1,
-  o: { k: 25000, cm: 112.5, cs: 89, pm: 98.1, ps: 102, iv: 13, ivx: -0.6, pcr: 0.92, mp: -5, cw: 40, pw: -60, bc: [3, 5, 1, 2], bp: [2, 1, 4, 0], oa: 58 },
+  rsi: 58, adx: 24, di: 6, st: 1, rv: 11, atr: 0.08, vix: 13.4, vixc: -2.1,
+  o: { k: 25000, cm: 112.5, cs: 0.89, pm: 98.1, ps: 1.02, iv: 13, ivx: -0.6, pcr: 0.92, mp: -5, cw: 40, pw: -60, bc: [3, 5, 1, 2], bp: [2, 1, 4, 0], oa: 58 },
   cv: 0.21, rg: "TU", pv: "C", pn: "kkckk", ew: 1, dte: 3, xd: 0,
-  bk: { pos: "-", lots: 0, pnl: null, dd: 115, dl: 35 },
+  bk: { pos: "-", lots: 0, pnl: null, dd: 1.15, dl: 0.35 },
 };
 const input = (snapshots: ReflexInput["snapshots"] = { NIFTY: snapshot, SENSEX: { ...snapshot, c: 82010 } }): ReflexInput => ({
   barCloseMs: T, date: "2026-10-19", builtMs: T + 40_000, snapshots, tokensEst: {}, closes: {}, problems: [],

@@ -189,8 +189,8 @@ describe("buildReflexInput", () => {
 const NOW = T + 70_000;
 const snap = (o: Partial<IndexSnapshot> = {}): IndexSnapshot => ({
   c: 25_000, r5: 12, r15: 20, r60: 31, ro: 45, vw: -18, vz: 0.9, orh: -11, orl: 21, ors: "U", pdh: -35, pdl: 64, pdc: 45,
-  rsi: 61, adx: 27, di: 9, st: 1, rv: 11, atr: 8, vix: 13.4, vixc: -2.1,
-  o: { k: 25_000, cm: 112.4, cs: 60, pm: 98.1, ps: 70, iv: 13, ivx: -0.4, pcr: 0.92, mp: -5, cw: 40, pw: -60, bc: [1, 0, 3, 0], bp: [0, 3, 0, 1], oa: 40 },
+  rsi: 61, adx: 27, di: 9, st: 1, rv: 11, atr: 0.08, vix: 13.4, vixc: -2.1,
+  o: { k: 25_000, cm: 112.4, cs: 0.6, pm: 98.1, ps: 0.7, iv: 13, ivx: -0.4, pcr: 0.92, mp: -5, cw: 40, pw: -60, bc: [1, 0, 3, 0], bp: [0, 3, 0, 1], oa: 40 },
   cv: 0.21, rg: "TU", pv: "C", pn: "kkkkk", ew: 1, dte: 3, xd: 0, bk: { pos: "-", lots: 0, pnl: null, dd: 0, dl: 0 },
   ...o,
 });
@@ -240,7 +240,8 @@ describe("executeAgentBatch", () => {
     expect(e.sizing!.lots).toBeGreaterThanOrEqual(1);
     expect(line(e, "kelly_cap")?.passed).toBe(true);
     expect(line(e, "kill_switch")?.passed).toBe(true);
-    expect(line(e, "book_imbalance")?.passed).toBeNull();
+    expect(line(e, "quote_toxic")).toMatchObject({ passed: true, detail: expect.stringMatching(/^Live quote usable \(synthetic bid [\d.]+ \/ ask [\d.]+\)$/) });
+    expect(line(e, "one_sided_book")?.passed).toBeNull();
     expect(e.edge?.rows[0].gate).toBe("move_vs_breakeven");
     expect(e.positionId).not.toBeNull();
     expect(x.positions[e.positionId!]).toEqual({ finalistId: "gen:NIFTY", decisionId: "d-long", index: "NIFTY", side: "LONG" });
@@ -377,20 +378,21 @@ describe("executeAgentBatch", () => {
     const r1 = await executeAgentBatch(lopsided.agent, batchOf([fired()]), lopsided.ctx({ acceptSyntheticQuotes: false }));
     const e1 = exec(r1, "d-long");
     expect(e1.action).toBe("ENTERED");
-    expect(line(e1, "book_imbalance")).toEqual({ gate: "book_imbalance", passed: null, detail: "best prices: 75 to buy vs 1,950 to sell, imbalance 0.93 (one-sided)" });
+    expect(line(e1, "one_sided_book")).toEqual({ gate: "one_sided_book", passed: null, detail: "Information only: one-sided book 0.93 (75 bid vs 1950 offered, top of book; 0.85 would count as one-sided)" });
 
     const empty = await setup({ tweak: (q) => ({ ...q, source: "upstox", depth: undefined, bidQty: 0, askQty: 0 }) });
     const r2 = await executeAgentBatch(empty.agent, batchOf([fired()]), empty.ctx({ acceptSyntheticQuotes: false }));
     const e2 = exec(r2, "d-long");
     expect(e2.action).toBe("NO_ENTRY");
-    expect(line(e2, "quote")).toMatchObject({ passed: false, detail: "NO_DEPTH" });
+    expect(line(e2, "quote_toxic")).toMatchObject({ passed: false, detail: "Live quote not usable: no quantity bid or offered" });
   });
 
   it("never buys on a synthetic (model) price unless a test allows it", async () => {
     const { agent, ctx } = await setup();
     const r = await executeAgentBatch(agent, batchOf([fired()]), ctx({ acceptSyntheticQuotes: false }));
     expect(exec(r, "d-long").action).toBe("NO_ENTRY");
-    expect(line(exec(r, "d-long"), "quote")).toMatchObject({ passed: false, detail: "SYNTHETIC_QUOTE" });
+    expect(line(exec(r, "d-long"), "quote_toxic")).toMatchObject({ passed: false, detail: "Live quote not usable: the quote is a model price, not the market's" });
+    expect(exec(r, "d-long").detail).toBe("the live quote is not usable: SYNTHETIC_QUOTE");
   });
 
   it("stops entries when the time budget is used up but still runs the exits", async () => {

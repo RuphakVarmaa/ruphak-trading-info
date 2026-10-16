@@ -11,12 +11,10 @@ import { buildOptionChainView, maxPainStrike, parseUpstoxChain } from "../market
 import { loadMarketFixtures } from "../testing/fixtures";
 import { MARKET_SYMBOLS, type IndexId, type MarketSnapshot } from "../types";
 import { causalMarketSnapshot } from "./causal";
-import { CHARS_PER_TOKEN_BOUND, PROSE_CHARS_PER_TOKEN, SNAPSHOT_TOKEN_LIMIT, SNAPSHOT_TYPICAL_TOKEN_TARGET, USER_MESSAGE_TOKEN_LIMIT } from "./constants";
-import { FINALIST_TEXT, finalistPrompt, genericFinalist } from "./finalists";
+import { CHARS_PER_TOKEN_BOUND, PROSE_CHARS_PER_TOKEN, SNAPSHOT_TOKEN_LIMIT, SNAPSHOT_TYPICAL_TOKEN_TARGET } from "./constants";
 import { flowViewAsOf } from "./flowAsOf";
 import {
   SNAPSHOT_CLAMPS,
-  SNAPSHOT_LEGEND,
   SNAPSHOT_WIRE_KEYS,
   bookBlock,
   buildIndexSnapshot,
@@ -30,7 +28,7 @@ import {
   worstCaseSnapshot,
   type SnapshotInput,
 } from "./snapshot";
-import type { AgentBookState, Finalist, IndexSnapshot } from "./types";
+import type { AgentBookState, IndexSnapshot } from "./types";
 
 const DAY = "2026-10-07";
 const at = (hhmm: string, date = DAY) => istAt(date, hhmm);
@@ -379,55 +377,6 @@ describe("token budget (SPEC §3.3 as amended)", () => {
         expect(tokens(buildIndexSnapshot(input(index, at(hhmm), { flow: null })))).toBeLessThan(SNAPSHOT_TOKEN_LIMIT);
       }
     }
-  });
-
-  it("keeps the user message's content (SPEC §4.3) at its largest under USER_MESSAGE_TOKEN_LIMIT", () => {
-    const text = (n: number, c = "w") => `${c.repeat(n - 1)}.`;
-    const maxIdea = (i: number, index: IndexId): Finalist => ({
-      id: `idea:adv-202610190925:adv-202610190925-${i}`,
-      kind: "IDEA",
-      index,
-      label: "x",
-      side: "SHORT",
-      contract: { expiry: "2026-10-22", strike: 182_300, type: "PE", tradingSymbol: "SENSEX2610182300PE", lotSize: 20 },
-      entryHigh: 1_234.55,
-      condition: text(FINALIST_TEXT.condition),
-      wrongIf: text(FINALIST_TEXT.wrongIf),
-      bearCase: text(FINALIST_TEXT.bearCase),
-      why: [text(FINALIST_TEXT.why), text(FINALIST_TEXT.why)],
-      horizon: "MONTH",
-      briefId: "adv-202610190925",
-    });
-    const finalists = [genericFinalist("NIFTY"), genericFinalist("SENSEX"), maxIdea(1, "NIFTY"), maxIdea(2, "SENSEX"), maxIdea(3, "NIFTY"), maxIdea(4, "SENSEX")];
-    const worst = JSON.parse(encodeSnapshot(worstCaseSnapshot()));
-    const message = {
-      bar: "10:35",
-      date: "2026-10-19",
-      indices: { NIFTY: worst, SENSEX: worst },
-      finalists: finalists.map(finalistPrompt),
-      brief: { headline: text(FINALIST_TEXT.headline), factors: Array.from({ length: FINALIST_TEXT.factors }, () => text(FINALIST_TEXT.factor)) },
-    };
-    // Prose (the finalists' texts and the brief) is estimated at its own rate; everything else as dense JSON.
-    const PROSE = new Set(["condition", "wrongIf", "bearCase", "why", "headline", "factors"]);
-    const prose: string[] = [];
-    const skeleton = JSON.stringify(message, (key, value) => {
-      if (!PROSE.has(key)) return value;
-      for (const s of [value].flat()) prose.push(String(s));
-      return Array.isArray(value) ? value.map(() => "") : "";
-    });
-    const total = estimateTokens(skeleton) + prose.reduce((s, p) => s + estimateProseTokens(p), 0);
-    expect(prose).toHaveLength(4 * 5 + 1 + FINALIST_TEXT.factors);
-    expect(total).toBeLessThan(USER_MESSAGE_TOKEN_LIMIT);
-  });
-});
-
-describe("SNAPSHOT_LEGEND", () => {
-  it("names every key the wire form sends, in basis points where the snapshot uses them", () => {
-    const words = new Set(SNAPSHOT_LEGEND.split(/[^A-Za-z0-9]+/));
-    for (const k of [...SNAPSHOT_WIRE_KEYS.top, ...SNAPSHOT_WIRE_KEYS.o]) expect(words.has(k), k).toBe(true);
-    expect(SNAPSHOT_LEGEND).toContain("basis points");
-    expect(SNAPSHOT_LEGEND).toContain("max pain within the ±15 monitored strikes");
-    for (const k of ["pv", "09:25", "14:30", "09:30"]) expect(SNAPSHOT_LEGEND).toContain(k);
   });
 });
 

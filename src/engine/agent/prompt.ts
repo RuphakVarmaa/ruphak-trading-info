@@ -2,8 +2,8 @@
  * The models' instructions and messages (SPEC §4.2, §4.3, §4.6, §4.7 as amended). The reflex's system prompt is a
  * fixed core with one marker where the judgement guidance goes; only the guidance ever changes, and only through a
  * candidate the operator approves. instructionVersion names the core and the guidance together, so calibration can
- * tell the texts apart. The legend describes the snapshot exactly as encodeSnapshot writes it (prompt.test checks
- * the keys); a change to the core means a new REFLEX_CORE_VERSION.
+ * tell the texts apart. The legend describes the snapshot exactly as encodeSnapshot writes it, keys and units
+ * (prompt.test checks the keys and their order); a change to the core means a new REFLEX_CORE_VERSION.
  */
 import { ACCOUNTS } from "../accounts";
 import { SESSION, formatHHMM, istMinutes } from "../clock";
@@ -11,15 +11,19 @@ import { DEFAULT_CONFIG } from "../config";
 import { INDEX_IDS, type IndexId } from "../types";
 import { fnv1aHex } from "../util/hash";
 import { CHARS_PER_TOKEN_BOUND, ESCALATION, OUTCOME, PROSE_CHARS_PER_TOKEN } from "./constants";
+import { FINALIST_TEXT } from "./finalists";
 import { encodeSnapshot } from "./snapshot";
 import type { AgentTradeRecord, BriefContext, CalibrationSummary, CallRecord, DecisionRecord, Finalist, IndexSnapshot, ReflexDecision, ReflexInput, StoredBar } from "./types";
 import { cleanText } from "./validate";
 
 export const GUIDANCE_MARKER = "<<GUIDANCE>>";
-export const REFLEX_CORE_VERSION = "core-1";
+/** core-2: the legend in encodeSnapshot's final units (percent spreads, ATR and book; bps for returns and distances only). */
+export const REFLEX_CORE_VERSION = "core-2";
 
-/** The agent account's square-off and the opening range the snapshot measures (its pins, else the defaults). */
+/** The agent account's entry window, square-off and the opening range the snapshot measures (its pins, else the defaults). */
 const AGENT_PATCH = ACCOUNTS.agent.configPatch;
+const ENTRY_FROM_IST = AGENT_PATCH.gates?.noEntryBeforeIst ?? DEFAULT_CONFIG.gates.noEntryBeforeIst;
+const ENTRY_TO_IST = AGENT_PATCH.gates?.noEntryAfterIst ?? DEFAULT_CONFIG.gates.noEntryAfterIst;
 const SQUARE_OFF_IST = AGENT_PATCH.exits?.squareOffIst ?? DEFAULT_CONFIG.exits.squareOffIst;
 const OPENING_RANGE_MIN = AGENT_PATCH.features?.openingRangeMin ?? DEFAULT_CONFIG.features.openingRangeMin;
 const OPENING_RANGE = `${formatHHMM(SESSION.open)} to ${formatHHMM(SESSION.open + OPENING_RANGE_MIN)}`;
@@ -33,14 +37,16 @@ export interface LegendEntry {
 
 /** The snapshot's top-level keys. */
 export const SNAPSHOT_LEGEND: readonly LegendEntry[] = [
-  { keys: ["c"], text: "the candle's close" },
+  { keys: ["c"], text: "the candle's close (index points)" },
   { keys: ["r5", "r15", "r60"], text: "log return over the last 5, 15 and 60 minutes (bps)" },
   { keys: ["ro"], text: "return since today's open (bps)" },
-  { keys: ["vw"], text: "distance to VWAP (bps)" },
-  { keys: ["vz"], text: "VWAP z-score" },
+  { keys: ["vw"], text: "distance to VWAP (bps; positive when VWAP is above the close)" },
+  { keys: ["vz"], text: "z-score of the close against VWAP (positive when the close is above VWAP, so its sign is the opposite of vw's)" },
   {
     keys: ["orh", "orl"],
-    text: `distance to the opening-range high and low (bps); the range forms from ${OPENING_RANGE}; after that, orh below 0 means the close broke above the range and orl above 0 that it broke below it`,
+    text:
+      `distance to today's opening-range high and low (bps); the range forms from ${OPENING_RANGE} and is still forming before then; ` +
+      "after that, orh below 0 means the close is above the range, orl above 0 that it is below it, and otherwise it is inside",
   },
   { keys: ["pdh", "pdl", "pdc"], text: "distance to the previous session's high, low and close (bps)" },
   { keys: ["rsi"], text: "RSI(14)" },
@@ -48,32 +54,35 @@ export const SNAPSHOT_LEGEND: readonly LegendEntry[] = [
   { keys: ["di"], text: "+DI minus -DI" },
   { keys: ["st"], text: "Supertrend direction (1 up, -1 down, 0 none)" },
   { keys: ["rv"], text: "realized volatility over 2 hours (annualized %)" },
-  { keys: ["atr"], text: "5-minute ATR (bps of the close)" },
+  { keys: ["atr"], text: "5-minute ATR (% of the close)" },
   { keys: ["vix"], text: "India VIX" },
   { keys: ["vixc"], text: "India VIX's change today (%)" },
-  { keys: ["o"], text: "the at-the-money option block (keys below); null when the option data was missing" },
+  { keys: ["o"], text: "the at-the-money option block (keys below); null when there was no option data" },
   { keys: ["cv"], text: "the engine's conviction, -1 to 1 (it has no measured edge)" },
   { keys: ["rg"], text: "the engine's regime: TU trend up, TD trend down, RG range, HV high volatility, EV event" },
-  { keys: ["pn"], text: "today's plan rules N1 N2 N4 N7 N9, in that order: k clear, c caution, b block, u unknown; any b means the plan says no new trades on this index today" },
+  {
+    keys: ["pn"],
+    text: "today's plan rules N1 N2 N4 N7 N9, in that order: k clear, c caution, b block, u unknown; any b means the plan says no new trades on this index today, all k means it is clear, anything else caution",
+  },
   { keys: ["dte"], text: "trading sessions to the expiry of the contract the account would buy (never one that expires today)" },
   { keys: ["xd"], text: "1 on the index's own expiry day, else 0" },
   {
     keys: ["bk"],
-    text: "the account's own book on this index: [position (L call held, S put held, - none), lots, open P&L (% of premium; null when flat), account drawdown from its peak (bps), today's loss used (bps of equity)]",
+    text: "the account's own book on this index: [position (L call held, S put held, - none), lots, open P&L (% of premium; null when flat), account drawdown from its peak (%), today's loss used (% of equity)]",
   },
 ];
 
 /** The option block's keys. */
 export const OPTION_LEGEND: readonly LegendEntry[] = [
   { keys: ["k"], text: "ATM strike" },
-  { keys: ["cm", "cs"], text: "call mid (rupees) and its bid-ask spread (bps of the mid)" },
-  { keys: ["pm", "ps"], text: "put mid and spread, the same way" },
+  { keys: ["cm", "cs"], text: "call mid (rupees) and its bid-ask spread (% of the mid)" },
+  { keys: ["pm", "ps"], text: "put mid (rupees) and its bid-ask spread (% of the mid)" },
   { keys: ["iv"], text: "ATM implied volatility (%)" },
   { keys: ["ivx"], text: "iv minus India VIX (volatility points)" },
   { keys: ["pcr"], text: "put-call ratio on open interest" },
   { keys: ["mp"], text: "distance to max pain within the ±15 monitored strikes (bps)" },
-  { keys: ["cw", "pw"], text: "distance to the call-OI wall and the put-OI wall (bps)" },
-  { keys: ["bc", "bp"], text: "near-the-money call and put strikes (ATM ±5) over the last 5 minutes, counted as [long build-up, short build-up, short covering, long unwinding]" },
+  { keys: ["cw", "pw"], text: "distance to the strikes with the most call and the most put open interest, the call and put walls (bps)" },
+  { keys: ["bc", "bp"], text: "how many call and put strikes within 5 strikes of ATM showed each build-up over the last 5 minutes, as [long build-up, short build-up, short covering, long unwinding]" },
   { keys: ["oa"], text: "age of the option data at the candle close (seconds)" },
 ];
 
@@ -89,12 +98,13 @@ const REFLEX_ROLE = [
 const SHARED_RULES = [
   "You only judge: code owns every threshold, size, order and exit, and it ignores you whenever its own checks disagree.",
   "",
-  "What the account can do: buy a call (direction LONG) or buy a put (direction SHORT) and hold it intraday;",
-  `everything is closed by ${SQUARE_OFF_IST} IST. It never sells options. NEUTRAL means no trade. A bought option loses`,
-  "value every minute (theta) and pays a spread and charges both ways, so a small or slow move in the right direction",
-  "still loses money. This project's research on real prices found no rule that beat those costs for option buyers.",
-  "NEUTRAL is the right answer most of the time; use LONG or SHORT only when the snapshot shows that a clear, quick",
-  `move is likely within about ${HORIZON_MIN} minutes.`,
+  "What the account can do: buy a call (direction LONG) or buy a put (direction SHORT) and hold it intraday. It buys",
+  `only from ${ENTRY_FROM_IST} to ${ENTRY_TO_IST} IST, and everything is closed by ${SQUARE_OFF_IST} IST. It never sells options.`,
+  "NEUTRAL means no trade. A bought option loses value every minute (theta) and pays a spread and charges both ways,",
+  "so a small or slow move in the right direction still loses money.",
+  "This project's research on real prices found no rule that beat those costs for option buyers. NEUTRAL is the right",
+  "answer most of the time; use LONG or SHORT only when the snapshot shows that a clear, quick move is likely within",
+  `about ${HORIZON_MIN} minutes.`,
   "",
   "Finalists:",
   "- GENERIC (one per index): that index's best long or short right now, or NEUTRAL.",
@@ -124,8 +134,9 @@ const SHARED_RULES = [
   "The user message is JSON: bar (the IST time the candle closed), date, indices (one snapshot per index), finalists,",
   "and brief (the brief's headline and factors, or null).",
   "",
-  "Snapshot legend. bps are basis points (100 bps = 1%). A distance is level / close - 1 in bps, positive when the",
-  "level is above the close. null means unknown, never zero.",
+  "Snapshot legend. Only returns and distances are in bps; bps are basis points (100 bps = 1%), so r5 12 means +0.12%.",
+  "Every other number has the unit given below. A distance is level / close - 1 in bps, positive when the level is",
+  "above the close. null means unknown, never zero.",
   ...legendLines(SNAPSHOT_LEGEND),
   "The option block o:",
   ...legendLines(OPTION_LEGEND),
@@ -144,7 +155,7 @@ export const REFLEX_CORE = [
 /** The guidance the agent starts with; the nightly review may propose a replacement, which the operator approves. */
 export const BUILTIN_GUIDANCE = [
   "- Prefer NEUTRAL when the 5-, 15- and 60-minute returns disagree, when ADX is below 20, or when the close is",
-  "  inside the opening range.",
+  "  inside the opening range (orh above 0 and orl below 0).",
   "- A move is more likely to continue when r5 and r15, the VWAP side, Supertrend and the sign of di agree, and",
   "  the option flow agrees (call short covering or put short build-up for LONG; the reverse for SHORT).",
   "- Be wary late in a strong move: RSI above 75 or below 25, or vz beyond ±2.5, often reverts.",
@@ -167,8 +178,11 @@ export function reflexSystem(guidance: string): string {
 // The reflex user message
 // ---------------------------------------------------------------------------
 
-/** Prose limits in the user message. finalists.ts compiles to the same limits; they are applied again here, so the message stays within its budget whatever reaches it. */
-export const PROMPT_TEXT = { condition: 200, wrongIf: 200, bearCase: 200, whyItems: 2, why: 120, headline: 160, factors: 4, factor: 100 } as const;
+/**
+ * Prose limits in the user message: the ones finalists.ts compiles to (FINALIST_TEXT), applied again here so the
+ * message stays within its budget whatever reaches it.
+ */
+export const PROMPT_TEXT = FINALIST_TEXT;
 
 const MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
 
@@ -186,7 +200,11 @@ function contractText(index: IndexId, c: NonNullable<Finalist["contract"]>): str
 
 const prose = (s: string | null | undefined, max: number): string | null => (typeof s === "string" ? cleanText(s, max) || null : null);
 
-/** A finalist as the model reads it (SPEC §4.3); its prose fields are listed apart for the token estimate. */
+/**
+ * A finalist as the model reads it (SPEC §4.3): a generic's id, kind and index; an idea adds its fixed side, the
+ * contract, the buy-zone top (rupees, 2 decimals), the condition, wrongIf, bear case and up to two reasons. Its prose
+ * fields are listed apart for the token estimate.
+ */
 function finalistParts(f: Finalist): { json: Record<string, unknown>; prose: string[] } {
   if (f.kind === "GENERIC") return { json: { id: f.id, kind: f.kind, index: f.index }, prose: [] };
   const condition = prose(f.condition, PROMPT_TEXT.condition);
@@ -203,7 +221,7 @@ function finalistParts(f: Finalist): { json: Record<string, unknown>; prose: str
       index: f.index,
       side: f.side,
       contract: f.contract ? contractText(f.index, f.contract) : null,
-      buyZoneTop: f.entryHigh,
+      buyZoneTop: f.entryHigh === null ? null : Math.round(f.entryHigh * 100) / 100,
       condition,
       wrongIf,
       bearCase,

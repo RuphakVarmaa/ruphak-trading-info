@@ -1,9 +1,11 @@
 import { describe, expect, it } from "vitest";
-import { istAt } from "../clock";
+import { istAt, istIso } from "../clock";
+import { fakeBrief } from "../testing/fakeAgent";
 import { fnv1aHex } from "../util/hash";
 import { AGENT_DEFAULTS } from "./config";
-import { USER_MESSAGE_TOKEN_LIMIT } from "./constants";
+import { CHARS_PER_TOKEN_BOUND, PROSE_CHARS_PER_TOKEN, USER_MESSAGE_TOKEN_LIMIT } from "./constants";
 import { MODEL_PRICES } from "./cost";
+import { FINALIST_TEXT, compileFinalists } from "./finalists";
 import {
   BUILTIN_GUIDANCE,
   ESCALATION_SYSTEM,
@@ -24,29 +26,23 @@ import {
   reflexUser,
   reviewUser,
 } from "./prompt";
-import { encodeSnapshot } from "./snapshot";
+import { SNAPSHOT_WIRE_KEYS, encodeSnapshot, worstCaseSnapshot } from "./snapshot";
 import type { AgentTradeRecord, CalibrationSummary, CallRecord, DecisionRecord, Finalist, IndexSnapshot, ReflexInput, StoredBar } from "./types";
 
 const T = istAt("2026-10-19", "10:35");
 
+/** In the snapshot's units: returns and distances in basis points; the ATR, the spreads and the book in percent. */
 const typical: IndexSnapshot = {
   c: 25012, r5: 12, r15: -8, r60: 31, ro: 45, vw: -18, vz: 0.9,
   orh: -11, orl: 21, ors: "I", pdh: -35, pdl: 64, pdc: 45,
-  rsi: 58, adx: 24, di: 6, st: 1, rv: 11, atr: 8, vix: 13.4, vixc: -2.1,
-  o: { k: 25000, cm: 112.5, cs: 89, pm: 98.1, ps: 102, iv: 13, ivx: -0.6, pcr: 0.92, mp: -5, cw: 40, pw: -60, bc: [3, 5, 1, 2], bp: [2, 1, 4, 0], oa: 58 },
+  rsi: 58, adx: 24, di: 6, st: 1, rv: 11, atr: 0.08, vix: 13.4, vixc: -2.1,
+  o: { k: 25000, cm: 112.5, cs: 0.89, pm: 98.1, ps: 1.02, iv: 13, ivx: -0.6, pcr: 0.92, mp: -5, cw: 40, pw: -60, bc: [3, 5, 1, 2], bp: [2, 1, 4, 0], oa: 58 },
   cv: 0.21, rg: "TU", pv: "C", pn: "kkckk", ew: 1, dte: 3, xd: 0,
-  bk: { pos: "-", lots: 0, pnl: null, dd: 115, dl: 35 },
+  bk: { pos: "-", lots: 0, pnl: null, dd: 1.15, dl: 0.35 },
 };
 
-/** Every number at its widest. */
-const widest: IndexSnapshot = {
-  c: 199_999, r5: -999, r15: -999, r60: -999, ro: -999, vw: -999, vz: -9.9,
-  orh: -999, orl: -999, ors: "D", pdh: -999, pdl: -999, pdc: -999,
-  rsi: 100, adx: 100, di: -100, st: -1, rv: 999, atr: 999, vix: 99.9, vixc: -99.9,
-  o: { k: 199_900, cm: 9999.9, cs: 999, pm: 9999.9, ps: 999, iv: 999, ivx: -99.9, pcr: 9.99, mp: -999, cw: -999, pw: -999, bc: [11, 11, 11, 11], bp: [11, 11, 11, 11], oa: 999 },
-  cv: -0.99, rg: "EV", pv: "X", pn: "uuuuu", ew: 0, dte: 99, xd: 1,
-  bk: { pos: "S", lots: 9, pnl: 999.9, dd: 9999, dl: 999 },
-};
+/** Every number at its widest encoding (snapshot.ts's own worst case). */
+const widest: IndexSnapshot = worstCaseSnapshot();
 
 const input = (snapshots: ReflexInput["snapshots"] = { NIFTY: typical, SENSEX: { ...typical, c: 82010 } }): ReflexInput => ({
   barCloseMs: T,
@@ -119,8 +115,8 @@ describe("the reflex system prompt", () => {
 
   it("keeps the core fixed: a change to it needs a new REFLEX_CORE_VERSION and a new pin here", () => {
     // Calibration tells prompt texts apart by instructionVersion, which hashes only the guidance.
-    expect(REFLEX_CORE_VERSION).toBe("core-1");
-    expect(fnv1aHex(REFLEX_CORE)).toBe("dbdfe294");
+    expect(REFLEX_CORE_VERSION).toBe("core-2");
+    expect(fnv1aHex(REFLEX_CORE)).toBe("751510a4");
   });
 
   it("asks for calibrated confidence the way the nightly scoring labels it (#23)", () => {
@@ -135,19 +131,37 @@ describe("the reflex system prompt", () => {
   it("explains every key encodeSnapshot writes, in its order, in basis points where it uses them", () => {
     const wire = JSON.parse(encodeSnapshot(typical)) as Record<string, unknown>;
     expect(SNAPSHOT_LEGEND.flatMap((e) => e.keys)).toEqual(Object.keys(wire));
+    expect(SNAPSHOT_LEGEND.flatMap((e) => e.keys)).toEqual([...SNAPSHOT_WIRE_KEYS.top]);
     expect(OPTION_LEGEND.flatMap((e) => e.keys)).toEqual(Object.keys(wire.o as Record<string, unknown>));
     expect(Object.keys(JSON.parse(encodeSnapshot({ ...typical, o: null })) as object)).toEqual(Object.keys(wire));
     for (const e of [...SNAPSHOT_LEGEND, ...OPTION_LEGEND]) expect(REFLEX_CORE).toContain(`- ${e.keys.join(" ")}: ${e.text}`);
     expect(REFLEX_CORE).toContain("bps are basis points (100 bps = 1%)");
     expect(REFLEX_CORE).toContain("max pain within the ±15 monitored strikes");
-    // Fields the amended snapshot dropped are not described.
-    for (const gone of ["cd", "th"]) expect(SNAPSHOT_LEGEND.some((e) => e.keys.includes(gone))).toBe(false);
+    // Fields the amended snapshot dropped are not described; the book goes as an array.
+    for (const gone of ["cd", "th", "ors", "pv", "ew"]) expect([...SNAPSHOT_LEGEND, ...OPTION_LEGEND].some((e) => e.keys.includes(gone))).toBe(false);
+    expect(Array.isArray(wire.bk)).toBe(true);
+  });
+
+  it("gives each field encodeSnapshot's unit: basis points only for returns and distances", () => {
+    const text = (key: string) => [...SNAPSHOT_LEGEND, ...OPTION_LEGEND].find((e) => e.keys.includes(key))!.text;
+    const inBps = new Set(["r5", "r15", "r60", "ro", "vw", "orh", "orl", "pdh", "pdl", "pdc", "mp", "cw", "pw"]);
+    for (const e of [...SNAPSHOT_LEGEND, ...OPTION_LEGEND]) expect(/\bbps\b/.test(e.text), e.keys.join(" ")).toBe(e.keys.some((k) => inBps.has(k)));
+    expect(text("atr")).toContain("(% of the close)");
+    expect(text("cs")).toContain("spread (% of the mid)");
+    expect(text("ps")).toContain("spread (% of the mid)");
+    expect(text("vixc")).toContain("(%)");
+    expect(text("bk")).toContain("account drawdown from its peak (%), today's loss used (% of equity)");
+    // What the wire form leaves out is still readable: the entry window from the bar time, the plan's verdict from pn.
+    expect(REFLEX_CORE.replace(/\s+/g, " ")).toContain("It buys only from 09:25 to 14:30 IST");
+    expect(text("orh")).toContain("09:15 to 09:30");
+    expect(text("pn")).toContain("any b means the plan says no new trades");
   });
 
   it("keeps the built-in guidance to keys the snapshot has", () => {
     const keys = new Set([...SNAPSHOT_LEGEND, ...OPTION_LEGEND].flatMap((e) => e.keys));
-    for (const k of ["r5", "r15", "di", "vz", "ivx", "oa", "pn"]) expect(keys.has(k)).toBe(true);
-    expect(BUILTIN_GUIDANCE).not.toMatch(/\bpv\b|\bew\b|\bors\b/);
+    for (const k of ["r5", "r15", "di", "vz", "ivx", "oa", "pn", "orh", "orl"]) expect(keys.has(k)).toBe(true);
+    for (const k of ["vz", "ivx", "oa", "pn", "orh", "orl"]) expect(BUILTIN_GUIDANCE).toMatch(new RegExp(`\\b${k}\\b`));
+    expect(BUILTIN_GUIDANCE).not.toMatch(/\bpv\b|\bew\b|\bors\b|\bcd\b|\bth\b/);
   });
 
   it("names no model in any prompt", () => {
@@ -213,18 +227,43 @@ describe("the reflex user message", () => {
     expect(b.factors).toEqual(["f".repeat(PROMPT_TEXT.factor), "2", "3", "4"]);
   });
 
-  it("stays under USER_MESSAGE_TOKEN_LIMIT at its worst: two widest snapshots, six finalists and the brief at their longest", () => {
+  it("keeps reflexUser itself within USER_MESSAGE_TOKEN_LIMIT at its largest: two widest snapshots, six finalists and the brief, prose at len/3", () => {
     const longText = "Only if NIFTY closes above 25,250 on a 5-minute candle and the call writers at 25,300 start covering. ".repeat(6);
     const ideas = [1, 2, 3, 4].map((n) => idea(n, { id: `idea:adv-2026-10-19-1:adv-2026-10-19-1-${n}`, entryHigh: 12345.65, condition: longText, wrongIf: longText, bearCase: longText, why: [longText, longText, longText] }));
     const worst = input({ NIFTY: widest, SENSEX: widest });
     const finalists = [generic("NIFTY"), generic("SENSEX"), ...ideas];
     const bigBrief = { headline: longText, factors: [longText, longText, longText, longText, longText] };
-    const est = estimateReflexUserTokens(worst, finalists, bigBrief);
-    expect(est).toBeLessThan(USER_MESSAGE_TOKEN_LIMIT);
-    // The estimate is never below the whole message at the prose rate, nor below its two snapshots at the numeric rate.
     const text = reflexUser(worst, finalists, bigBrief);
-    expect(est).toBeGreaterThanOrEqual(Math.ceil(text.length / 3));
-    expect(est).toBeGreaterThan((2 * encodeSnapshot(widest).length) / 1.2);
+    expect(text).toContain(`"NIFTY":${encodeSnapshot(widest)},"SENSEX":${encodeSnapshot(widest)}`);
+    // Every prose string the message carries (each clipped to its limit), JSON-quoted as it is sent.
+    const msg = JSON.parse(text) as { finalists: { condition?: string; wrongIf?: string; bearCase?: string; why?: string[] }[]; brief: { headline: string; factors: string[] } };
+    const prose = [...msg.finalists.flatMap((f) => [f.condition, f.wrongIf, f.bearCase, ...(f.why ?? [])]), msg.brief.headline, ...msg.brief.factors].filter((x): x is string => typeof x === "string");
+    expect(prose).toHaveLength(4 * 5 + 1 + FINALIST_TEXT.factors);
+    const proseChars = prose.reduce((n, x) => n + JSON.stringify(x).length, 0);
+    const est = Math.ceil((text.length - proseChars) / CHARS_PER_TOKEN_BOUND) + Math.ceil(proseChars / PROSE_CHARS_PER_TOKEN);
+    expect(est).toBeLessThanOrEqual(USER_MESSAGE_TOKEN_LIMIT);
+    expect(estimateReflexUserTokens(worst, finalists, bigBrief)).toBe(est);
+    // The estimate is never below the whole message at the prose rate, nor below its two snapshots at the numeric rate.
+    expect(est).toBeGreaterThanOrEqual(Math.ceil(text.length / PROSE_CHARS_PER_TOKEN));
+    expect(est).toBeGreaterThan((2 * encodeSnapshot(widest).length) / CHARS_PER_TOKEN_BOUND);
+  });
+
+  it("gives a compiled idea its side, contract, buy-zone top (2 decimals) and texts; a generic its id, kind and index", () => {
+    const brief = fakeBrief(istIso(istAt("2026-10-19", "09:25")), [{ entry: { low: 100, high: 110.5333, ask: 105, asOf: istIso(istAt("2026-10-19", "09:25")) }, why: ["one"] }]);
+    const [gen, f] = compileFinalists({ indices: ["NIFTY"], nowMs: T, brief });
+    expect(promptFinalist(gen)).toEqual({ id: "gen:NIFTY", kind: "GENERIC", index: "NIFTY" });
+    expect(promptFinalist(f)).toEqual({
+      id: `idea:${brief.id}:${brief.ideas[0].id}`,
+      kind: "IDEA",
+      index: "NIFTY",
+      side: "LONG",
+      contract: "NIFTY 25000 CE 26 Oct",
+      buyZoneTop: 110.53,
+      condition: brief.ideas[0].condition,
+      wrongIf: brief.ideas[0].wrongIf,
+      bearCase: brief.ideas[0].bearCase,
+      why: ["one"],
+    });
   });
 });
 

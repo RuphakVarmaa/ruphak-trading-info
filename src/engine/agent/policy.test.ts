@@ -23,10 +23,10 @@ const T = istAt("2026-10-19", "10:35");
 function snapshot(o: Partial<OptionBlock> | null = {}): IndexSnapshot {
   return {
     c: 25012, r5: 12, r15: -8, r60: 31, ro: 45, vw: 18, vz: 0.9, orh: -11, orl: 21, ors: "I", pdh: -35, pdl: 64, pdc: 45,
-    rsi: 58, adx: 24, di: 6, st: 1, rv: 11, atr: 8, vix: 13.4, vixc: -2.1,
-    o: o === null ? null : { k: 25000, cm: 112.5, cs: 89, pm: 98.1, ps: 102, iv: 13, ivx: -0.6, pcr: 0.92, mp: -5, cw: 40, pw: -60, bc: [3, 5, 1, 2], bp: [2, 1, 4, 0], oa: 58, ...o },
+    rsi: 58, adx: 24, di: 6, st: 1, rv: 11, atr: 0.08, vix: 13.4, vixc: -2.1,
+    o: o === null ? null : { k: 25000, cm: 112.5, cs: 0.89, pm: 98.1, ps: 1.02, iv: 13, ivx: -0.6, pcr: 0.92, mp: -5, cw: 40, pw: -60, bc: [3, 5, 1, 2], bp: [2, 1, 4, 0], oa: 58, ...o },
     cv: 0.21, rg: "TU", pv: "C", pn: "kkckk", ew: 1, dte: 3, xd: 0,
-    bk: { pos: "-", lots: 0, pnl: null, dd: 115, dl: 35 },
+    bk: { pos: "-", lots: 0, pnl: null, dd: 1.15, dl: 0.35 },
   };
 }
 
@@ -127,13 +127,13 @@ describe("codeGate", () => {
     const stale = gate({}, { s: snapshot({ oa: 181 }) });
     expect(stale.codeToxic).toEqual(["STALE_OPTIONS"]);
     expect(line(stale, "toxic_code").detail).toBe("Option data not usable: option data 181 s old at the close (limit 180 s)");
-    expect(gate({}, { s: snapshot({ cs: 150 }) }).fired).toBe(true);
-    const wide = gate({}, { s: snapshot({ cs: 151 }) });
+    expect(gate({}, { s: snapshot({ cs: 1.5 }) }).fired).toBe(true);
+    const wide = gate({}, { s: snapshot({ cs: 1.51 }) });
     expect(wide.codeToxic).toEqual(["WIDE_SPREAD"]);
     expect(line(wide, "toxic_code").detail).toBe("Option data not usable: call spread 1.51% (limit 1.5%)");
     // A LONG buys the call: a wide put does not matter, and the other way round.
-    expect(gate({}, { s: snapshot({ ps: 400 }) }).fired).toBe(true);
-    expect(gate({ direction: "SHORT" }, { s: snapshot({ ps: 400 }) }).codeToxic).toEqual(["WIDE_SPREAD"]);
+    expect(gate({}, { s: snapshot({ ps: 4 }) }).fired).toBe(true);
+    expect(gate({ direction: "SHORT" }, { s: snapshot({ ps: 4 }) }).codeToxic).toEqual(["WIDE_SPREAD"]);
     expect(gate({}, { s: snapshot({ cs: null }) }).codeToxic).toEqual(["WIDE_SPREAD"]);
   });
 
@@ -203,13 +203,13 @@ describe("stricterRisk", () => {
 
 describe("codeToxicity", () => {
   it("checks both options when there is no side to buy", () => {
-    expect(codeToxicity(snapshot({ cs: 89, ps: 102 }), null)).toEqual([]);
-    expect(codeToxicity(snapshot({ cs: 89, ps: 160 }), null)).toEqual(["WIDE_SPREAD"]);
-    expect(codeToxicity(snapshot({ oa: 400, cs: 300 }), "LONG")).toEqual(["STALE_OPTIONS", "WIDE_SPREAD"]);
+    expect(codeToxicity(snapshot({ cs: 0.89, ps: 1.02 }), null)).toEqual([]);
+    expect(codeToxicity(snapshot({ cs: 0.89, ps: 1.6 }), null)).toEqual(["WIDE_SPREAD"]);
+    expect(codeToxicity(snapshot({ oa: 400, cs: 3 }), "LONG")).toEqual(["STALE_OPTIONS", "WIDE_SPREAD"]);
     expect(codeToxicity(null, "SHORT")).toEqual(["NO_OPTION_DATA"]);
   });
 
-  it("reads the spreads in the unit snapshot.ts writes them (basis points of the mid)", () => {
+  it("reads the spreads in the unit snapshot.ts writes them (percent of the mid)", () => {
     // ATM call 100 / 101 (about 1.0% of the mid) and put 100 / 103 (about 3.0%).
     const side = (bid: number, ask: number) => ({ oi: 100_000, ltp: bid, bid, ask, iv: 13, delta: 0.5, oiChg: 0, oiChgPct: 0, vol: 0, volMultiple: null, ltpChgPct: 0, ivChg: 0, buildup: "NEUTRAL" as const });
     const flow = {
@@ -219,6 +219,7 @@ describe("codeToxicity", () => {
     } as unknown as OptionFlowView;
     const o = optionBlock(flow, 25012, 13.4, T);
     expect(o).not.toBeNull();
+    expect(o).toMatchObject({ cs: 1, ps: 2.96 });
     const s = { ...snapshot(), o };
     expect(codeToxicity(s, "LONG")).toEqual([]);
     expect(codeToxicity(s, "SHORT")).toEqual(["WIDE_SPREAD"]);

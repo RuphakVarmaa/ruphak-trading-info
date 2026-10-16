@@ -9,13 +9,14 @@
  * clamps every number, so worstCaseSnapshot bounds the token budget.
  *
  * The wire form (encodeSnapshot) leaves out three fields the model reads off others (ors from orh/orl and the bar
- * time, pv from pn, ew from the bar time) and sends the book as an array; SNAPSHOT_LEGEND describes exactly that.
- * The three stay on IndexSnapshot for the code and the dashboard.
+ * time, pv from pn, ew from the bar time) and sends the book as an array; the reflex's legend (prompt.ts
+ * SNAPSHOT_LEGEND and OPTION_LEGEND) describes exactly that. The three stay on IndexSnapshot for the code and the
+ * dashboard.
  */
 import type { FlowBuildup, IndexPlanView, OptionFlowView } from "../api-types";
 import type { TradingCalendar } from "../calendar/calendar";
-import { SESSION, formatHHMM, istDate, istIso, istMinutes, parseHHMM } from "../clock";
-import { DEFAULT_CONFIG, type EngineConfig } from "../config";
+import { istDate, istIso, istMinutes, parseHHMM } from "../clock";
+import type { EngineConfig } from "../config";
 import { computePressure } from "../events/pressure";
 import { computeFeatures } from "../market/features";
 import { combineConviction } from "../strategy/conviction";
@@ -375,9 +376,9 @@ export const SNAPSHOT_WIRE_KEYS = {
 } as const;
 
 /**
- * The snapshot as the model reads it: JSON in SNAPSHOT_WIRE_KEYS order. ors, pv and ew are left out (SNAPSHOT_LEGEND
- * says how to read them off orh/orl, pn and the bar time) and the book is [pos, lots, pnl, dd, dl]. The input is
- * fitted first (a no-op for buildIndexSnapshot's output), so no snapshot encodes longer than the worst case.
+ * The snapshot as the model reads it: JSON in SNAPSHOT_WIRE_KEYS order. ors, pv and ew are left out (the legend in
+ * prompt.ts says how to read them off orh/orl, pn and the bar time) and the book is [pos, lots, pnl, dd, dl]. The
+ * input is fitted first (a no-op for buildIndexSnapshot's output), so no snapshot encodes longer than the worst case.
  */
 export function encodeSnapshot(snapshot: IndexSnapshot): string {
   const s = fitSnapshot(snapshot);
@@ -412,21 +413,6 @@ export function encodeSnapshot(snapshot: IndexSnapshot): string {
     bk: [s.bk.pos, s.bk.lots, s.bk.pnl, s.bk.dd, s.bk.dl],
   });
 }
-
-const OR_START = formatHHMM(SESSION.open);
-const OR_END = formatHHMM(SESSION.open + DEFAULT_CONFIG.features.openingRangeMin);
-
-/**
- * The snapshot legend for the reflex model's instructions: every key encodeSnapshot sends, in its units. The
- * prompt's legend must say exactly this (snapshot.test.ts checks it names every key).
- */
-export const SNAPSHOT_LEGEND = [
-  "Snapshot legend (one per index). Returns and distances are in basis points: 12 means +0.12%. A distance runs from the close c to a level and is positive when the level is above the close. null means unknown.",
-  `c close; r5 r15 r60 log return over the last 5, 15 and 60 minutes; ro return since today's open; vw distance to VWAP; vz z-score of the close against VWAP (positive: close above VWAP); orh orl distance to today's opening-range high and low (the range is ${OR_START}-${OR_END}: before ${OR_END} it is still forming; the close is above the range when orh is negative, below it when orl is positive); pdh pdl pdc distance to the previous session's high, low and close; rsi RSI(14); adx ADX(14); di +DI minus -DI; st Supertrend direction (1 up, -1 down, 0 none); rv realized volatility over 2 hours (annualized %); atr 5-minute ATR (% of price); vix India VIX; vixc its change today (%).`,
-  "o the at-the-money option block, null when there was no option data: k ATM strike; cm cs call mid (rupees) and bid-ask spread (% of mid); pm ps the same for the put; iv ATM implied volatility (%); ivx iv minus VIX; pcr put-call ratio on open interest; mp distance to max pain within the ±15 monitored strikes; cw pw distance to the strikes with the most call and the most put open interest; bc bp how many call and put strikes within 5 strikes of ATM showed each 5-minute build-up, as [long build-up, short build-up, short covering, long unwinding]; oa age of the option data at the close (seconds).",
-  `cv the engine's conviction (-1 to 1; it has no measured edge); rg its regime (TU trend up, TD trend down, RG range, HV high volatility, EV event); pn today's plan rules N1 N2 N4 N7 N9 (k clear, c caution, b block, u unknown); the plan's verdict pv is X (no new trade today) when any rule is b, C when all are k, else A; new entries are allowed only from ${DEFAULT_CONFIG.gates.noEntryBeforeIst} to ${DEFAULT_CONFIG.gates.noEntryAfterIst} IST; dte trading sessions to the expiry the account would buy; xd 1 on the index's expiry day.`,
-  "bk the account's own book on this index as [position (L call held, S put held, - none), lots, open P&L (% of premium), account drawdown from its peak (%), today's loss used (% of equity)].",
-].join("\n");
 
 /** A conservative token estimate for dense numeric JSON: Math.ceil(text.length / CHARS_PER_TOKEN_BOUND). */
 export function estimateTokens(text: string): number {

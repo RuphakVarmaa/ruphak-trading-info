@@ -11,7 +11,7 @@ export const AGENT_POLICY = {
   maxDecisionAgeMs: 4 * MINUTE_MS,
   maxOptionAgeSec: 180,
   maxSnapshotSpreadPct: 1.5,
-  /** Top-of-book quantity imbalance recorded as information only (ONE_SIDED_BOOK, passed: null); it never blocks. */
+  /** The book's quantity imbalance (summed depth when the quote has it) above which quoteGateLines calls it one-sided: information only (passed null), never a block. */
   oneSidedBookImbalance: 0.85,
   /** An idea is bought only at an ask ≤ the brief's buy-zone top × this. */
   ideaPremiumTolerance: 1.05,
