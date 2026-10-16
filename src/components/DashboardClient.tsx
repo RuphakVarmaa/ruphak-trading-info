@@ -2,7 +2,7 @@
 
 import type { EngineSnapshot } from '@/lib/engine/types';
 import { EngineProvider, useEngineState } from '@/hooks/useEngineState';
-import IndiaDesk from '@/components/Desk/IndiaDesk';
+import EngineDesk from '@/components/Desk/IndiaDesk';
 import SiteHeader from '@/components/shared/SiteHeader';
 import SiteFooter from '@/components/shared/SiteFooter';
 import { C } from '@/components/shared/colors';
@@ -10,23 +10,25 @@ import { Panel } from '@/components/shared/ui';
 
 interface DashboardClientProps {
   engineInitial: EngineSnapshot | null;
+  /** Paper account from `?account=` (undefined: main). */
+  account?: string;
 }
 
-/** The site header with the engine's PAPER/LIVE badge: the only place the Desk shows the mode. */
-function DeskSiteHeader() {
+/** The site header with the engine's PAPER/LIVE badge. */
+function EngineSiteHeader() {
   const { state } = useEngineState();
   return <SiteHeader active="engine" mode={state?.mode ?? null} />;
 }
 
-/** The Desk page: the India index overview. Metals and macro have their own page (/metals). */
-export default function DashboardClient({ engineInitial }: DashboardClientProps) {
+/** The Paper Engine page. Keyed by account, so switching accounts starts a fresh provider (as /live and /copy do). */
+export default function DashboardClient({ engineInitial, account }: DashboardClientProps) {
   return (
-    <EngineProvider initial={engineInitial}>
+    <EngineProvider key={account ?? 'main'} initial={engineInitial} account={account}>
       <div style={{ minHeight: '100vh', display: 'flex', flexDirection: 'column', background: C.bg, color: C.text }}>
-        <DeskSiteHeader />
+        <EngineSiteHeader />
 
         <main style={{ width: '100%', maxWidth: 1240, margin: '0 auto', padding: '32px 16px 64px', display: 'grid', gridTemplateColumns: 'minmax(0, 1fr)', gap: 48, boxSizing: 'border-box' }}>
-          <IndiaDesk />
+          <EngineDesk account={account} />
 
           <Panel style={{ padding: '18px 20px', background: C.panelAlt }}>
             <div style={{ fontSize: 14, fontWeight: 600, color: C.textStrong, marginBottom: 8 }}>Disclaimer</div>
@@ -35,7 +37,7 @@ export default function DashboardClient({ engineInitial }: DashboardClientProps)
                 Nothing here is investment advice, and the author is not a SEBI-registered investment adviser or research analyst. Data comes from sources believed to be reliable but is not guaranteed.
               </p>
               <p style={{ margin: 0 }}>
-                Paper trading: the India Index Desk simulates orders against live quotes with modelled slippage and Groww&apos;s charges. Simulated P&amp;L, backtests and signal statistics are hypothetical
+                Paper trading: the engine simulates orders against live quotes with modelled slippage and Groww&apos;s charges. Simulated P&amp;L, backtests and signal statistics are hypothetical
                 and do not predict future results.
               </p>
               <p style={{ margin: 0 }}>

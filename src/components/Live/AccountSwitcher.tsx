@@ -6,8 +6,8 @@ import { useEngineState } from "@/hooks/useEngineState";
 
 const fmtCapital = (rupees: number) => (rupees >= 100_000 ? `₹${(rupees / 100_000).toFixed(rupees % 100_000 === 0 ? 0 : 1)}L` : `₹${Math.round(rupees / 1000)}k`);
 
-/** Switches a page (Live P&L, Copy trades) between paper accounts. Hidden when the engine runs only main (or in mock mode). */
-export default function AccountSwitcher({ basePath = "/live" }: { basePath?: "/live" | "/copy" }) {
+/** Switches a page (Paper Engine, Live P&L, Copy trades) between paper accounts. Hidden when the engine runs only main. */
+export default function AccountSwitcher({ basePath = "/live" }: { basePath?: "/" | "/live" | "/copy" }) {
   const { state } = useEngineState();
   const accounts = state?.accounts ?? [];
   if (accounts.length < 2) return null;

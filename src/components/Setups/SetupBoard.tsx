@@ -12,6 +12,7 @@ import type { IndexId, SignalView, TradeSetupStatus, TradeSetupView } from "@/en
 import { alpha, C } from "@/components/shared/colors";
 import { fmtIstHm, fmtNum } from "@/components/shared/format";
 import { EmptyState, Panel, Skeleton } from "@/components/shared/ui";
+import { useOptionalEngineState } from "@/hooks/useEngineState";
 import { usePolled } from "@/hooks/usePolled";
 import type { IntradayFeed } from "@/lib/market/intraday";
 import { announceSetup, useAlertsOn } from "@/components/Copy/alerts";
@@ -220,6 +221,8 @@ function usePollMs(): number {
 export default function SetupBoard() {
   const poll = useSharedPoll<SignalView[]>("/api/engine/signals", usePollMs());
   useSetupAlerts(poll.data);
+  // Today's plan says whether the measured-edge check is pausing the engine's buying (null: not known here).
+  const buyingPaused = useOptionalEngineState()?.plan?.buyingPaused ?? null;
   return (
     <section aria-label="Trade setups" style={{ display: "grid", gap: 10, minWidth: 0 }}>
       <div style={{ display: "flex", alignItems: "baseline", gap: 10, flexWrap: "wrap" }}>
@@ -236,7 +239,8 @@ export default function SetupBoard() {
         </div>
       )}
       <p style={{ margin: 0, fontSize: 11.5, color: C.muted3 }}>
-        Setups are chart rules, not a measured edge: our backtests found no buying edge. Paper engine paused. Not investment advice.
+        Setups are chart rules, not a measured edge: our backtests found no buying edge.
+        {buyingPaused === true ? " The paper engine's own buying is paused." : buyingPaused === false ? " The paper engine's own buying is on." : ""} Not investment advice.
       </p>
     </section>
   );

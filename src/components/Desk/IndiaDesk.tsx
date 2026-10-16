@@ -4,86 +4,83 @@ import Link from "next/link";
 import { useEngineState } from "@/hooks/useEngineState";
 import IndexActionStrip from "@/components/Copy/ActionStrip";
 import SetupBoard from "@/components/Setups/SetupBoard";
-import FlowPanel from "@/components/Flow/FlowPanel";
 import RecoCard from "@/components/Reco/RecoCard";
-import { LiveIndicesPanel } from "@/components/Market";
-import PnlTiles from "@/components/Blotter/PnlTiles";
 import TradeBlotter from "@/components/Blotter/TradeBlotter";
+import OpenNow, { linkStyle } from "@/components/Engine/OpenNow";
+import PnlSection from "@/components/Engine/PnlSection";
+import SafetyStrip, { MarketStatus } from "@/components/Engine/SafetyStrip";
+import TodaysTrades from "@/components/Engine/TodaysTrades";
 import { C } from "@/components/shared/colors";
-import { Disclosure, Section } from "@/components/shared/ui";
+import { fmtIstDay } from "@/components/shared/format";
+import { Disclosure, PageHeader } from "@/components/shared/ui";
 import ConnectionBanner from "./ConnectionBanner";
-import DeskHeader from "./DeskHeader";
 import EngineControls from "./EngineControls";
 import EngineStatusBar from "./EngineStatusBar";
-import EventImpactFeed from "./EventImpactFeed";
-import MarketStrip from "./MarketStrip";
-import ScheduledEventsStrip from "./ScheduledEventsStrip";
 import SignalConsole from "./SignalConsole";
 import TodayPlan from "./TodayPlan";
 
-const linkStyle = { fontSize: 13, fontWeight: 600, color: C.gold, textDecoration: "none" } as const;
-
 /**
- * The India Index Desk, an overview: the ₹10k "trade now" card and the live option flow, the session's plan (the research plan's no-trade rules), the market
- * and today's P&L, both signals, the news and the week's scheduled events. The book (orders, equity,
- * signal record) and the engine's controls and health sit in collapsed areas at the bottom.
+ * The Paper Engine page ("/"): is it running and safe, what to do now, the ₹10k card, the trade
+ * setups, what is open, the P&L and today's trades. The reasoning (today's plan and each signal) and
+ * the book, controls and health sit in two collapsed areas. Market data and news live on the Options
+ * and Geo Intel pages. `account`: the paper account from `?account=` (undefined: main).
  */
-export default function IndiaDesk() {
-  const { status } = useEngineState();
+export default function EngineDesk({ account }: { account?: string }) {
+  const { state, status } = useEngineState();
   const dim = status === "offline" ? 0.55 : status === "stale" ? 0.85 : 1;
+  const follower = state?.account && state.account.id !== "main" ? state.account : null;
   return (
-    <div id="desk" style={{ display: "grid", gridTemplateColumns: "minmax(0, 1fr)", gap: 28, minWidth: 0 }}>
-      <DeskHeader />
+    <div id="desk" style={{ display: "grid", gridTemplateColumns: "minmax(0, 1fr)", gap: 32, minWidth: 0 }}>
+      <PageHeader
+        eyebrow={state ? `${fmtIstDay(state.market.nowIst)}${follower ? ` · ${follower.label}` : ""}` : "Paper trading"}
+        title="Paper trading engine"
+        sub="A simulated book on live NIFTY and SENSEX option prices: new buys stay paused by the measured-edge check unless a practice quota is on, and ENTER or WAIT is the engine's reading, not a promise."
+        right={<MarketStatus />}
+      >
+        <SafetyStrip account={account} />
+        <ConnectionBanner />
+      </PageHeader>
+
+      <div style={{ display: "grid", gap: 8, minWidth: 0 }}>
+        <IndexActionStrip compact account={account} />
+        <p style={{ margin: 0, fontSize: 12.5, color: C.muted2, lineHeight: 1.5 }}>
+          This follows the engine&apos;s own paper book. The ₹10k card below is a separate, graded recommendation from chart setups and option flow, so the two can disagree.
+        </p>
+      </div>
+
       <RecoCard />
-      <IndexActionStrip compact />
       <SetupBoard />
-      <FlowPanel variant="compact" id="flow" />
-      <LiveIndicesPanel />
-      <ConnectionBanner />
-      <div style={{ display: "grid", gridTemplateColumns: "minmax(0, 1fr)", gap: 40, opacity: dim, transition: "opacity 0.3s", minWidth: 0 }}>
-        <Section id="plan" title="Today's plan" sub="The research plan's no-trade rules for this session: what blocks a buyer today, and when the entry window is.">
+
+      <div style={{ display: "grid", gridTemplateColumns: "minmax(0, 1fr)", gap: 32, opacity: dim, transition: "opacity 0.3s", minWidth: 0 }}>
+        <OpenNow account={account} />
+        <PnlSection account={account} />
+        <TodaysTrades account={account} />
+      </div>
+
+      <p style={{ margin: 0, fontSize: 14, color: C.muted, lineHeight: 1.6 }}>
+        Market and news: index levels and the option build-up are on{" "}
+        <Link href="/options" className="link-quiet" style={linkStyle}>
+          Options
+        </Link>
+        ; world events and scheduled releases on{" "}
+        <Link href="/geo" className="link-quiet" style={linkStyle}>
+          Geo Intel
+        </Link>
+        .
+      </p>
+
+      <div style={{ display: "grid", gridTemplateColumns: "minmax(0, 1fr)", gap: 14, minWidth: 0 }}>
+        <Disclosure id="why" title="Why the engine says this" note="Today's no-trade rules and windows, and each index's signal, checks and the news behind it.">
           <TodayPlan />
-        </Section>
-
-        <Section
-          id="today"
-          title="Today"
-          right={
-            <Link href="/live" className="link-quiet" style={linkStyle}>
-              Live P&amp;L →
-            </Link>
-          }
-        >
-          <div style={{ display: "grid", gridTemplateColumns: "minmax(0, 1fr)", gap: 12 }}>
-            <MarketStrip />
-            <PnlTiles />
-          </div>
-        </Section>
-
-        <Section id="signals" title="Signals" sub="What the engine sees on each index right now, and whether it would trade.">
           <SignalConsole />
-        </Section>
-
-        <div className="desk-split">
-          <Section id="news" title="News moving the market" sub="Stories scored for their likely effect on NIFTY and SENSEX.">
-            <EventImpactFeed />
-          </Section>
-          <Section id="catalysts" title="Upcoming events" sub="Scheduled releases and expiries; no new entries around the big ones.">
-            <ScheduledEventsStrip />
-          </Section>
-        </div>
-
-        <div style={{ display: "grid", gridTemplateColumns: "minmax(0, 1fr)", gap: 14, minWidth: 0 }}>
-          <Disclosure id="book" title="Orders and performance" note="Open positions, today's orders, equity and charges, and each signal's record.">
-            <TradeBlotter />
-          </Disclosure>
-          <Disclosure id="operations" title="Operations" note="Engine controls (admin token needed), and the health of the engine and its data sources.">
-            <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(min(100%, 420px), 1fr))", gap: 16, alignItems: "start" }}>
-              <EngineControls />
-              <EngineStatusBar />
-            </div>
-          </Disclosure>
-        </div>
+        </Disclosure>
+        <Disclosure id="operations" title="Book, controls and health" note="Positions, today's orders, equity and charges, each signal's record; engine controls (admin token needed) and data health.">
+          <TradeBlotter />
+          <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(min(100%, 420px), 1fr))", gap: 16, alignItems: "start" }}>
+            <EngineControls />
+            <EngineStatusBar />
+          </div>
+        </Disclosure>
       </div>
     </div>
   );
