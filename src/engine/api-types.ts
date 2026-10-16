@@ -1114,6 +1114,10 @@ export interface AdvisorIdea {
   /** What would prove the idea wrong (exit early). */
   wrongIf: string;
   confidence: AdvisorConfidence;
+  /** Rough chance the index ends beyond the break-even at expiry (|delta| at the break-even strike), 0..1. */
+  probAboveBreakeven?: number | null;
+  /** What the engine changed after the model answered, with the original value ("stop raised to ₹35.55 (was ₹38.40)"). */
+  engineNotes?: string[];
 }
 
 export interface AdvisorReport {
