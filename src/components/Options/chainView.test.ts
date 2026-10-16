@@ -1,7 +1,15 @@
 import { describe, expect, it } from "vitest";
 import type { OptionChainRowView, OptionSideView, SignalAdviceView, SignalView } from "@/engine/api-types";
 import { istAt } from "@/lib/ist";
-import { adviceLine, atmIndex, breakeven, chainPollMs, diffFlashes, engineTieIn, fmtLakh, isItm, isMarketHours, shortExpiry, spotLineIndex, visibleRows } from "./chainView";
+import { adviceLine, atmIndex, breakeven, chainPollMs, diffFlashes, engineTieIn, fmtLakh, isItm, isMarketHours, optionsHref, shortExpiry, spotLineIndex, visibleRows } from "./chainView";
+
+describe("optionsHref", () => {
+  it("keeps the index, the chain's expiry and an anchor in the address", () => {
+    expect(optionsHref("NIFTY", null)).toBe("/options?index=NIFTY");
+    expect(optionsHref("SENSEX", "2026-10-29", "chain")).toBe("/options?index=SENSEX&expiry=2026-10-29#chain");
+    expect(optionsHref("NIFTY", null, "#outlook")).toBe("/options?index=NIFTY#outlook");
+  });
+});
 
 const side = (ltp: number | null): OptionSideView =>
   ({ instrumentKey: "x", ltp, close: null, change: null, changePct: null, bid: null, ask: null, bidQty: null, askQty: null, volume: null, oi: null, prevOi: null, oiChange: null, iv: null, delta: null, gamma: null, theta: null, vega: null, pop: null });

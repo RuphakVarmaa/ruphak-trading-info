@@ -79,8 +79,15 @@ export function isMarketHours(nowMs: number): boolean {
   return p.weekday <= 5 && p.minutesOfDay >= SESSION.open && p.minutesOfDay < SESSION.close;
 }
 
-/** Poll every 3 s in market hours, every 60 s otherwise. */
+/** Poll every 2 s in market hours, every 10 minutes otherwise. */
 export const chainPollMs = (nowMs: number) => (isMarketHours(nowMs) ? REFRESH_OTHER_MS : REFRESH_CLOSED_MS);
+
+/** The /options address for an index and chain expiry, as the page keeps it in the address bar: "/options?index=SENSEX&expiry=2026-10-29#chain". */
+export function optionsHref(index: IndexId, expiry: string | null, hash?: string): string {
+  const q = new URLSearchParams({ index });
+  if (expiry) q.set("expiry", expiry);
+  return `/options?${q.toString()}${hash ? `#${hash.replace(/^#/, "")}` : ""}`;
+}
 
 const MON = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
 
