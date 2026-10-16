@@ -22,12 +22,14 @@ function IdeaCheck({
   chain,
   createdAt,
   nowMs,
+  conditional,
 }: {
   idea: AdvisorReportSummary["ideas"][number];
   parsed: ParsedContract | null;
   chain: ChainState | undefined;
   createdAt: string;
   nowMs: number | null;
+  conditional: boolean;
 }) {
   const muted = { fontSize: 14.5, color: C.muted2, lineHeight: 1.5 } as const;
   if (isOldDayTrade(idea.horizon, createdAt, nowMs)) return <div style={muted}>A day trade for that day only: today&apos;s price does not show how it did.</div>;
@@ -43,7 +45,8 @@ function IdeaCheck({
   const ltp = s?.ltp ?? null;
   if (ltp == null) return <div style={muted}>No current price for this strike.</div>;
   const check = pastCheck(idea, ltp);
-  const color = check.tone === "up" ? C.green : check.tone === "down" ? C.red : C.muted;
+  // A conditional idea was never bought, so its price move is shown muted, not as a win or a loss.
+  const color = conditional ? C.muted : check.tone === "up" ? C.green : check.tone === "down" ? C.red : C.muted;
   return (
     <div className="tnum" style={{ fontSize: 15, fontWeight: 600, color, lineHeight: 1.5 }}>
       {check.words}
@@ -91,6 +94,8 @@ function BriefRow({
         {brief.ideas.length === 0 && <div style={{ fontSize: 14.5, color: C.muted2 }}>This brief had no trade ideas.</div>}
         {brief.ideas.map((idea, i) => {
           const p = parsed[i];
+          // Briefs stored before ideas carried the flag: every idea on a WAIT or AVOID day was conditional.
+          const conditional = idea.conditional ?? brief.todayAction !== "BUY";
           return (
             <div key={idea.id} style={{ background: C.panelAlt, border: `1px solid ${C.borderSoft}`, borderRadius: 12, padding: "12px 12px", display: "grid", gap: 6 }}>
               <div style={{ display: "flex", flexWrap: "wrap", gap: 8, alignItems: "baseline" }}>
@@ -100,7 +105,8 @@ function BriefRow({
               <div className="tnum" style={{ fontSize: 14.5, color: C.textSoft }}>
                 Price when written {premium(idea.entryAsk)} · stop {premium(idea.stop)} · target {premium(idea.target)}
               </div>
-              <IdeaCheck idea={idea} parsed={p} chain={p ? chains[chainKey(p)] : undefined} createdAt={brief.createdAt} nowMs={nowMs} />
+              {conditional && <div style={{ fontSize: 14, color: C.orange, fontWeight: 600 }}>Conditional: it was not a buy when written, so the price move below is not a result.</div>}
+              <IdeaCheck idea={idea} parsed={p} chain={p ? chains[chainKey(p)] : undefined} createdAt={brief.createdAt} nowMs={nowMs} conditional={conditional} />
             </div>
           );
         })}

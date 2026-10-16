@@ -11,6 +11,7 @@ import type { AdvisorConfidence, AdvisorFactor, AdvisorFactorKey, AdvisorHorizon
 import { computeCharges } from "../broker/charges";
 import { istAt, istDate, istIso } from "../clock";
 import type { AdviceOut } from "./advise";
+import { ideaCondition } from "./conditionText";
 import { DEFAULT_CAPITAL, candidateId } from "./context";
 import { HONESTY_LINE } from "./knowledge";
 import type { ResearchResult } from "./research";
@@ -210,7 +211,8 @@ export function validateIdea(raw: IdeaInput, c: AdvisorCandidate | undefined, op
     probItm: c.delta == null ? null : r2(Math.min(1, Math.abs(c.delta))),
     why: texts(raw.why, 6),
     wrongIf: text(raw.wrongIf, 300) || "The index moves against the idea and the stop is hit.",
-    condition: text(raw.condition, 400) || null,
+    // The brief's condition field, else a condition its first reason states; a placeholder ("None") is none.
+    condition: text(ideaCondition({ condition: raw.condition, why: raw.why }), 400) || null,
     confidence: raw.confidence,
     probAboveBreakeven: beyond == null ? null : r2(beyond),
     engineNotes: [...notes],
@@ -371,9 +373,15 @@ function zeroHeroOf(advice: AdviceOut, ctx: AdvisorContext): AdvisorReport["zero
   return { applicable: true, expiry, summary: `${summary}${odds}` };
 }
 
-/** The entry condition the engine gives an idea on a WAIT or AVOID day when the brief gave none. */
-export function defaultCondition(action: AdvisorReport["today"]["action"]): string {
-  return `Today's answer is ${action}: do not buy today. This idea is only for later, once its trigger is met and the engine's plan allows entries.`;
+const MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+
+/**
+ * The entry condition the engine gives an idea on a WAIT or AVOID day when the brief gave none. It names the
+ * brief's day, since a stored brief is still read on later days.
+ */
+export function defaultCondition(action: AdvisorReport["today"]["action"], nowMs: number): string {
+  const [, m, d] = istDate(nowMs).split("-").map(Number);
+  return `The answer for ${d} ${MONTHS[m - 1]} is ${action}: do not buy that day. Use this idea only if a later brief gives it a clear entry condition and the engine's plan allows entries.`;
 }
 
 export interface BuildReportInput {
@@ -437,7 +445,7 @@ export function buildReport(i: BuildReportInput): BuildReportResult {
   if (action !== "BUY") {
     for (const x of ideas) {
       if (x.condition) continue;
-      x.condition = defaultCondition(action);
+      x.condition = defaultCondition(action, i.nowMs);
       const note = `condition added: today's answer is ${action} and the brief gave this idea no entry condition`;
       x.engineNotes = [...(x.engineNotes ?? []), note];
       notes.push(`${x.contract.label}: ${note}`);
@@ -472,6 +480,6 @@ export function summarize(r: AdvisorReport): AdvisorReportSummary {
     createdAt: r.createdAt,
     headline: r.headline,
     todayAction: r.today.action,
-    ideas: r.ideas.map((x) => ({ id: x.id, label: x.contract.label, horizon: x.horizon, entryAsk: x.entry.ask, stop: x.stop, target: x.target })),
+    ideas: r.ideas.map((x) => ({ id: x.id, label: x.contract.label, horizon: x.horizon, entryAsk: x.entry.ask, stop: x.stop, target: x.target, conditional: x.condition != null || r.today.action !== "BUY" })),
   };
 }

@@ -96,6 +96,21 @@ describe("one idea against its real contract", () => {
     expect(blank.idea.condition).toBeNull();
   });
 
+  it("treats a placeholder condition as none and falls back to a condition stated as the first reason", () => {
+    for (const p of ["None", "N/A", "null", "-", "No condition needed", "Buy now."]) {
+      const r = validateIdea(idea({ condition: p }), cand(), opts);
+      if (!r.ok) throw new Error(r.reason);
+      expect(r.idea.condition).toBeNull();
+    }
+    const why = ["Condition first: only if NIFTY closes today above 23,152; otherwise skip.", "Nearest call that fits ₹10,000."];
+    const fromWhy = validateIdea(idea({ condition: null, why }), cand(), opts);
+    if (!fromWhy.ok) throw new Error(fromWhy.reason);
+    expect(fromWhy.idea.condition).toBe(why[0]);
+    const plainWhy = validateIdea(idea({ condition: null, why: ["Put writers are adding at 23,000.", "Global cues are firm."] }), cand(), opts);
+    if (!plainWhy.ok) throw new Error(plainWhy.reason);
+    expect(plainWhy.idea.condition).toBeNull();
+  });
+
   it("drops a hallucinated contract id", () => {
     const r = validateIdea(idea({ candidateId: "NIFTY-2026-10-20-99999-CE" }), undefined, opts);
     expect(r).toEqual({ ok: false, reason: 'unknown contract id "NIFTY-2026-10-20-99999-CE"' });
@@ -276,8 +291,8 @@ describe("the whole report", () => {
     expect(report.market).toEqual({ nifty: 23180, sensex: 76000, vix: 12.4, phase: "OPEN" });
     expect(report.createdAt).toBe("2026-10-16T11:00:00+05:30");
     expect(summarize(report).ideas).toEqual([
-      { id: "adv-1-1", label: "NIFTY 20-OCT-2026 23200 CE", horizon: "TODAY", entryAsk: 100, stop: 70, target: 150 },
-      { id: "adv-1-2", label: "NIFTY 20-OCT-2026 23100 PE", horizon: "WEEK", entryAsk: 90, stop: 60, target: 140 },
+      { id: "adv-1-1", label: "NIFTY 20-OCT-2026 23200 CE", horizon: "TODAY", entryAsk: 100, stop: 70, target: 150, conditional: false },
+      { id: "adv-1-2", label: "NIFTY 20-OCT-2026 23100 PE", horizon: "WEEK", entryAsk: 90, stop: 60, target: 140, conditional: false },
     ]);
   });
 
@@ -307,16 +322,18 @@ describe("the whole report", () => {
     );
     expect(report.today.action).toBe("AVOID");
     const [plain, conditional] = report.ideas;
-    expect(plain.condition).toBe("Today's answer is AVOID: do not buy today. This idea is only for later, once its trigger is met and the engine's plan allows entries.");
-    expect(plain.condition).toBe(defaultCondition("AVOID"));
+    expect(plain.condition).toBe(defaultCondition("AVOID", NOW));
+    expect(plain.condition).toMatch(/^The answer for \d{1,2} [A-Z][a-z]{2} is AVOID: do not buy that day\. Use this idea only if a later brief gives it a clear entry condition/);
     expect(plain.engineNotes).toEqual(["condition added: today's answer is AVOID and the brief gave this idea no entry condition"]);
     expect(notes).toContain("NIFTY 20-OCT-2026 23200 CE: condition added: today's answer is AVOID and the brief gave this idea no entry condition");
     expect(conditional.condition).toBe(own);
     expect(conditional.engineNotes).toEqual([]);
+    // The stored summary marks them, so the past-briefs list does not read their price moves as results.
+    expect(summarize(report).ideas.map((x) => x.conditional)).toEqual([true, true]);
     // A BUY whose idea failed the checks becomes WAIT: the ideas left are not a buy now either.
     const changed = build(advice({ today: { action: "BUY", summary: "Buy it.", candidateId: "NIFTY-2026-10-20-99999-CE" } })).report;
     expect(changed.today.action).toBe("WAIT");
-    expect(changed.ideas.every((x) => x.condition === defaultCondition("WAIT"))).toBe(true);
+    expect(changed.ideas.every((x) => x.condition === defaultCondition("WAIT", NOW))).toBe(true);
     expect(changed.ideas[0].engineNotes).toContain("condition added: today's answer is WAIT and the brief gave this idea no entry condition");
   });
 

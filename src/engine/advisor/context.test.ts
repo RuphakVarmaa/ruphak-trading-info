@@ -188,7 +188,8 @@ describe("the whole context on the mock engine", () => {
     expect(doc.measuredResearch.flowStudy.length).toBeGreaterThan(0);
     expect(doc.measuredResearch.mainFindings.length).toBeGreaterThan(5);
     expect(doc.todayPlan).toBeTruthy();
-    const state = await api.getState();
+    // The state the gather read (the mock's book moves with its clock, so a second read could differ).
+    const state = inputs.state!;
     expect(doc.paperEngineBook.limits).toMatchObject({ dailyLossCap: state.caps.dailyLossCap, dailyLossUsed: state.caps.dailyLossUsed, killSwitch: state.killSwitch });
     expect(doc.candidates[0]).toHaveProperty("fitsCapital");
     // The option-implied ranges the outlook is checked against: the same ones the prompt shows.

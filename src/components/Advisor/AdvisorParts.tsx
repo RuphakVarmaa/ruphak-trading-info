@@ -118,11 +118,12 @@ export function TodayCard({ report, nowMs }: { report: AdvisorReport; nowMs: num
   const { action, summary, ideaId } = report.today;
   const meta = ACTION_META[action];
   const idea = action === "BUY" && ideaId ? (report.ideas.find((i) => i.id === ideaId) ?? null) : null;
-  // Today's pick can still name a condition of its own: the order then waits for it.
-  const pickCondition = idea ? ideaGate(idea, action).condition : null;
   // A brief from an earlier IST day must not read as today's call: muted, labelled with its day, no copy button.
   const oldDay = oldBriefDay(report.createdAt, nowMs);
-  const color = oldDay ? C.muted : meta.color;
+  // Today's pick can still name a condition of its own: the order then waits for it, and the BUY says so.
+  const pickCondition = idea ? ideaGate(idea, action, oldDay).condition : null;
+  const color = oldDay ? C.muted : pickCondition ? C.orange : meta.color;
+  const note = pickCondition ? "Only if the condition below happens: then the idea below is worth a small buy, with its stop." : meta.note;
   const m = report.market;
   const strip = [
     m.nifty != null ? `NIFTY ${fmtNum(m.nifty, 0)}` : null,
@@ -145,7 +146,7 @@ export function TodayCard({ report, nowMs }: { report: AdvisorReport; nowMs: num
         >
           {action}
         </span>
-        <span style={{ ...small, fontSize: 14.5, color: C.muted, flex: "1 1 200px" }}>{oldDay ? "What that day's brief said; it is not a call for today." : meta.note}</span>
+        <span style={{ ...small, fontSize: 14.5, color: C.muted, flex: "1 1 200px" }}>{oldDay ? "What that day's brief said; it is not a call for today." : note}</span>
       </div>
       {oldDay && (
         <div role="status" style={{ background: alpha(C.orange, 0.07), border: `1px solid ${alpha(C.orange, 0.35)}`, borderRadius: 10, padding: "10px 12px", fontSize: 15.5, lineHeight: 1.5, color: C.textSoft }}>
@@ -159,10 +160,10 @@ export function TodayCard({ report, nowMs }: { report: AdvisorReport; nowMs: num
           {pickCondition && <NotYet condition={pickCondition} />}
           <div style={{ ...microLabel, color: C.muted }}>{oldDay ? `The order it gave on ${oldDay} (out of date)` : pickCondition ? "The order, only if that happens" : "The order, in one line"}</div>
           <div className="tnum" style={{ fontSize: 17, fontWeight: 650, lineHeight: 1.5, color: oldDay ? C.muted : C.textStrong, overflowWrap: "anywhere" }}>
-            {ideaLine(idea)}
+            {ideaLine(idea, pickCondition)}
           </div>
           <div style={{ ...small }}>{plainContract(idea.contract, nowMs ?? Date.parse(report.createdAt))}. Details in the idea card below.</div>
-          {!oldDay && <CopyAction text={ideaLine(idea)} label="Copy order" style={{ justifySelf: "start" }} />}
+          {!oldDay && <CopyAction text={ideaLine(idea, pickCondition)} label="Copy order" style={{ justifySelf: "start" }} />}
         </div>
       )}
       {strip.length > 0 && <div style={{ ...small, borderTop: `1px solid ${C.borderSoft}`, paddingTop: 12 }}>{strip.join(" · ")} · when written</div>}
@@ -265,8 +266,9 @@ export function IdeaCard({
   const chance = chanceWords(idea.probItm);
   const profitChance = chanceWords(idea.probAboveBreakeven ?? null);
   const side = profitSide(c.optionType);
-  const adjusted = engineNotesWords(idea.engineNotes);
-  const gate = ideaGate(idea, action);
+  // The engine's added condition shows in the "Not a buy yet" box; this box is for changed prices.
+  const adjusted = engineNotesWords(idea.engineNotes?.filter((n) => !n.startsWith("condition added")));
+  const gate = ideaGate(idea, action, oldDay);
   return (
     <Panel id={`idea-${idea.id}`} style={{ padding: "18px 16px", display: "grid", gap: 14, border: isPick ? `2px solid ${alpha(oldDay ? C.muted : C.green, 0.45)}` : undefined }}>
       {gate.condition && <NotYet condition={gate.condition} />}

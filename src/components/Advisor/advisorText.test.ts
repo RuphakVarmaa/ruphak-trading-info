@@ -87,6 +87,12 @@ describe("dates and contracts", () => {
     expect(ideaLine(idea({ lots: 2 }))).toContain("max loss ₹5,705 at the stop");
   });
 
+  it("opens a conditional order with its condition, so a copied order never reads as a buy now", () => {
+    const line = ideaLine(idea(), "Only if NIFTY holds above 23,200 after 10:00; otherwise skip it.");
+    expect(line).toBe("ONLY IF: Only if NIFTY holds above 23,200 after 10:00; otherwise skip it → BUY NIFTY 23200 CE 23-Oct · 1 lot · buy between ₹140–145.50 · stop ₹100 · target ₹210 · max loss ₹2,852 at the stop");
+    expect(ideaLine(idea(), null)).toBe(ideaLine(idea()));
+  });
+
   it("never words a conditional idea, or any idea on a WAIT or AVOID day, as a buy now", () => {
     const cond = "Only if NIFTY closes above 23,152 today and opens above it on Monday; otherwise skip it.";
     expect(ideaGate(idea({ condition: `  ${cond} ` }), "AVOID")).toEqual({ condition: cond, lead: "Only if that happens: buy between" });
@@ -99,6 +105,12 @@ describe("dates and contracts", () => {
     // A buy now on a BUY day keeps the plain line.
     expect(ideaGate(idea({ condition: null }), "BUY")).toEqual({ condition: null, lead: "Buy between" });
     expect(ideaGate(idea(), "BUY")).toEqual({ condition: null, lead: "Buy between" });
+    // A placeholder is no condition; a condition stated only as the first reason still counts.
+    expect(ideaGate(idea({ condition: "None" }), "BUY")).toEqual({ condition: null, lead: "Buy between" });
+    const why = ["Condition first: only if NIFTY closes today above 23,152; otherwise skip.", "Cheapest call that fits."];
+    expect(ideaGate(idea({ condition: null, why }), "BUY").condition).toBe(why[0]);
+    // A brief from an earlier day says so instead of "today".
+    expect(ideaGate(idea(), "AVOID", "Fri 16 Oct").condition).toBe("The answer for Fri 16 Oct was AVOID: it was not a buy that day; read the reasons below.");
   });
 
   it("explains in the money and which side of the break-even is profit", () => {

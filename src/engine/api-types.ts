@@ -1159,7 +1159,8 @@ export interface AdvisorReportSummary {
   createdAt: string;
   headline: string;
   todayAction: "BUY" | "WAIT" | "AVOID";
-  ideas: { id: string; label: string; horizon: AdvisorHorizon; entryAsk: number; stop: number; target: number }[];
+  /** `conditional`: the idea was not a buy on its day (it had an entry condition, or the answer was WAIT or AVOID); missing on older briefs. */
+  ideas: { id: string; label: string; horizon: AdvisorHorizon; entryAsk: number; stop: number; target: number; conditional?: boolean }[];
 }
 
 export interface AdvisorView {

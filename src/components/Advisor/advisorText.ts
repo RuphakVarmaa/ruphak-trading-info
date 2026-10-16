@@ -16,6 +16,7 @@ import type {
   OptionType,
 } from "@/engine/api-types";
 import { fmtDateKey, fmtInr, fmtIstDay, fmtIstHm, fmtNum } from "@/components/shared/format";
+import { ideaCondition } from "@/engine/advisor/conditionText";
 import { istDate } from "@/lib/ist";
 
 const DAY_MS = 86_400_000;
@@ -118,12 +119,16 @@ export function rupees(n: number): string {
   return fmtInr(Math.round(n));
 }
 
-/** The one-line order: "BUY NIFTY 23200 CE 23-Oct · 1 lot · buy between ₹X–Y · stop ₹S · target ₹T · max loss ₹L at the stop". */
-export function ideaLine(idea: AdvisorIdea): string {
+/**
+ * The one-line order: "BUY NIFTY 23200 CE 23-Oct · 1 lot · buy between ₹X–Y · stop ₹S · target ₹T · max loss ₹L
+ * at the stop". With a condition it opens "ONLY IF: <condition> → BUY …", so a copied order never reads as a buy now.
+ */
+export function ideaLine(idea: AdvisorIdea, condition: string | null = null): string {
   const c = idea.contract;
   const lots = Math.max(1, idea.lots);
+  const gate = condition ? `ONLY IF: ${condition.trim().replace(/[.;]+$/, "")} → ` : "";
   return [
-    `BUY ${c.index} ${c.strike} ${c.optionType} ${shortExpiry(c.expiry)}`,
+    `${gate}BUY ${c.index} ${c.strike} ${c.optionType} ${shortExpiry(c.expiry)}`,
     `${lots} lot${lots === 1 ? "" : "s"}`,
     `buy between ${premium(idea.entry.low)}–${premium(idea.entry.high).replace("₹", "")}`,
     `stop ${premium(idea.stop)}`,
@@ -134,12 +139,18 @@ export function ideaLine(idea: AdvisorIdea): string {
 
 /**
  * Whether an idea card may read as a buy now. `condition` is the "Not a buy yet" text: the idea's own entry
- * condition, or, for a brief stored before ideas carried one, the WAIT or AVOID answer (the condition then sits
- * in the reasons); null for an idea to buy now. `lead` opens the buy-zone line.
+ * condition (or one its first reason states, for briefs that left the field empty), else on a WAIT or AVOID day
+ * that answer; null for an idea to buy now. `oldDay` names the brief's day when it is not today's. `lead` opens
+ * the buy-zone line.
  */
-export function ideaGate(idea: Pick<AdvisorIdea, "condition">, action: AdvisorReport["today"]["action"]): { condition: string | null; lead: string } {
-  const own = idea.condition?.trim();
-  const condition = own ? own : action === "WAIT" || action === "AVOID" ? `Today's answer is ${action}: do not buy today; read the condition in the reasons below.` : null;
+export function ideaGate(
+  idea: Pick<AdvisorIdea, "condition" | "why">,
+  action: AdvisorReport["today"]["action"],
+  oldDay: string | null = null,
+): { condition: string | null; lead: string } {
+  const own = ideaCondition(idea);
+  const answer = oldDay ? `The answer for ${oldDay} was ${action}: it was not a buy that day; read the reasons below.` : `Today's answer is ${action}: do not buy today; read the condition in the reasons below.`;
+  const condition = own ?? (action === "WAIT" || action === "AVOID" ? answer : null);
   return { condition, lead: condition ? "Only if that happens: buy between" : "Buy between" };
 }
 

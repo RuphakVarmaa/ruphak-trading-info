@@ -594,7 +594,7 @@ export function summarize(r: AdvisorReport): AdvisorReportSummary {
     createdAt: r.createdAt,
     headline: r.headline,
     todayAction: r.today.action,
-    ideas: r.ideas.map((i) => ({ id: i.id, label: i.contract.label, horizon: i.horizon, entryAsk: i.entry.ask, stop: i.stop, target: i.target })),
+    ideas: r.ideas.map((i) => ({ id: i.id, label: i.contract.label, horizon: i.horizon, entryAsk: i.entry.ask, stop: i.stop, target: i.target, conditional: i.condition != null || r.today.action !== "BUY" })),
   };
 }
 
