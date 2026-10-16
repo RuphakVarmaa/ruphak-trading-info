@@ -54,6 +54,8 @@ const RPC_METHODS = [
   "getOptionFlow",
   "getBacktest",
   "getCopyTickets",
+  "getAdvisor",
+  "runAdvisor",
   "verifyAdmin",
   "setArmed",
   "setKillSwitch",

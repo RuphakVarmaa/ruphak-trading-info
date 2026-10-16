@@ -1045,6 +1045,127 @@ export interface RecommendationView {
   flowAsOf: string | null;
 }
 
+// ---------------------------------------------------------------------------
+// Advisor: one plain-English market brief written by Claude from every live input the engine has
+// (option chains across expiries, OI build-up and short covering, premium levels, setups, signals,
+// news and scheduled events) plus web research (FII/DII flows, global cues). Trade ideas are picked
+// from a list of real listed contracts with live prices; the engine re-validates and re-prices them.
+// ---------------------------------------------------------------------------
+
+export type AdvisorLean = "UP" | "DOWN" | "SIDEWAYS";
+export type AdvisorConfidence = "LOW" | "MEDIUM" | "HIGH";
+export type AdvisorHorizon = "TODAY" | "WEEK" | "MONTH";
+
+export interface AdvisorOutlook {
+  index: IndexId;
+  horizon: AdvisorHorizon;
+  lean: AdvisorLean;
+  confidence: AdvisorConfidence;
+  /** Expected range for the horizon (index points), e.g. from the option-implied move; null when unknown. */
+  rangeLow: number | null;
+  rangeHigh: number | null;
+  /** Plain-English reasons, most important first. */
+  why: string[];
+}
+
+export type AdvisorFactorKey =
+  | "FII_DII"
+  | "NEWS_UNCERTAINTY"
+  | "GLOBAL_CUES"
+  | "VOLATILITY_PREMIUM"
+  | "OPTIONS_POSITIONING"
+  | "SHORT_COVERING"
+  | "TREND"
+  | "EVENTS"
+  | "OTHER";
+
+export interface AdvisorFactor {
+  key: AdvisorFactorKey;
+  /** Short plain label, e.g. "Foreign and domestic funds". */
+  label: string;
+  reading: "SUPPORTS_UP" | "SUPPORTS_DOWN" | "NEUTRAL" | "RISK" | "NO_DATA";
+  /** One or two plain sentences with the numbers behind the reading. */
+  detail: string;
+  /** Where it came from: "Upstox option chain", "news: Business Standard", "web research", … */
+  source: string;
+}
+
+export interface AdvisorIdea {
+  id: string;
+  horizon: AdvisorHorizon;
+  contract: { index: IndexId; expiry: string; strike: number; optionType: OptionType; tradingSymbol: string; lotSize: number; label: string };
+  /** Buy zone for the premium; `ask` is the live ask the engine checked when the brief was written. */
+  entry: { low: number; high: number; ask: number; asOf: string };
+  stop: number;
+  target: number;
+  /** IST date-time by which to exit if neither stop nor target is hit. */
+  exitBy: string;
+  lots: number;
+  costPerLot: number;
+  maxLossPerLot: number;
+  rewardPerLot: number;
+  /** Index level at expiry where the option is worth what you paid (strike ± premium). */
+  breakevenAtExpiry: number | null;
+  delta: number | null;
+  iv: number | null;
+  /** Rough chance the option ends in the money at expiry (≈ |delta|), 0..1. */
+  probItm: number | null;
+  why: string[];
+  /** What would prove the idea wrong (exit early). */
+  wrongIf: string;
+  confidence: AdvisorConfidence;
+}
+
+export interface AdvisorReport {
+  id: string;
+  /** IST ISO time the brief was written. */
+  createdAt: string;
+  model: string;
+  durationMs: number;
+  /** Rough API cost of this brief in USD (research + advice), from token usage. */
+  costUsd: number | null;
+  market: { nifty: number | null; sensex: number | null; vix: number | null; phase: string };
+  /** One plain sentence: the answer first. */
+  headline: string;
+  /** Today's call: BUY one idea, WAIT, or AVOID trading today; `ideaId` points into `ideas`. */
+  today: { action: "BUY" | "WAIT" | "AVOID"; summary: string; ideaId: string | null };
+  outlook: AdvisorOutlook[];
+  factors: AdvisorFactor[];
+  ideas: AdvisorIdea[];
+  /** Expiry-day lottery tickets (far out-of-the-money options bought for a few rupees), with honest odds. */
+  zeroHero: { applicable: boolean; expiry: string | null; summary: string };
+  /** Are option premiums cheap or rich right now, and is an event about to deflate them. */
+  premium: { verdict: "CHEAP" | "NORMAL" | "EXPENSIVE" | "NO_DATA"; detail: string };
+  /** Factors the owner did not ask about but should know (plain English). */
+  alsoKnow: string[];
+  /** What not to do today. */
+  avoid: string[];
+  sources: { title: string; url: string }[];
+  /** The standing caution: no measured edge, size small, always use the stop. */
+  honesty: string;
+}
+
+export interface AdvisorReportSummary {
+  id: string;
+  createdAt: string;
+  headline: string;
+  todayAction: "BUY" | "WAIT" | "AVOID";
+  ideas: { id: string; label: string; horizon: AdvisorHorizon; entryAsk: number; stop: number; target: number }[];
+}
+
+export interface AdvisorView {
+  status: "idle" | "queued" | "running" | "error";
+  /** Why the last run failed (plain), when status is "error" or the last attempt failed. */
+  lastError: string | null;
+  runningSince: string | null;
+  /** Earliest time a new analysis may start (rate limit); null when one may start now. */
+  nextAllowedAt: string | null;
+  runsToday: number;
+  maxRunsPerDay: number;
+  latest: AdvisorReport | null;
+  history: AdvisorReportSummary[];
+}
+
 export interface EngineApi {
   getState(account?: string): Promise<EngineStateDTO>;
   getSignals(account?: string): Promise<SignalView[]>;
@@ -1067,6 +1188,10 @@ export interface EngineApi {
   getBacktest(runId: string): Promise<BacktestResult | null>;
   /** The account's trades opened on an IST date YYYY-MM-DD as copy tickets: open ones first, then newest first. */
   getCopyTickets(date: string, account?: string): Promise<CopyTicketView[]>;
+  /** The latest advisor brief, the run status and recent history. */
+  getAdvisor(): Promise<AdvisorView>;
+  /** Starts a new advisor analysis unless one is running or the rate limit says wait; returns the view at once (poll getAdvisor). */
+  runAdvisor(reason: string): Promise<AdvisorView>;
 
   /** Admin methods re-check the token inside the engine (defense in depth). */
   verifyAdmin(token: string): Promise<boolean>;

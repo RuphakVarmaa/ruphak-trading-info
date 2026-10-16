@@ -10,6 +10,7 @@
  * state.market.nowIst tells the dashboard which "now" that is.
  */
 import type {
+  AdvisorView,
   AccountView,
   BacktestParams,
   BacktestResult,
@@ -875,6 +876,16 @@ export class MockEngineApi implements EngineApi {
     const book = this.book(account);
     return clone(book.positions.filter((p) => istDate(p.openedAt) === date).map((p) => this.copyTicket(book, p, now)));
   }
+  /** Placeholder until the mock advisor fixture lands. */
+  async getAdvisor(): Promise<AdvisorView> {
+    return { status: "idle", lastError: "The advisor is not built yet.", runningSince: null, nextAllowedAt: null, runsToday: 0, maxRunsPerDay: 0, latest: null, history: [] };
+  }
+
+  async runAdvisor(_reason: string): Promise<AdvisorView> {
+    void _reason;
+    return this.getAdvisor();
+  }
+
 
   async getEvents(q: EventsQuery): Promise<EventClusterView[]> {
     const now = this.read();

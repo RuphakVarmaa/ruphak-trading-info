@@ -34,23 +34,24 @@ export function ModeBadge({ mode, title }: { mode: EngineMode; title?: string })
 }
 
 /** Every page with a header. The three sections are the primary tabs; the rest sit in "More". */
-export type Page = "engine" | "options" | "geo" | "live" | "copy" | "backtest" | "metals" | "learn";
+export type Page = "advisor" | "engine" | "options" | "geo" | "live" | "copy" | "backtest" | "metals" | "learn";
 
 const NAV: { href: string; label: string; pages: readonly Page[] }[] = [
-  { href: "/", label: "Paper Engine", pages: ["engine", "live", "copy"] },
-  { href: "/options", label: "Options", pages: ["options"] },
-  { href: "/geo", label: "Geo Intel", pages: ["geo"] },
+  { href: "/advisor", label: "Advisor", pages: ["advisor"] },
+  { href: "/", label: "Paper Engine", pages: ["engine", "copy"] },
+  { href: "/live", label: "Live P&L", pages: ["live"] },
 ];
 
 const MORE: { href: string; label: string; note: string; page: Page }[] = [
-  { href: "/live", label: "Live P&L", note: "Full paper book per account", page: "live" },
+  { href: "/options", label: "Options", note: "Build-up now and the next 30 days, in detail", page: "options" },
+  { href: "/geo", label: "Geo Intel", note: "World news and how it feeds the engine", page: "geo" },
   { href: "/copy", label: "Copy trades", note: "Each paper trade, ready to repeat by hand", page: "copy" },
   { href: "/backtest", label: "Backtest", note: "Run the strategy over past sessions", page: "backtest" },
   { href: "/metals", label: "Metals", note: "Metals, oil and shipping terminal", page: "metals" },
   { href: "/learn", label: "Learn", note: "Options buying, in plain words", page: "learn" },
 ];
 
-const MORE_PAGES: readonly Page[] = ["backtest", "metals", "learn"];
+const MORE_PAGES: readonly Page[] = ["options", "geo", "backtest", "metals", "learn"];
 
 /** The "More" menu: outside .site-nav (which scrolls sideways on phones and would clip it). */
 function MoreMenu({ active }: { active: Page | null }) {
