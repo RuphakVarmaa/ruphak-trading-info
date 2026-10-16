@@ -29,8 +29,8 @@ function Meta({ label, children }: { label: string; children: React.ReactNode })
 
 export function BackToDesk() {
   return (
-    <Link href="/#news" className="link-quiet" style={{ fontSize: 14, color: C.gold, textDecoration: "none", fontWeight: 600 }}>
-      ← Back to the desk
+    <Link href="/geo#news" className="link-quiet" style={{ fontSize: 14, color: C.gold, textDecoration: "none", fontWeight: 600 }}>
+      ← Back to Geo intel stories
     </Link>
   );
 }
