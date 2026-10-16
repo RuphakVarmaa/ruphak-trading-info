@@ -45,19 +45,20 @@ import type {
   OptionFlowView,
   TodayPlanView,
 } from "@/engine/api-types";
-import { emptyAgentView } from "@/engine/agent/view";
-import type { AgentSettings } from "@/engine/agent/types";
+import { accountConfig, ACCOUNTS } from "@/engine/accounts";
 import { defaultCalendar } from "@/engine/calendar/calendar";
 import { DEFAULT_CONFIG } from "@/engine/config";
 import { buildTodayPlan } from "@/engine/strategy/todayPlan";
 import {
   HOUR_MS,
+  isIsoDate,
   istAt,
   istDate,
   istParts,
   MINUTE_MS,
   nextSessionClose,
   nextSessionOpen,
+  prevTradingDay,
   SESSION,
   sessionPhaseAt,
   toIstIso,
@@ -81,6 +82,7 @@ import { copyTicketView } from "@/engine/copy/copyTicket";
 import type { Position, TradePlan } from "@/engine/types";
 import { buildMockChain, weeklyExpiries } from "./mockChain";
 import { loadMockAdvisorMarket, mockAdvisorFor } from "./mockAdvisor";
+import { DEFAULT_AGENT_LEVELS, MockAgent, type MockAgentLevels } from "./mockAgent";
 import { mockSetups } from "./mockSetups";
 import { mockOptionFlow, mockRecommendation, type MockFlowInput } from "./mockFlow";
 import { simulateBacktest } from "./mockBacktest";
@@ -175,17 +177,7 @@ const FOLLOWERS: FollowerSpec[] = [
   },
 ];
 
-/** The demo has no agent and makes no model call. */
-const MOCK_AGENT_SETTINGS: AgentSettings = {
-  mode: "off",
-  reflexModel: "demo (no model call)",
-  escalationModel: "demo (no model call)",
-  reviewModel: "demo (no model call)",
-  dailyUsdCap: 3,
-  escalationsPerDay: 8,
-};
-
-/** One paper account's book. Main's comes from the fixture seed; a follower's mirrors main's trades. */
+/** One paper account's book. Main's comes from the fixture seed; a follower's mirrors main's trades; the agent's is its own. */
 interface Book {
   account: AccountView;
   prefix: string;
@@ -204,6 +196,8 @@ interface Book {
   niftyPlan: SuggestedContract | null;
   dailyLossCap: number;
   maxTradesPerDay: number;
+  /** Open positions allowed (MAX_POSITIONS when absent). */
+  maxPositions?: number;
 }
 
 function mainBook(seed: MockSeed): Book {
@@ -336,6 +330,62 @@ function followerBook(seed: MockSeed, f: FollowerSpec): Book {
   };
 }
 
+/**
+ * The options agent's own paper book ("Agent ₹5L"; a model judges each candle, code trades). It buys ATM
+ * contracts (about ₹120 for a NIFTY lot of 65, ₹350 for a SENSEX lot of 20), but in the demo, as in its first
+ * sessions, sizing has no measured edge to work with, so it holds nothing and has traded nothing.
+ */
+function agentBook(seed: MockSeed): Book {
+  const spec = ACCOUNTS.agent;
+  const cfg = accountConfig(DEFAULT_CONFIG, "agent");
+  const capital = cfg.capitalRupees;
+  const expiry = seed.positions.find((p) => p.index === "NIFTY")?.contract.expiry ?? seed.anchorDate;
+  const spot = seed.quotes.find((q) => q.key === "NIFTY")?.base ?? DEFAULT_AGENT_LEVELS.spot.NIFTY;
+  // Five flat sessions before the anchor date: the account starts in shadow mode (no orders).
+  const history: DailyPnlView[] = [];
+  for (let d = seed.anchorDate; history.length < 5; ) {
+    d = prevTradingDay(d, isMockHoliday);
+    history.unshift({ date: d, realized: 0, unrealized: 0, charges: 0, net: 0, trades: 0, equityEnd: capital });
+  }
+  return {
+    account: { id: spec.id, label: spec.label, shortLabel: spec.shortLabel, paperOnly: true, capitalRupees: capital, kind: "agent" },
+    prefix: "agent-",
+    positions: [],
+    orders: [],
+    fills: [],
+    realizedToday: 0,
+    chargesToday: emptyCharges(),
+    tradesToday: 0,
+    killSwitch: false,
+    killReason: null,
+    history,
+    performance: [],
+    niftyPlan: makeContract("NIFTY", expiry, Math.round(spot / 50) * 50, "CE", 1, 120),
+    dailyLossCap: round2((capital * cfg.risk.dailyLossCapPct) / 100),
+    maxTradesPerDay: cfg.sizing.maxTradesPerDay,
+    maxPositions: cfg.sizing.maxOpenTotal,
+  };
+}
+
+/** The demo agent's index path is anchored on the fixture's levels. */
+function agentLevels(seed: MockSeed): MockAgentLevels {
+  const d = DEFAULT_AGENT_LEVELS;
+  const quote = (key: string) => seed.quotes.find((q) => q.key === key);
+  const ind = (index: IndexId) => seed.signals.find((s) => s.index === index)?.indicators;
+  const per = (f: (index: IndexId) => number | undefined, fallback: Record<IndexId, number>): Record<IndexId, number> => ({
+    NIFTY: f("NIFTY") ?? fallback.NIFTY,
+    SENSEX: f("SENSEX") ?? fallback.SENSEX,
+  });
+  return {
+    spot: per((i) => quote(i)?.base, d.spot),
+    prevClose: per((i) => quote(i)?.prevClose, d.prevClose),
+    prevHigh: per((i) => ind(i)?.prevDayHigh, d.prevHigh),
+    prevLow: per((i) => ind(i)?.prevDayLow, d.prevLow),
+    vix: quote("INDIAVIX")?.base ?? d.vix,
+    vixPrevClose: quote("INDIAVIX")?.prevClose ?? d.vixPrevClose,
+  };
+}
+
 interface BacktestRun {
   params: BacktestParams;
   startedAt: number;
@@ -349,8 +399,10 @@ export class MockEngineApi implements EngineApi {
   private readonly seed: MockSeed;
   private mode: EngineMode = "PAPER";
   private armedUntil: number | null = null;
-  /** Books by account id: main first, then the followers. */
+  /** Books by account id: main first, then the followers and the agent. */
   private readonly books: Map<string, Book>;
+  /** The options agent's demo (mockAgent.ts). */
+  private readonly agent: MockAgent;
   private quoteDev: Record<string, number> = {};
   private convDev: Record<IndexId, number> = { NIFTY: 0, SENSEX: 0 };
   private lastJitter = 0;
@@ -363,7 +415,8 @@ export class MockEngineApi implements EngineApi {
     const t0 = clockMode === "real" ? real : istAt(anchor, SIM_START);
     this.simOffset = t0 - real;
     this.seed = buildSeed(anchor, t0);
-    this.books = new Map([["main", mainBook(this.seed)], ...FOLLOWERS.map((f): [string, Book] => [f.account.id, followerBook(this.seed, f)])]);
+    this.books = new Map([["main", mainBook(this.seed)], ...FOLLOWERS.map((f): [string, Book] => [f.account.id, followerBook(this.seed, f)]), ["agent", agentBook(this.seed)]]);
+    this.agent = new MockAgent(() => this.now(), { levels: agentLevels(this.seed) });
   }
 
   /** The book for `account` (main when omitted); unknown accounts are refused, as the engine does. */
@@ -421,6 +474,13 @@ export class MockEngineApi implements EngineApi {
         else if (now >= pos.timeStopAt && (ltp / pos.avgPrice - 1) * 100 < 10) reason = "TIME_STOP";
         if (reason) this.closePosition(book, pos, reason, now);
       }
+    }
+    // The agent's account follows main's kill switch on the next tick and keeps it when main is reset, as the engine's agent runner does.
+    const agent = this.books.get("agent");
+    if (agent && this.main.killSwitch && !agent.killSwitch) {
+      const p = istParts(now);
+      agent.killSwitch = true;
+      agent.killReason = `main kill switch engaged at ${String(p.hour).padStart(2, "0")}:${String(p.minute).padStart(2, "0")}`;
     }
     return now;
   }
@@ -593,7 +653,7 @@ export class MockEngineApi implements EngineApi {
       caps: {
         dailyLossCap: book.dailyLossCap,
         dailyLossUsed: Math.max(0, round2(-today.net)),
-        maxPositions: MAX_POSITIONS,
+        maxPositions: book.maxPositions ?? MAX_POSITIONS,
         openPositions: book.positions.length,
         maxOrdersPerDay: MAX_ORDERS_PER_DAY,
         ordersToday: book.orders.length,
@@ -707,10 +767,11 @@ export class MockEngineApi implements EngineApi {
         }
         case "EXPOSURE": {
           const used = book.positions.length;
-          if (holding) return { ...g, passed: true, detail: `${used}/${MAX_POSITIONS} position (this plan) · ${book.tradesToday + used}/${book.maxTradesPerDay} trades today` };
-          const pass = used < MAX_POSITIONS;
+          const max = book.maxPositions ?? MAX_POSITIONS;
+          if (holding) return { ...g, passed: true, detail: `${used}/${max} position (this plan) · ${book.tradesToday + used}/${book.maxTradesPerDay} trades today` };
+          const pass = used < max;
           const other = book.positions[0]?.index;
-          return { ...g, passed: pass, detail: pass ? `${used}/${MAX_POSITIONS} positions · ${book.tradesToday}/${book.maxTradesPerDay} trades today` : `${used}/${MAX_POSITIONS} position slots used (${other})` };
+          return { ...g, passed: pass, detail: pass ? `${used}/${max} positions · ${book.tradesToday}/${book.maxTradesPerDay} trades today` : `${used}/${max} position slots used (${other})` };
         }
         default:
           return { ...g };
@@ -888,6 +949,8 @@ export class MockEngineApi implements EngineApi {
   async getCopyTickets(date: string, account?: string): Promise<CopyTicketView[]> {
     const now = this.read();
     const book = this.book(account);
+    // As the engine: the agent's trades are a model's paper experiment, never offered for copying.
+    if (book.account.kind === "agent") throw new Error("BAD_REQUEST: Copy tickets are not offered for the agent's account: its trades are a model's paper experiment.");
     return clone(book.positions.filter((p) => istDate(p.openedAt) === date).map((p) => this.copyTicket(book, p, now)));
   }
   /** A demo brief worked out from the mock's own chains, signals, quotes and calendar (mockAdvisor.ts); no AI call. */
@@ -903,11 +966,17 @@ export class MockEngineApi implements EngineApi {
     return clone(await mockAdvisorFor(this).run(() => loadMockAdvisorMarket(this)));
   }
 
-  /** The options agent's view: empty until the demo agent exists (the agent account is not in the mock). */
+  /** The options agent's demo view (mockAgent.ts): worked out in code from the mock clock, with no model call. */
   async getAgent(date?: string): Promise<AgentView> {
-    const now = this.read();
-    void date;
-    return clone(emptyAgentView(now, MOCK_AGENT_SETTINGS, false, null));
+    this.read();
+    if (date !== undefined && !isIsoDate(date)) throw new Error("BAD_REQUEST: 'date' must be a date as YYYY-MM-DD.");
+    return clone(this.agentView(date));
+  }
+
+  /** The agent's view with its account's kill switch and main's overlaid, as the engine overlays the account settings. */
+  private agentView(date?: string): AgentView {
+    const book = this.books.get("agent");
+    return this.agent.view(date, book ? clone(book.account) : null, { killSwitch: book?.killSwitch ?? false, killReason: book?.killReason ?? null, mainKillSwitch: this.main.killSwitch });
   }
 
 
@@ -1070,7 +1139,7 @@ export class MockEngineApi implements EngineApi {
     return clone(this.stateDto(now));
   }
 
-  /** `account`: main (default), a follower id, or "all". */
+  /** `account`: main (default), a follower id, "agent" or "all". */
   async setKillSwitch(token: string, req: KillSwitchRequest, actor: string, account?: string): Promise<EngineStateDTO> {
     this.assertToken(token);
     const now = this.advance();
@@ -1100,18 +1169,28 @@ export class MockEngineApi implements EngineApi {
     return clone(this.stateDto(now));
   }
 
+  /** Approves or rejects the demo's pending candidate, with the engine's rules (approval only outside the session). */
   async setAgentCandidate(token: string, candidateId: string, decision: "approve" | "reject", actor: string): Promise<AgentView> {
-    void candidateId;
-    void decision;
-    void actor;
     this.assertToken(token);
-    throw new Error("CONFLICT: not implemented");
+    this.advance();
+    if (!/^[A-Za-z0-9_-]{1,64}$/.test(candidateId)) throw new Error("BAD_REQUEST: 'id' must be a candidate id.");
+    if (decision !== "approve" && decision !== "reject") throw new Error("BAD_REQUEST: 'decision' must be approve or reject.");
+    const res = this.agent.decideCandidate(candidateId, decision, actor);
+    if (!res.ok) throw new Error(`CONFLICT: ${res.message}`);
+    return clone(this.agentView());
   }
 
+  /** Clears the agent's drawdown halt and its account's kill switch; its peak equity restarts at the current equity. */
   async rearmAgent(token: string, actor: string): Promise<AgentView> {
-    void actor;
     this.assertToken(token);
-    throw new Error("CONFLICT: not implemented");
+    this.advance();
+    this.agent.rearm(actor);
+    const book = this.books.get("agent");
+    if (book) {
+      book.killSwitch = false;
+      book.killReason = null;
+    }
+    return clone(this.agentView());
   }
 
   async startBacktest(token: string, params: BacktestParams, actor: string): Promise<{ runId: string; status: "RUNNING" | "DONE" }> {

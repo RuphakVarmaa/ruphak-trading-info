@@ -1,6 +1,7 @@
 "use client";
 
 import type { CSSProperties } from "react";
+import AgentAccountNotice from "@/components/Agent/AgentAccountNotice";
 import AccountSwitcher from "@/components/Live/AccountSwitcher";
 import { alpha, C, phaseColor } from "@/components/shared/colors";
 import { fallbackNextOpen, fallbackPhase } from "@/components/shared/market";
@@ -123,6 +124,11 @@ export default function SafetyStrip({ account }: { account?: string }) {
       <span style={{ marginLeft: "auto", display: "inline-flex", maxWidth: "100%", overflowX: "auto" }}>
         <AccountSwitcher basePath="/" />
       </span>
+      {state?.account?.kind === "agent" && (
+        <div style={{ flex: "1 1 100%", minWidth: 0 }}>
+          <AgentAccountNotice label={state.account.label} />
+        </div>
+      )}
     </div>
   );
 }
