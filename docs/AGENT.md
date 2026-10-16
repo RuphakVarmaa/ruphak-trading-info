@@ -111,7 +111,7 @@ For example:
 curl -X POST -H "Authorization: Bearer $ADMIN_TOKEN" https://<engine>/ops/agent-pause?on=1
 ```
 
-Telegram `/status` shows the agent's lines: mode, pause, kill switch, drawdown halt, last bars, open positions, today's net P&L and anything waiting for the AgentDO. Agent alerts start with "🤖 Agent (paper experiment)". The agent sends no copy-trade tickets, and the copy tickets for the `agent` account are refused.
+Telegram `/status` shows the agent's lines: mode, pause, kill switch, drawdown halt, last bars, open positions, today's net P&L and anything waiting for the AgentDO. Agent alerts start with "🤖 Agent (paper experiment)". The agent sends no copy-trade tickets, and the copy tickets for the `agent` account are refused. The Paper Engine page for it (`/?account=agent`) does not ask for them: its "What to do now" strip and "Today's trades" show a note that links to `/agent`.
 
 ## Rollout
 
@@ -132,4 +132,4 @@ Telegram `/status` shows the agent's lines: mode, pause, kill switch, drawdown h
 - **The calibrated probability is about the index's move, not the option trade.** Theta, the spread and the stop make the option trade's win rate lower than the probability.
 - **Each nightly candidate is fitted to the day it was written on.** Approving often turns the agent into a curve-fit of recent sessions. The half weight for older guidance texts slows that, but only the operator's restraint and out-of-sample days stop it.
 - **Paper fills flatter real trading.** The paper broker fills at quoted prices with modelled slippage.
-- **Isolation in production is not replayable.** The agent shares D1 and the trading DO's CPU with main. Its quote budget, time budget and error counter are its own, and the replay tests prove main's logic is unchanged.
+- **Isolation in production is not replayable.** The agent shares D1 and the trading DO's CPU with main. Its quote budget, time budget and error counter are its own, and the replay tests prove main's logic is unchanged: `src/engine/agent/isolation.replay.test.ts`, and the end-to-end smoke test `workers/engine/src/agent/agentE2e.smoke.test.ts`, which runs the real runner against an in-process AgentBrain in shadow and paper mode and through the drawdown halt.
