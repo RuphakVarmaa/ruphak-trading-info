@@ -33,9 +33,19 @@ describe("findPlaces: specific beats general", () => {
     expect([strait.place.lat, strait.place.lng]).toEqual([spec.lat, spec.lng]);
     expect(primaryId("Taiwan election result lifts chip stocks")).toBe("TW");
   });
-  it("Panama Canal is the chokepoint; Panama Papers is the country", () => {
+  it("Panama Canal is the chokepoint; Panama alone is the country", () => {
     expect(primaryId("Panama Canal cuts daily transits")).toBe("PANAMA");
-    expect(primaryId("Panama Papers: new names published")).toBe("PA");
+    expect(primaryId("Panama election goes to a runoff")).toBe("PA");
+  });
+});
+
+describe("findPlaces: names inside other proper nouns", () => {
+  it("Panama Papers and the Washington Post are not places", () => {
+    expect(primaryId("Panama Papers: new names published")).toBeNull();
+    expect(primaryId("Washington Post layoffs hit the newsroom")).toBeNull();
+    expect(primaryId("Officials in Washington weigh new tariffs")).toBe("WASHINGTON");
+    // A later, plain mention still places the story.
+    expect(primaryId("Panama Papers fallout reaches Panama's president")).toBe("PA");
   });
   it("Red Sea and Bab el-Mandeb use the CHOKEPOINTS coordinates", () => {
     const m = placeText("Red Sea attacks near Bab el-Mandeb").primary!;

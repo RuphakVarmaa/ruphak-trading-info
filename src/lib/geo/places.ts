@@ -4,7 +4,8 @@
  * It only names a place the text itself names: word-bounded patterns, the earliest match in the
  * text wins, and the title decides before the summary. There are no commodity proxies ("gold" is
  * not South Africa). Central banks may stand for their country ("RBI" → India), and such a match
- * says so (`via: "institution"`). A text that names no place gets no place.
+ * says so (`via: "institution"`). A text that names no place gets no place, and neither does a name
+ * that only appears inside a proper noun about something else ("Panama Papers", "Washington Post").
  *
  * The shipping chokepoints reuse CHOKEPOINTS from @/utils/api (same ids, names and coordinates).
  */
@@ -69,7 +70,7 @@ const OTHER_PLACES: Place[] = [
   place("CL", "Chile", -35.7, -71.5, "country", /\bchile(?:an)?\b/i),
   place("PE", "Peru", -9.2, -75.0, "country", /\bperu(?:vian)?\b/i),
   place("MX", "Mexico", 23.6, -102.6, "country", /\bmexic(?:o|an)\b/i),
-  place("PA", "Panama", 8.5, -80.8, "country", /\bpanama(?:nian)?\b/i),
+  place("PA", "Panama", 8.5, -80.8, "country", /\bpanama(?:nian)?\b(?!\s+papers)/i),
   place("VE", "Venezuela", 6.4, -66.6, "country", /\bvenezuela(?:n)?\b/i),
   place("CA", "Canada", 56.1, -106.3, "country", /\bcanad(?:a|ian)\b/i),
   // Cities
@@ -79,7 +80,7 @@ const OTHER_PLACES: Place[] = [
   place("MOSCOW", "Moscow", 55.76, 37.62, "city", /\bmoscow\b/i),
   place("KYIV", "Kyiv", 50.45, 30.52, "city", /\bkyiv\b|\bkiev\b/i),
   place("TEHRAN", "Tehran", 35.69, 51.39, "city", /\btehran\b/i),
-  place("WASHINGTON", "Washington", 38.9, -77.04, "city", /\bwashington\b/i),
+  place("WASHINGTON", "Washington", 38.9, -77.04, "city", /\bwashington\b(?!\s+post)/i),
 ];
 
 /** Every place the finder knows: chokepoints, then seas and regions, countries and cities. */
