@@ -53,13 +53,28 @@ export function researchPrompt(nowMs: number): string {
   ].join("\n");
 }
 
-/** The web search tool, limited to the allowed domains (exchange sites left out). */
-export function researchTool(): Anthropic.Messages.WebSearchTool20260209 {
+/**
+ * Domains the search tool has refused for its crawler in this isolate (the API answers 400 "The following
+ * domains are not accessible to our user agent: [...]"); left out of later calls.
+ */
+const refusedDomains = new Set<string>();
+
+/** The domains named in a "not accessible to our user agent" 400, or [] for any other error. */
+export function refusedDomainsOf(err: unknown): string[] {
+  const msg = err instanceof Error ? err.message : String(err ?? "");
+  if (!/not accessible to our user agent/i.test(msg)) return [];
+  const list = /\[([^\]]*)\]/.exec(msg.slice(msg.search(/not accessible to our user agent/i)));
+  if (!list) return [];
+  return [...list[1].matchAll(/['"]([a-z0-9.-]+\.[a-z]{2,})['"]/gi)].map((m) => m[1].toLowerCase());
+}
+
+/** The web search tool, limited to the allowed domains (exchange sites left out), minus any the tool refused. */
+export function researchTool(skip: ReadonlySet<string> = refusedDomains): Anthropic.Messages.WebSearchTool20260209 {
   return {
     type: "web_search_20260209",
     name: "web_search",
     max_uses: RESEARCH_MAX_SEARCHES,
-    allowed_domains: [...RESEARCH_DOMAINS],
+    allowed_domains: RESEARCH_DOMAINS.filter((d) => !skip.has(d)),
     user_location: { type: "approximate", country: "IN", timezone: "Asia/Kolkata" },
   };
 }
@@ -142,6 +157,8 @@ export interface ResearchOptions {
   maxContinuations?: number;
   /** Aborts the call (the Durable Object's deadline). */
   signal?: AbortSignal;
+  /** Domains the search tool refused; defaults to the isolate-wide set so later runs skip them too. */
+  refused?: Set<string>;
 }
 
 /** Runs the research call, continuing a paused turn up to 3 times; never throws. */
@@ -153,19 +170,33 @@ export async function runResearch(client: Anthropic, opts: ResearchOptions): Pro
   let usage = ZERO_USAGE;
   let stopReason: string | null = null;
   const maxContinuations = opts.maxContinuations ?? RESEARCH_MAX_CONTINUATIONS;
+  const refusedSet = opts.refused ?? refusedDomains;
+  let domainRetries = 0;
   try {
     for (let turn = 0; turn <= maxContinuations; turn++) {
-      const resp = await client.messages.create(
-        {
-          model: opts.model,
-          max_tokens: RESEARCH_MAX_TOKENS,
-          system: [{ type: "text", text: RESEARCH_SYSTEM, cache_control: { type: "ephemeral" } }],
-          messages,
-          tools: [researchTool()],
-          output_config: { effort: "medium" },
-        },
-        opts.signal ? { signal: opts.signal } : undefined,
-      );
+      let resp: Anthropic.Message;
+      try {
+        resp = await client.messages.create(
+          {
+            model: opts.model,
+            max_tokens: RESEARCH_MAX_TOKENS,
+            system: [{ type: "text", text: RESEARCH_SYSTEM, cache_control: { type: "ephemeral" } }],
+            messages,
+            tools: [researchTool(refusedSet)],
+            output_config: { effort: "medium" },
+          },
+          opts.signal ? { signal: opts.signal } : undefined,
+        );
+      } catch (err) {
+        // The search tool refuses some news sites for its crawler: drop them and retry (at most twice).
+        const refused = refusedDomainsOf(err).filter((d) => RESEARCH_DOMAINS.includes(d) && !refusedSet.has(d));
+        if (refused.length === 0 || domainRetries >= 2) throw err;
+        domainRetries++;
+        for (const d of refused) refusedSet.add(d);
+        if (RESEARCH_DOMAINS.every((d) => refusedSet.has(d))) throw err;
+        turn--;
+        continue;
+      }
       usage = addUsage(usage, usageOf(resp.usage));
       stopReason = resp.stop_reason ?? null;
       for (const s of extractSources(resp.content)) if (!sources.has(s.url)) sources.set(s.url, s);

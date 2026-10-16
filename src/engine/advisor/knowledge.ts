@@ -29,12 +29,10 @@ export const HONESTY_LINE =
 /** Reputable finance-news domains the web research may read (exchanges' own sites are left out on purpose). */
 export const RESEARCH_DOMAINS: readonly string[] = [
   "moneycontrol.com",
-  "economictimes.indiatimes.com",
   "livemint.com",
   "business-standard.com",
   "thehindubusinessline.com",
   "reuters.com",
-  "cnbctv18.com",
   "financialexpress.com",
   "ndtvprofit.com",
   "bloomberg.com",

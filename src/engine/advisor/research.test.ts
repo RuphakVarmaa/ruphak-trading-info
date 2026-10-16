@@ -30,7 +30,7 @@ describe("source extraction", () => {
         tool_use_id: "s1",
         content: [
           searchResult("https://www.moneycontrol.com/news/fii-dii-1.html", "FIIs net sellers"),
-          searchResult("https://economictimes.indiatimes.com/markets/a.cms", "GIFT Nifty"),
+          searchResult("https://www.livemint.com/market/gift-nifty.html", "GIFT Nifty"),
           searchResult("https://www.nseindia.com/reports/fii", "NSE report"),
           searchResult("https://www.moneycontrol.com/news/fii-dii-1.html#top", "dup"),
         ],
@@ -47,7 +47,7 @@ describe("source extraction", () => {
     ];
     expect(extractSources(content)).toEqual([
       { url: "https://www.moneycontrol.com/news/fii-dii-1.html", title: "FIIs net sellers" },
-      { url: "https://economictimes.indiatimes.com/markets/a.cms", title: "GIFT Nifty" },
+      { url: "https://www.livemint.com/market/gift-nifty.html", title: "GIFT Nifty" },
       { url: "https://www.reuters.com/markets/asia/x", title: "Reuters" },
     ]);
   });
@@ -135,5 +135,41 @@ describe("the research call (fake client)", () => {
     expect((await runResearch(refused.client, { model: "claude-opus-5-5", nowMs: NOW })).ok).toBe(false);
     const empty = fakeClient([() => ({ model: "m", stop_reason: "end_turn", content: [], usage: usage(10, 1) })]);
     expect((await runResearch(empty.client, { model: "claude-opus-5-5", nowMs: NOW })).error).toMatch(/no notes/);
+  });
+});
+
+describe("refused research domains", () => {
+  it("reads the domain list out of the search tool's 400 and drops them from the tool", async () => {
+    const { refusedDomainsOf } = await import("./research");
+    const err = new Error(`400 {"type":"error","error":{"type":"invalid_request_error","message":"The following domains are not accessible to our user agent: ['cnbctv18.com', 'economictimes.indiatimes.com']"}}`);
+    expect(refusedDomainsOf(err)).toEqual(["cnbctv18.com", "economictimes.indiatimes.com"]);
+    expect(refusedDomainsOf(new Error("429 rate limited"))).toEqual([]);
+    const t = researchTool(new Set(["livemint.com"]));
+    expect(t.allowed_domains).not.toContain("livemint.com");
+    expect(t.allowed_domains).toContain("moneycontrol.com");
+  });
+
+  it("retries once without a refused domain and still returns notes", async () => {
+    let calls = 0;
+    const seen: string[][] = [];
+    const client = {
+      messages: {
+        create: async (body: { tools: { allowed_domains: string[] }[] }) => {
+          calls++;
+          seen.push([...body.tools[0].allowed_domains]);
+          if (calls === 1) throw new Error("400 The following domains are not accessible to our user agent: ['livemint.com']");
+          return { content: [{ type: "text", text: "FII net sold ₹1,000 crore (provisional)." }], stop_reason: "end_turn", usage: { input_tokens: 10, output_tokens: 5 } };
+        },
+      },
+    } as unknown as Parameters<typeof runResearch>[0];
+    const refused = new Set<string>();
+    const r = await runResearch(client, { model: "claude-opus-5-5", nowMs: Date.parse("2026-10-16T13:00:00+05:30"), refused });
+    expect(r.ok).toBe(true);
+    expect(calls).toBe(2);
+    expect([...refused]).toEqual(["livemint.com"]);
+    // The isolate-wide set is untouched when the caller passes its own.
+    expect(researchTool().allowed_domains).toContain("livemint.com");
+    expect(seen[0]).toContain("livemint.com");
+    expect(seen[1]).not.toContain("livemint.com");
   });
 });
