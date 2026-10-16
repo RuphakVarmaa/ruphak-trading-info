@@ -13,9 +13,11 @@
  * storage, so an eviction loses nothing: the constructor replays the session's samples. The next session
  * clears them.
  *
- * RPC: ticks(keys?), status() and getOptionFlow(index); none ever carries the token or the authorized wss URL.
+ * RPC: ticks(keys?), status(), getOptionFlow(index) and getOptionFlowAsOf(index, asOfMs) (the options agent's causal
+ * read); none ever carries the token or the authorized wss URL.
  */
 import { DurableObject } from "cloudflare:workers";
+import { flowViewAsOf } from "../../../../src/engine/agent/flowAsOf";
 import type { IndexId, OptionFlowView } from "../../../../src/engine/api-types";
 import { defaultCalendar } from "../../../../src/engine/calendar/calendar";
 import { istDate } from "../../../../src/engine/clock";
@@ -157,5 +159,19 @@ export class MarketFeedDO extends DurableObject<Env> {
     const expiry = snaps[snaps.length - 1]?.expiry ?? null;
     const dte = expiry ? defaultCalendar.tradingDaysBetween(istDate(now), expiry) : null;
     return this.flow.view(index, now, { source: "feed", dte });
+  }
+
+  /**
+   * The option flow as it read at `asOfMs`, from this session's minute samples taken at or before it (the options
+   * agent's snapshot at a candle close; src/engine/agent/flowAsOf.ts). Null before the first sample.
+   */
+  async getOptionFlowAsOf(index: IndexId, asOfMs: number): Promise<OptionFlowView | null> {
+    if (index !== "NIFTY" && index !== "SENSEX") throw new Error("index must be NIFTY or SENSEX");
+    const at = Number(asOfMs);
+    if (!Number.isFinite(at)) throw new Error("asOfMs must be a time in milliseconds");
+    const snaps = this.flow.monitor.snapshots(index);
+    const expiry = snaps[snaps.length - 1]?.expiry ?? null;
+    const dte = expiry ? defaultCalendar.tradingDaysBetween(istDate(at), expiry) : null;
+    return flowViewAsOf(snaps, index, at, { stats: FLOW_STATS, dte });
   }
 }

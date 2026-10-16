@@ -1,6 +1,6 @@
 /**
- * Engine Worker entry: Durable Objects (trading loop, ingestion, backtests, advisor), the cron dispatcher,
- * the event-scoring queue consumer (and its dead-letter queue), the EngineAdmin RPC entrypoint
+ * Engine Worker entry: Durable Objects (trading loop, ingestion, backtests, advisor, the options agent), the cron
+ * dispatcher, the event-scoring queue consumer (and its dead-letter queue), the EngineAdmin RPC entrypoint
  * for the dashboard, and a small HTTP surface (/health, Telegram webhook, token-protected ops).
  */
 import { AUTO_RUN_WINDOW_MIN } from "../../../src/engine/advisor/runState";
@@ -11,7 +11,7 @@ import { BAR_ARCHIVE_STATUS_KEY, recordBarArchiveFailure } from "./barArchive";
 import type { ScoreMessage } from "./do/IngestDO";
 import { refreshInstruments } from "./instruments";
 import { NO_SOURCE_REASON, QUOTE_RECORDER_STATUS_KEY } from "./quoteRecorder";
-import { ENGINE_VERSION, advisorSettings, errorMessage, makeRuntime, quoteSourceSummary } from "./runtime";
+import { ENGINE_VERSION, advisorSettings, agentEnabled, errorMessage, makeRuntime, quoteSourceSummary } from "./runtime";
 import { consumeScoreBatch } from "./scoring";
 import { Alerts, parseTelegramUpdate, sendTelegram } from "./telegram";
 
@@ -20,12 +20,14 @@ export { IngestDO } from "./do/IngestDO";
 export { BacktestDO } from "./do/BacktestDO";
 export { MarketFeedDO } from "./do/MarketFeedDO";
 export { AdvisorDO } from "./do/AdvisorDO";
+export { AgentDO } from "./do/AgentDO";
 export { EngineAdmin } from "./admin";
 
 const engine = (env: Env) => env.ENGINE_DO.get(env.ENGINE_DO.idFromName("engine"));
 const ingest = (env: Env) => env.INGEST_DO.get(env.INGEST_DO.idFromName("ingest"));
 const marketFeed = (env: Env) => env.MARKET_FEED_DO.get(env.MARKET_FEED_DO.idFromName("feed"));
 const advisor = (env: Env) => env.ADVISOR_DO.get(env.ADVISOR_DO.idFromName("advisor"));
+const agentDo = (env: Env) => env.AGENT_DO.get(env.AGENT_DO.idFromName("agent"));
 
 /**
  * The daily automatic advisor brief (ADVISOR_AUTO_RUN, 09:25 IST): inside its 10-minute window the minute cron
@@ -102,7 +104,21 @@ async function runCron(cron: string, env: Env): Promise<void> {
       if (tradingDay) await engine(env).premarket();
       return;
     case CRONS.POSTMARKET:
-      if (tradingDay) await engine(env).endOfDay();
+      if (tradingDay) {
+        try {
+          await engine(env).endOfDay();
+        } finally {
+          // The options agent's nightly review is queued even when the end of day failed (the AgentDO runs it from
+          // 16:20 IST; the trading DO's end of day asks too, and the second request is a no-op).
+          if (agentEnabled(env)) {
+            try {
+              await agentDo(env).scheduleReview(istDate(now));
+            } catch (err) {
+              rt.logger.error("agent review not scheduled", { error: errorMessage(err) });
+            }
+          }
+        }
+      }
       return;
     case CRONS.ARCHIVE:
       // The DO job never throws; this catch covers the call itself (e.g. the DO restarting).
@@ -204,6 +220,34 @@ async function handleFetch(req: Request, env: Env): Promise<Response> {
           // The Upstox market feed socket: connected, last message, subscriptions, reconnects, last error
           // (never the token or the authorized URL). ?wake=1 also runs one connect/maintain step now.
           return Response.json(url.searchParams.get("wake") === "1" ? await marketFeed(env).ensureRunning() : await marketFeed(env).status());
+        // The options agent (a paper experiment; docs/AGENT.md).
+        case "/ops/agent-status":
+          // The AgentDO's mode, pause, next job, today's spend against the cap, last batch and active guidance.
+          return Response.json(await agentDo(env).status());
+        case "/ops/agent-review": {
+          // Queues a nightly review now (?date=YYYY-MM-DD, default today). Only outside the session.
+          const date = url.searchParams.get("date") || istDate(Date.now());
+          if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) return Response.json({ ok: false, error: "date must be YYYY-MM-DD" }, { status: 400 });
+          const res = await agentDo(env).runReviewNow(date);
+          return Response.json(res, { status: res.ok ? 200 : 409 });
+        }
+        case "/ops/agent-count-tokens":
+          // The API's token count of a snapshot alone against the local estimate (the newest stored ones and the worst case).
+          return Response.json(await agentDo(env).countTokens());
+        case "/ops/agent-revert": {
+          // The built-in guidance becomes active again. Only outside the session.
+          const res = await agentDo(env).revertInstruction("ops");
+          return Response.json(res, { status: res.ok ? 200 : 409 });
+        }
+        case "/ops/agent-pause": {
+          // ?on=1 pauses the agent (only its code exits run; no candle is judged), ?on=0 resumes it. Both sides are set.
+          const on = url.searchParams.get("on");
+          if (on !== "1" && on !== "0") return Response.json({ ok: false, error: "on must be 1 or 0" }, { status: 400 });
+          const [engineSide, agentSide] = await Promise.allSettled([engine(env).setAgentPaused(on === "1", "ops"), agentDo(env).setPaused(on === "1")]);
+          const side = (r: PromiseSettledResult<{ ok: boolean; message: string }>) => (r.status === "fulfilled" ? r.value : { ok: false, message: errorMessage(r.reason) });
+          const res = { engine: side(engineSide), agent: side(agentSide) };
+          return Response.json({ ok: res.engine.ok && res.agent.ok, ...res }, { status: res.engine.ok && res.agent.ok ? 200 : 409 });
+        }
         case "/ops/telegram-test": {
           // Confirms the TELEGRAM_* secrets reach the chat (the alerts are otherwise silent no-ops).
           const alerts = new Alerts(env, rt.repo.state, rt.logger);

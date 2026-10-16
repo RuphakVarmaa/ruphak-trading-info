@@ -144,6 +144,16 @@ describe("SqlAgentStore", () => {
     expect(await s.barsForIndex("NIFTY", T0 + 1, T0 + 299_999)).toEqual([]);
   });
 
+  it("finds the newest bar of an index that has a snapshot (the token count's sample)", async () => {
+    const s = freshStore();
+    expect(s.latestSnapshotBar("NIFTY")).toBeNull();
+    await s.putBar(bar({ snapshot: { c: 25_000 } as never, tokensEst: 300 }));
+    await s.putBar(bar({ barCloseMs: T0 + 300_000, snapshot: null }));
+    await s.putBar(bar({ index: "SENSEX", barCloseMs: T0 + 600_000, snapshot: { c: 82_000 } as never }));
+    expect(s.latestSnapshotBar("NIFTY")).toMatchObject({ barCloseMs: T0, snapshot: { c: 25_000 }, tokensEst: 300 });
+    expect(s.latestSnapshotBar("SENSEX")?.barCloseMs).toBe(T0 + 600_000);
+  });
+
   it("keeps one batch per bar and finds the newest after a bar", async () => {
     const s = freshStore();
     await s.putBatch(batch(T0));

@@ -32,13 +32,15 @@ import type {
 } from "../../../src/engine/api-types";
 import { optionFlowWithFallback } from "../../../src/engine/flow/flowFallback";
 import { parseAccountId, type AccountId } from "../../../src/engine/accounts";
+import { emptyAgentView, withAccountSettings } from "../../../src/engine/agent/view";
 import { ReadModel } from "../../../src/engine/api/readModel";
+import { istDate } from "../../../src/engine/clock";
 import { liveIndicesWithFeed, optionChainWithFeed } from "../../../src/engine/market/liveFeedViews";
 import type { FeedSnapshot } from "../../../src/engine/market/upstoxFeed";
 import { UpstoxLive } from "../../../src/engine/market/upstoxLive";
 import { timingSafeEqual } from "../../../src/engine/util/hash";
 import { getBacktest, startBacktest } from "./backtestRunner";
-import { accountRuntime, accountViews, enabledAccounts, makeRuntime } from "./runtime";
+import { accountRuntime, accountViews, agentEnabled, agentSettings, enabledAccounts, makeRuntime } from "./runtime";
 
 /**
  * Admin failures cross Workers RPC as plain Errors, so the code travels as a message prefix
@@ -195,6 +197,8 @@ export class EngineAdmin extends WorkerEntrypoint<Env> implements EngineApi {
   }
   getCopyTickets(date: string, account?: string): Promise<CopyTicketView[]> {
     if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) throw new AdminError("BAD_REQUEST", "date must be YYYY-MM-DD");
+    // A model's paper experiment is not something to copy into a real account: the agent has no copy tickets.
+    if (account != null && parseAccountId(String(account)) === "agent") throw new AdminError("BAD_REQUEST", "the agent account has no copy tickets: it is a paper experiment run by a model");
     return this.model(account).getCopyTickets(date);
   }
 
@@ -211,12 +215,26 @@ export class EngineAdmin extends WorkerEntrypoint<Env> implements EngineApi {
     return this.advisor().run(String(reason ?? "").trim().slice(0, 100)) as Promise<AdvisorView>;
   }
 
-  /** The options agent's view. Not deployed yet: the AgentDO arrives with the agent's Worker changes. */
-  async getAgent(date?: string): Promise<AgentView> {
-    void date;
-    throw new AdminError("CONFLICT", "agent not deployed");
+  /** The options agent's Durable Object (AgentDO): decisions, cost, the nightly review and the candidate guidance. */
+  private agentDo() {
+    return this.env.AGENT_DO.get(this.env.AGENT_DO.idFromName("agent"));
   }
 
+  /**
+   * The options agent (a paper experiment) for an IST date, default today. Public like the other reads. When ACCOUNTS
+   * does not list the agent, the empty view says so. The kill switches (the agent's and main's) are read live here.
+   */
+  async getAgent(date?: string): Promise<AgentView> {
+    const now = Date.now();
+    const d = date === undefined || date === null || date === "" ? istDate(now) : String(date);
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(d)) throw new AdminError("BAD_REQUEST", "date must be YYYY-MM-DD");
+    const settings = agentSettings(this.env);
+    if (!agentEnabled(this.env)) return emptyAgentView(now, settings, false, null);
+    const rt = makeRuntime(this.env, "admin");
+    const [account] = accountViews(rt, ["agent"]);
+    const [view, agent, main] = await Promise.all([this.agentDo().view(d, account) as Promise<AgentView>, accountRuntime(rt, "agent").repo.settings.get(), rt.repo.settings.get()]);
+    return withAccountSettings(view, agent, main);
+  }
 
   async verifyAdmin(token: string): Promise<boolean> {
     try {
@@ -259,17 +277,24 @@ export class EngineAdmin extends WorkerEntrypoint<Env> implements EngineApi {
     return startBacktest(this.env, this.ctx, params, cleanActor(actor));
   }
 
+  /** Approves or rejects the nightly review's candidate guidance (the approval gate; approval only outside the session). */
   async setAgentCandidate(token: string, candidateId: string, decision: "approve" | "reject", actor: string): Promise<AgentView> {
     this.requireAdmin(token);
-    void candidateId;
-    void decision;
-    void actor;
-    throw new AdminError("CONFLICT", "agent not deployed");
+    const id = String(candidateId ?? "");
+    if (!/^[A-Za-z0-9_-]{1,64}$/.test(id)) throw new AdminError("BAD_REQUEST", "candidate id must be 1 to 64 letters, digits, _ or -");
+    if (decision !== "approve" && decision !== "reject") throw new AdminError("BAD_REQUEST", "decision must be approve or reject");
+    if (!agentEnabled(this.env)) throw new AdminError("CONFLICT", "the agent account is not enabled (ACCOUNTS)");
+    const res = await this.agentDo().decideCandidate(id, decision, cleanActor(actor));
+    if (!res.ok) throw new AdminError("CONFLICT", res.message);
+    return this.getAgent();
   }
 
+  /** Clears the agent's drawdown halt and kill switch (the trading DO runs it); its peak equity restarts at the current equity. */
   async rearmAgent(token: string, actor: string): Promise<AgentView> {
     this.requireAdmin(token);
-    void actor;
-    throw new AdminError("CONFLICT", "agent not deployed");
+    if (!agentEnabled(this.env)) throw new AdminError("CONFLICT", "the agent account is not enabled (ACCOUNTS)");
+    const res = await this.engine().rearmAgent(cleanActor(actor));
+    if (!res.ok) throw new AdminError("CONFLICT", res.message);
+    return this.getAgent();
   }
 }

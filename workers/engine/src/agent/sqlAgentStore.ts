@@ -84,6 +84,8 @@ const bodies = <T>(rows: { body: string }[]): T[] => rows.map((r) => parse<T>(r.
 /** Tables whose rows carry a trading date and are pruned after the retention period. */
 const PRUNED_TABLES = ["bars", "batches", "decisions", "calls", "escalations", "risk"] as const;
 
+type BarRow = { bar_ms: number; idx: string; date: string; close: number; snapshot: string | null; tokens_est: number | null; built_ms: number };
+
 export class SqlAgentStore implements AgentStore {
   constructor(private readonly sql: AgentSql) {}
 
@@ -114,7 +116,7 @@ export class SqlAgentStore implements AgentStore {
     );
   }
 
-  private barOf(r: { bar_ms: number; idx: string; date: string; close: number; snapshot: string | null; tokens_est: number | null; built_ms: number }): StoredBar {
+  private barOf(r: BarRow): StoredBar {
     return {
       barCloseMs: Number(r.bar_ms),
       date: r.date,
@@ -127,13 +129,17 @@ export class SqlAgentStore implements AgentStore {
   }
 
   async bars(date: string): Promise<StoredBar[]> {
-    type Row = { bar_ms: number; idx: string; date: string; close: number; snapshot: string | null; tokens_est: number | null; built_ms: number };
-    return this.rows<Row>("SELECT * FROM bars WHERE date = ? ORDER BY bar_ms, idx", date).map((r) => this.barOf(r));
+    return this.rows<BarRow>("SELECT * FROM bars WHERE date = ? ORDER BY bar_ms, idx", date).map((r) => this.barOf(r));
   }
 
   async barsForIndex(index: IndexId, fromMs: number, toMs: number): Promise<StoredBar[]> {
-    type Row = { bar_ms: number; idx: string; date: string; close: number; snapshot: string | null; tokens_est: number | null; built_ms: number };
-    return this.rows<Row>("SELECT * FROM bars WHERE idx = ? AND bar_ms >= ? AND bar_ms <= ? ORDER BY bar_ms", index, fromMs, toMs).map((r) => this.barOf(r));
+    return this.rows<BarRow>("SELECT * FROM bars WHERE idx = ? AND bar_ms >= ? AND bar_ms <= ? ORDER BY bar_ms", index, fromMs, toMs).map((r) => this.barOf(r));
+  }
+
+  /** The newest stored bar of an index that has a snapshot, or null (the AgentDO's token count; not part of AgentStore). */
+  latestSnapshotBar(index: IndexId): StoredBar | null {
+    const r = this.rows<BarRow>("SELECT * FROM bars WHERE idx = ? AND snapshot IS NOT NULL ORDER BY bar_ms DESC LIMIT 1", index)[0];
+    return r ? this.barOf(r) : null;
   }
 
   // -------------------------------------------------------------------------
