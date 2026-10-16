@@ -29,7 +29,7 @@ const TOC: TocItem[] = [
 export default function LearnPage() {
   return (
     <div style={{ minHeight: "100vh", display: "flex", flexDirection: "column", background: C.bg, color: C.text }}>
-      <SiteHeader active={null} />
+      <SiteHeader active="learn" />
       <main className={s.wrap}>
         <header style={{ maxWidth: 820 }}>
           <div style={{ fontSize: 13, fontWeight: 600, color: C.gold, marginBottom: 10 }}>Learn · NIFTY and SENSEX options</div>

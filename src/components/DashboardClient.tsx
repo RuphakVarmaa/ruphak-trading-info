@@ -15,7 +15,7 @@ interface DashboardClientProps {
 /** The site header with the engine's PAPER/LIVE badge: the only place the Desk shows the mode. */
 function DeskSiteHeader() {
   const { state } = useEngineState();
-  return <SiteHeader active="desk" mode={state?.mode ?? null} />;
+  return <SiteHeader active="engine" mode={state?.mode ?? null} />;
 }
 
 /** The Desk page: the India index overview. Metals and macro have their own page (/metals). */

@@ -47,7 +47,7 @@ export default async function EventPage({ params }: Props) {
 
   return (
     <div style={{ minHeight: "100vh", display: "flex", flexDirection: "column", background: C.bg, color: C.text }}>
-      <SiteHeader active={null} mode={mode} />
+      <SiteHeader active="geo" mode={mode} />
       {loaded.kind === "ok" ? (
         <EventDetailView detail={loaded.detail} source={loaded.source} />
       ) : (
