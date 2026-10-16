@@ -34,7 +34,7 @@ export function ModeBadge({ mode, title }: { mode: EngineMode; title?: string })
 }
 
 /** Every page with a header. The three sections are the primary tabs; the rest sit in "More". */
-export type Page = "advisor" | "engine" | "options" | "geo" | "live" | "copy" | "backtest" | "metals" | "learn";
+export type Page = "advisor" | "engine" | "options" | "geo" | "live" | "copy" | "backtest" | "metals" | "learn" | "agent";
 
 const NAV: { href: string; label: string; pages: readonly Page[] }[] = [
   { href: "/advisor", label: "Advisor", pages: ["advisor"] },
@@ -47,11 +47,12 @@ const MORE: { href: string; label: string; note: string; page: Page }[] = [
   { href: "/geo", label: "Geo Intel", note: "World news and how it feeds the engine", page: "geo" },
   { href: "/copy", label: "Copy trades", note: "Each paper trade, ready to repeat by hand", page: "copy" },
   { href: "/backtest", label: "Backtest", note: "Run the strategy over past sessions", page: "backtest" },
+  { href: "/agent", label: "Agent", note: "Paper experiment: a model judges each 5-minute candle", page: "agent" },
   { href: "/metals", label: "Metals", note: "Metals, oil and shipping terminal", page: "metals" },
   { href: "/learn", label: "Learn", note: "Options buying, in plain words", page: "learn" },
 ];
 
-const MORE_PAGES: readonly Page[] = ["options", "geo", "backtest", "metals", "learn"];
+const MORE_PAGES: readonly Page[] = ["options", "geo", "backtest", "agent", "metals", "learn"];
 
 /** The "More" menu: outside .site-nav (which scrolls sideways on phones and would clip it). */
 function MoreMenu({ active }: { active: Page | null }) {

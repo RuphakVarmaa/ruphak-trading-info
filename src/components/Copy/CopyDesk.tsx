@@ -5,13 +5,14 @@
  * copy button), then the current trade with every value one tap from the clipboard, one "what to do now"
  * line, the price chart, the reasoning behind a Details disclosure, and the day's other trades.
  */
+import Link from "next/link";
 import { useEffect, useState, type ReactNode } from "react";
 import type { CopyTicketView, IndexId, SignalView } from "@/engine/api-types";
-import AccountSwitcher from "@/components/Live/AccountSwitcher";
 import { C, pnlColor } from "@/components/shared/colors";
 import { fmtDateKey } from "@/components/shared/format";
 import { SERIF } from "@/components/shared/theme";
 import { EmptyState, Panel, Segmented, Skeleton } from "@/components/shared/ui";
+import { useEngineState } from "@/hooks/useEngineState";
 import { EXIT_WORDS, hm, hms, nowLine, type IndexAction } from "@/lib/copy/action";
 import { wholeRupees } from "@/lib/copy/prices";
 import { istParts } from "@/lib/ist";
@@ -38,6 +39,44 @@ export function pickCurrent(actions: Record<IndexId, IndexAction> | null, ticket
   const byKind = (...kinds: IndexAction["kind"][]) => INDICES.map((i) => actions?.[i]).find((a) => a && kinds.includes(a.kind) && a.ticket)?.ticket ?? null;
   const live = (t: CopyTicketView | null) => (t ? (list.find((x) => x.id === t.id) ?? t) : null);
   return live(byKind("EXIT_NOW")) ?? live(byKind("ENTER_NOW", "PAUSED")) ?? list.find((t) => t.id === picked) ?? live(byKind("MANAGE")) ?? list.find((t) => t.status === "OPEN") ?? list[0] ?? null;
+}
+
+const fmtCapital = (rupees: number) => (rupees >= 100_000 ? `₹${(rupees / 100_000).toFixed(rupees % 100_000 === 0 ? 0 : 1)}L` : `₹${Math.round(rupees / 1000)}k`);
+
+/**
+ * The paper-account switcher (as AccountSwitcher) without the agent's account: its trades are a model's
+ * paper experiment, never offered for copying, so /copy ignores ?account=agent. Hidden with fewer than two accounts.
+ */
+function CopyAccountSwitcher() {
+  const { state } = useEngineState();
+  const accounts = (state?.accounts ?? []).filter((a) => a.kind !== "agent");
+  if (accounts.length < 2) return null;
+  const current = state?.account?.id ?? "main";
+  return (
+    <nav aria-label="Paper account" style={{ display: "inline-flex", border: `1px solid ${C.border}`, borderRadius: 8, overflow: "hidden" }}>
+      {accounts.map((a) => {
+        const active = a.id === current;
+        return (
+          <Link
+            key={a.id}
+            href={a.id === "main" ? "/copy" : `/copy?account=${encodeURIComponent(a.id)}`}
+            aria-current={active ? "page" : undefined}
+            style={{
+              padding: "6px 12px",
+              fontSize: 12,
+              fontWeight: active ? 600 : 400,
+              textDecoration: "none",
+              color: active ? C.textStrong : C.muted,
+              background: active ? C.panelAlt : "transparent",
+              borderLeft: a.id === accounts[0].id ? "none" : `1px solid ${C.border}`,
+            }}
+          >
+            {a.shortLabel === fmtCapital(a.capitalRupees) ? a.shortLabel : `${a.shortLabel} · ${fmtCapital(a.capitalRupees)}`}
+          </Link>
+        );
+      })}
+    </nav>
+  );
 }
 
 function H3({ children }: { children: ReactNode }) {
@@ -157,7 +196,7 @@ export default function CopyDesk({ initialId, account }: { initialId: string | n
     <main style={{ width: "100%", maxWidth: 1240, margin: "0 auto", padding: "16px 16px 56px", display: "grid", gap: 18, boxSizing: "border-box", minWidth: 0 }}>
       <h1 style={SR_ONLY}>Copy trades{d.date ? `, ${fmtDateKey(d.date)}` : ""}</h1>
       <RecoCard />
-      <IndexActionStrip account={d.account.id} headerExtra={<AccountSwitcher basePath="/copy" />} />
+      <IndexActionStrip account={d.account.id} headerExtra={<CopyAccountSwitcher />} />
       <SetupBoard />
 
       <section id="trade" aria-label="The trade" style={{ scrollMarginTop: 84, minWidth: 0 }}>

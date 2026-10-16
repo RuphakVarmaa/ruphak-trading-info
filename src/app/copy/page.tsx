@@ -1,4 +1,5 @@
 import type { Metadata } from "next";
+import { ACCOUNTS, parseAccountId } from "@/engine/accounts";
 import CopyDesk from "@/components/Copy/CopyDesk";
 import LiveHeader from "@/components/Live/LiveHeader";
 import { C } from "@/components/shared/colors";
@@ -16,11 +17,17 @@ export const metadata: Metadata = {
 type Query = Record<string, string | string[] | undefined>;
 const first = (v: string | string[] | undefined) => (Array.isArray(v) ? v[0] : v);
 
-/** `?account=small10k` shows that paper account (no parameter: main); `?id=` selects a trade. */
+/** The agent's paper account is a model's experiment: its trades are never offered for copying, so it reads as main here. */
+const isAgent = (raw: string) => {
+  const id = parseAccountId(raw);
+  return id != null && ACCOUNTS[id].kind === "agent";
+};
+
+/** `?account=small10k` shows that paper account (no parameter: main; the agent's account is ignored); `?id=` selects a trade. */
 export default async function CopyPage({ searchParams }: { searchParams: Promise<Query> }) {
   const query = await searchParams;
   const rawAccount = first(query.account);
-  const account = rawAccount && rawAccount !== "main" && /^[a-z0-9]{1,32}$/.test(rawAccount) ? rawAccount : undefined;
+  const account = rawAccount && rawAccount !== "main" && /^[a-z0-9]{1,32}$/.test(rawAccount) && !isAgent(rawAccount) ? rawAccount : undefined;
   const rawId = first(query.id);
   const id = rawId && /^[A-Za-z0-9._:-]{1,128}$/.test(rawId) ? rawId : null;
   const [initial, mode] = await Promise.all([getInitialEngineSnapshot(account), getEngineModeQuick()]);
