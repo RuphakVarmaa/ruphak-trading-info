@@ -6,7 +6,7 @@ import { describe, expect, it } from "vitest";
 import { accountConfig } from "../accounts";
 import { DEFAULT_CONFIG } from "../config";
 import type { Repository } from "../ports";
-import type { ArticleCluster, DayLedger, Fill, NormalizedArticle, Order, Position, ScoredEvent, TradeRecord } from "../types";
+import type { ArticleCluster, DayLedger, Fill, NormalizedArticle, Order, Position, ScoredEvent, TradeRecord, TradingMode } from "../types";
 import { accountRepository } from "./accountRepo";
 
 const T = Date.parse("2026-10-07T05:00:00Z");
@@ -273,6 +273,61 @@ export function accountScopeContract(name: string, make: () => Promise<Repositor
       expect((await tenK.settings.get()).killSwitch).toBe(false);
       expect((await base.settings.get()).killSwitch).toBe(false);
       await expect(fiveK.orders.save(order("x", { mode: "LIVE" }))).rejects.toThrow(/small5k is a paper-only account/);
+    });
+
+    it("keeps the agent account's book, settings and kv apart from main's and the followers'", async () => {
+      const base = await make();
+      const tenK = scoped(base);
+      const agent = accountRepository(base, "agent", accountConfig(DEFAULT_CONFIG, "agent"), () => T);
+      await base.orders.save(order("m1"));
+      await tenK.orders.save(order("t1"));
+      await agent.orders.save(order("a1"));
+      // The agent's book is stored as PAPER@agent and read back as PAPER.
+      const stored = "PAPER@agent" as TradingMode;
+      expect((await base.orders.between(T - 1, T + 1, stored)).map((o) => [o.id, o.mode])).toEqual([["a1", "PAPER@agent"]]);
+      expect((await base.orders.between(T - 1, T + 1, "PAPER")).map((o) => o.id)).toEqual(["m1"]);
+      expect((await agent.orders.between(T - 1, T + 1)).map((o) => [o.id, o.mode])).toEqual([["a1", "PAPER"]]);
+      expect(await agent.orders.get("m1")).toBeNull();
+      expect(await agent.orders.get("t1")).toBeNull();
+      expect(await tenK.orders.get("a1")).toBeNull();
+
+      const p = { id: "p", mode: "PAPER", status: "OPEN", index: "NIFTY" } as unknown as Position;
+      await base.positions.save({ ...p, id: "pm" });
+      await agent.positions.save({ ...p, id: "pa" });
+      expect((await base.positions.open(stored)).map((x) => x.id)).toEqual(["pa"]);
+      expect((await agent.positions.open("PAPER")).map((x) => [x.id, x.mode])).toEqual([["pa", "PAPER"]]);
+      expect((await base.positions.open("PAPER")).map((x) => x.id)).toEqual(["pm"]);
+      expect((await tenK.positions.open("PAPER")).map((x) => x.id)).toEqual([]);
+      await agent.trades.append({ positionId: "pa", mode: "PAPER", exitMs: T } as unknown as TradeRecord);
+      expect((await base.trades.recent(5, "PAPER")).map((t) => t.positionId)).toEqual([]);
+      expect((await agent.trades.recent(5, "PAPER")).map((t) => [t.positionId, t.mode])).toEqual([["pa", "PAPER"]]);
+      const l = { date: "2026-10-07", mode: "PAPER", realized: -2_000 } as unknown as DayLedger;
+      await agent.ledger.save(l);
+      expect(await base.ledger.get("2026-10-07", "PAPER")).toBeNull();
+      expect((await agent.ledger.get("2026-10-07", "PAPER"))?.realized).toBe(-2_000);
+
+      // Caps derived from its pinned config (₹5L): 3% daily loss, 4% premium per trade, 2 positions.
+      const s = await agent.settings.get();
+      expect(s.mode).toBe("PAPER");
+      expect(s.dailyLossCapInr).toBe(15_000);
+      expect(s.maxPremiumPerTradeInr).toBe(20_000);
+      expect(s.maxOpenPositions).toBe(2);
+      // Its own kill switch.
+      await agent.settings.update({ killSwitch: true, killReason: "agent only" }, "tester");
+      expect((await agent.settings.get()).killSwitch).toBe(true);
+      expect((await base.settings.get()).killSwitch).toBe(false);
+      expect((await tenK.settings.get()).killSwitch).toBe(false);
+      expect(await base.state.get("acct:agent:settings")).toMatchObject({ killSwitch: true, killReason: "agent only" });
+      await expect(agent.settings.update({ mode: "LIVE" }, "tester")).rejects.toThrow(/paper-only/);
+      await expect(agent.orders.save(order("x", { mode: "LIVE" }))).rejects.toThrow(/agent is a paper-only account/);
+
+      // Its kv keys carry the acct:agent: prefix; shared keys stay shared.
+      await agent.state.set("decision:last:NIFTY", { t: 1 });
+      expect(await base.state.get("acct:agent:decision:last:NIFTY")).toEqual({ t: 1 });
+      expect(await base.state.get("decision:last:NIFTY")).toBeNull();
+      expect(await tenK.state.get("decision:last:NIFTY")).toBeNull();
+      await base.state.set("health:yahoo", { ok: true });
+      expect(await agent.state.get("health:yahoo")).toEqual({ ok: true });
     });
   });
 }
