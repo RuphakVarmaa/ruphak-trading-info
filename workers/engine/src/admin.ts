@@ -195,13 +195,19 @@ export class EngineAdmin extends WorkerEntrypoint<Env> implements EngineApi {
   getCopyTickets(date: string, account?: string): Promise<CopyTicketView[]> {
     if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) throw new AdminError("BAD_REQUEST", "date must be YYYY-MM-DD");
     return this.model(account).getCopyTickets(date);
-  }  /** Placeholder until the advisor lands (the AdvisorDO implements it). */
-  async getAdvisor(): Promise<AdvisorView> {
-    return { status: "idle", lastError: "The advisor is not built yet.", runningSince: null, nextAllowedAt: null, runsToday: 0, maxRunsPerDay: 0, latest: null, history: [] };
   }
-  async runAdvisor(_reason: string): Promise<AdvisorView> {
-    void _reason;
-    return this.getAdvisor();
+
+  /** The advisor's Durable Object (AdvisorDO): one instance holds the brief, its history and the run state. */
+  private advisor() {
+    return this.env.ADVISOR_DO.get(this.env.ADVISOR_DO.idFromName("advisor"));
+  }
+  /** Public (no admin token): it only reads the stored brief. */
+  getAdvisor(): Promise<AdvisorView> {
+    return this.advisor().view() as Promise<AdvisorView>;
+  }
+  /** Public (no admin token): the advisor's rate limit is the guard. The reason is trimmed to 100 characters. */
+  runAdvisor(reason: string): Promise<AdvisorView> {
+    return this.advisor().run(String(reason ?? "").trim().slice(0, 100)) as Promise<AdvisorView>;
   }
 
 

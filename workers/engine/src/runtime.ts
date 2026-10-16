@@ -4,6 +4,7 @@
  * Secrets are read from `env` only; nothing secret is ever logged or returned.
  */
 import { ACCOUNTS, accountConfig, parseAccounts, type AccountId, type AccountSpec } from "../../../src/engine/accounts";
+import { parseAdvisorSettings, type AdvisorSettings } from "../../../src/engine/advisor/runState";
 import type { AccountView } from "../../../src/engine/api-types";
 import { TradingCalendar, defaultCalendar } from "../../../src/engine/calendar/calendar";
 import { makeConfig, parseExpectedMoveModel, parseIndices, parseMaxOpenPerIndex, parseMaxTradesPerDay, type EngineConfig } from "../../../src/engine/config";
@@ -17,7 +18,7 @@ import { UPSTOX_QUOTE_SOURCE, UpstoxQuotes } from "../../../src/engine/market/up
 import { D1Repository } from "./db/d1Repository";
 import type { QuoteSource } from "./quoteRecorder";
 
-export const ENGINE_VERSION = "2026.10.16-1";
+export const ENGINE_VERSION = "2026.10.16-2";
 
 export interface Runtime {
   env: Env;
@@ -226,6 +227,16 @@ export function llmClient(env: Env, logger?: Logger, opts: { mode?: ResponseForm
   if (!ai) return null;
   // Call run() on the binding itself: a detached method loses its binding.
   return new WorkersAiLlmClient({ run: (model, input) => ai.run(model, input), mode: opts.mode, log: logger ? (m, d) => logger.warn(m, d) : undefined });
+}
+
+/** The advisor's model, rate limit and daily automatic run (Worker vars ADVISOR_*). */
+export function advisorSettings(env: Env): AdvisorSettings {
+  return parseAdvisorSettings({
+    ADVISOR_MODEL: env.ADVISOR_MODEL,
+    ADVISOR_MAX_RUNS_PER_DAY: env.ADVISOR_MAX_RUNS_PER_DAY,
+    ADVISOR_MIN_GAP_MIN: env.ADVISOR_MIN_GAP_MIN,
+    ADVISOR_AUTO_RUN: env.ADVISOR_AUTO_RUN,
+  });
 }
 
 /**

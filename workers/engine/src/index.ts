@@ -1,16 +1,17 @@
 /**
- * Engine Worker entry: Durable Objects (trading loop, ingestion, backtests), the cron dispatcher,
+ * Engine Worker entry: Durable Objects (trading loop, ingestion, backtests, advisor), the cron dispatcher,
  * the event-scoring queue consumer (and its dead-letter queue), the EngineAdmin RPC entrypoint
  * for the dashboard, and a small HTTP surface (/health, Telegram webhook, token-protected ops).
  */
-import { istDate } from "../../../src/engine/clock";
+import { AUTO_RUN_WINDOW_MIN } from "../../../src/engine/advisor/runState";
+import { istDate, istMinutes } from "../../../src/engine/clock";
 import { redactFeedError } from "../../../src/engine/market/upstoxFeed";
 import { timingSafeEqual } from "../../../src/engine/util/hash";
 import { BAR_ARCHIVE_STATUS_KEY, recordBarArchiveFailure } from "./barArchive";
 import type { ScoreMessage } from "./do/IngestDO";
 import { refreshInstruments } from "./instruments";
 import { NO_SOURCE_REASON, QUOTE_RECORDER_STATUS_KEY } from "./quoteRecorder";
-import { ENGINE_VERSION, errorMessage, makeRuntime, quoteSourceSummary } from "./runtime";
+import { ENGINE_VERSION, advisorSettings, errorMessage, makeRuntime, quoteSourceSummary } from "./runtime";
 import { consumeScoreBatch } from "./scoring";
 import { Alerts, parseTelegramUpdate, sendTelegram } from "./telegram";
 
@@ -18,11 +19,28 @@ export { TradingEngineDO } from "./do/TradingEngineDO";
 export { IngestDO } from "./do/IngestDO";
 export { BacktestDO } from "./do/BacktestDO";
 export { MarketFeedDO } from "./do/MarketFeedDO";
+export { AdvisorDO } from "./do/AdvisorDO";
 export { EngineAdmin } from "./admin";
 
 const engine = (env: Env) => env.ENGINE_DO.get(env.ENGINE_DO.idFromName("engine"));
 const ingest = (env: Env) => env.INGEST_DO.get(env.INGEST_DO.idFromName("ingest"));
 const marketFeed = (env: Env) => env.MARKET_FEED_DO.get(env.MARKET_FEED_DO.idFromName("feed"));
+const advisor = (env: Env) => env.ADVISOR_DO.get(env.ADVISOR_DO.idFromName("advisor"));
+
+/**
+ * The daily automatic advisor brief (ADVISOR_AUTO_RUN, 09:25 IST): inside its 10-minute window the minute cron
+ * pokes the AdvisorDO, which runs it at most once a trading day. Never throws.
+ */
+async function maybeAutoRunAdvisor(env: Env, now: number, logger: { error(msg: string, data?: unknown): void }): Promise<void> {
+  const at = advisorSettings(env).autoRunAtMin;
+  const min = istMinutes(now);
+  if (at == null || min < at || min >= at + AUTO_RUN_WINDOW_MIN) return;
+  try {
+    await advisor(env).autoRun();
+  } catch (err) {
+    logger.error("advisor auto-run failed", { error: errorMessage(err) });
+  }
+}
 
 /** Pokes the market feed (it connects inside 09:10-15:35 IST and sleeps otherwise); never throws. */
 async function wakeMarketFeed(env: Env, logger: { error(msg: string, data?: unknown): void }): Promise<void> {
@@ -64,6 +82,7 @@ async function runCron(cron: string, env: Env): Promise<void> {
       if (tradingDay) {
         // The feed first and independently: a trading-loop failure must not keep it from connecting at 09:10.
         await wakeMarketFeed(env, rt.logger);
+        await maybeAutoRunAdvisor(env, now, rt.logger);
         await engine(env).ensureRunning();
       }
       return;

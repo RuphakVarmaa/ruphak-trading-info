@@ -33,14 +33,18 @@
       { "name": "ENGINE_DO", "class_name": "TradingEngineDO" },
       { "name": "INGEST_DO", "class_name": "IngestDO" },
       { "name": "BACKTEST_DO", "class_name": "BacktestDO" },
-      { "name": "MARKET_FEED_DO", "class_name": "MarketFeedDO" }
+      { "name": "MARKET_FEED_DO", "class_name": "MarketFeedDO" },
+      // The Advisor tab's plain-English brief (Claude Opus 5.5 + web research), run on demand and once a trading day.
+      { "name": "ADVISOR_DO", "class_name": "AdvisorDO" }
     ]
   },
   "migrations": [
     { "tag": "v1", "new_sqlite_classes": ["TradingEngineDO", "IngestDO"] },
     { "tag": "v2", "new_sqlite_classes": ["BacktestDO"] },
     // Upstox Market Data Feed V3 WebSocket (1-second index levels and option quotes).
-    { "tag": "v3", "new_sqlite_classes": ["MarketFeedDO"] }
+    { "tag": "v3", "new_sqlite_classes": ["MarketFeedDO"] },
+    // The advisor's brief, run state and history (AdvisorDO).
+    { "tag": "v4", "new_sqlite_classes": ["AdvisorDO"] }
   ],
   "d1_databases": [
     {
@@ -116,7 +120,13 @@
     // "yahoo" keeps Yahoo bars and Groww or synthetic paper quotes. Paper only: no orders either way.
     "LIVE_DATA": "upstox",
     // Dashboard base URL for the links in copy-trade alerts (empty: no links).
-    "DASHBOARD_URL": "https://ruphak-dashboard.sanjaysenthilkumar.workers.dev"
+    "DASHBOARD_URL": "https://ruphak-dashboard.sanjaysenthilkumar.workers.dev",
+    // Advisor tab (AdvisorDO): the model that writes the brief (uses the ANTHROPIC_API_KEY secret), the
+    // rate limit (runs per IST day, minutes between starts) and the daily automatic brief ("HH:MM" IST, or "off").
+    "ADVISOR_MODEL": "claude-opus-5-5",
+    "ADVISOR_MAX_RUNS_PER_DAY": "24",
+    "ADVISOR_MIN_GAP_MIN": "4",
+    "ADVISOR_AUTO_RUN": "09:25"
   },
   "env": {
     "preview": {
@@ -138,7 +148,11 @@
         "EDGE_GATE": "calibrated",
         "QUOTE_SOURCE": "auto",
         "LIVE_DATA": "upstox",
-        "DASHBOARD_URL": ""
+        "DASHBOARD_URL": "",
+        "ADVISOR_MODEL": "claude-opus-5-5",
+        "ADVISOR_MAX_RUNS_PER_DAY": "24",
+        "ADVISOR_MIN_GAP_MIN": "4",
+        "ADVISOR_AUTO_RUN": "off"
       },
       "d1_databases": [
         {
@@ -168,9 +182,17 @@
           { "name": "ENGINE_DO", "class_name": "TradingEngineDO" },
           { "name": "INGEST_DO", "class_name": "IngestDO" },
           { "name": "BACKTEST_DO", "class_name": "BacktestDO" },
-      { "name": "MARKET_FEED_DO", "class_name": "MarketFeedDO" }
+          { "name": "MARKET_FEED_DO", "class_name": "MarketFeedDO" },
+          { "name": "ADVISOR_DO", "class_name": "AdvisorDO" }
         ]
       },
+      // The same migrations as the top level (an environment would otherwise inherit them).
+      "migrations": [
+        { "tag": "v1", "new_sqlite_classes": ["TradingEngineDO", "IngestDO"] },
+        { "tag": "v2", "new_sqlite_classes": ["BacktestDO"] },
+        { "tag": "v3", "new_sqlite_classes": ["MarketFeedDO"] },
+        { "tag": "v4", "new_sqlite_classes": ["AdvisorDO"] }
+      ],
       "triggers": { "crons": ["*/30 * * * *"] }
     }
   }

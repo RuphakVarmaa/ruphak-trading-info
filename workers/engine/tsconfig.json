@@ -11,7 +11,9 @@
     "resolveJsonModule": true,
     "isolatedModules": true,
     "verbatimModuleSyntax": false,
-    "noFallthroughCasesInSwitch": true
+    "noFallthroughCasesInSwitch": true,
+    // src/lib/options/outlook.ts (used by the advisor) imports through the dashboard's "@/" alias.
+    "paths": { "@/*": ["../../src/*"] }
   },
   "include": ["src/**/*.ts", "../../src/engine/**/*.ts", "../../src/db/**/*.ts"],
   "exclude": ["../../src/**/*.test.ts", "../../src/engine/__fixtures__/**"]
