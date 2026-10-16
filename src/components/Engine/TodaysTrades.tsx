@@ -15,7 +15,7 @@ function Row({ r, first }: { r: TradeRow; first: boolean }) {
     <Link
       href={r.href}
       className="nav-tab"
-      aria-label={`${r.headline}: ${r.inText}, ${r.outText}${r.pnl != null ? `, ${fmtInr(r.pnl, { sign: true })} after charges` : ""}. Open the copy page.`}
+      aria-label={`${r.headline}: ${r.inText}, ${r.outText}${r.pnl != null ? `, ${fmtInr(r.pnl, { sign: true })} after charges` : ""}.${r.practice ? " Practice trade, not for copying. Open the trade details." : " Open the copy page."}`}
       style={{
         display: "grid",
         gridTemplateColumns: "minmax(0, 1fr) auto",
@@ -34,7 +34,10 @@ function Row({ r, first }: { r: TradeRow; first: boolean }) {
           </b>
           {r.open && <Pill color={C.green}>open</Pill>}
           {r.practice && (
-            <Pill color={C.purple} title="Taken by the paper practice quota: one trade per hour window while the measured-edge check pauses the engine's own buying.">
+            <Pill
+              color={C.purple}
+              title="Taken by the paper practice quota (one trade per hour window, 09:30–14:30, while the measured-edge check pauses the engine's own buying). Practice trades are for watching the system work, not for copying: the research says they lose on average."
+            >
               practice
             </Pill>
           )}
@@ -47,7 +50,7 @@ function Row({ r, first }: { r: TradeRow; first: boolean }) {
         <span className="tnum" style={{ fontSize: 15.5, fontWeight: 700, fontFamily: "var(--font-num)", color: r.pnl == null ? C.muted : pnlColor(r.pnl) }}>
           {r.pnl == null ? "no data" : fmtInr(r.pnl, { sign: true })}
         </span>
-        <span style={{ fontSize: 12, color: C.gold, fontWeight: 600, whiteSpace: "nowrap" }}>Copy steps →</span>
+        <span style={{ fontSize: 12, color: r.practice ? C.muted : C.gold, fontWeight: 600, whiteSpace: "nowrap" }}>{r.practice ? "Details →" : "Copy steps →"}</span>
       </span>
     </Link>
   );

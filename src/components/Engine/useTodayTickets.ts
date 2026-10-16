@@ -24,7 +24,10 @@ export function useTodayTickets(accountProp?: string): TodayTickets {
   const now = useNow();
   const account = accountProp ?? state?.account?.id ?? "main";
   const date = now != null ? istDate(now) : (state?.market.nowIst.slice(0, 10) ?? null);
-  const phase = now != null ? sessionPhaseAt(now) : (state?.market.phase ?? "CLOSED");
+  // Holiday-aware like useIndexActions: on a weekday market holiday the clock alone says OPEN.
+  const sameDay = state != null && now != null && state.market.nowIst.slice(0, 10) === istDate(now);
+  const holiday = sameDay && (state.market.phase === "HOLIDAY" || state.market.isHoliday === true);
+  const phase = now != null ? (holiday ? "HOLIDAY" : sessionPhaseAt(now)) : (state?.market.phase ?? "CLOSED");
   const active = phase === "OPEN" || phase === "PRE_OPEN";
   const poll = useSharedPoll<CopyTicketView[]>(ticketsUrl(date, account), active ? REFRESH_IMPORTANT_MS : REFRESH_CLOSED_MS);
   return { account, date, poll };
