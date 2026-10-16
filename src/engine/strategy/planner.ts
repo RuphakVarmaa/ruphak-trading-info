@@ -24,6 +24,7 @@ import type {
   RiskState,
   SignalPerformance,
   TradePlan,
+  TradeSide,
 } from "../types";
 import { dailyLoss, riskGates } from "../risk/limits";
 import { attributionShares, dominantSource, findPerf } from "./conviction";
@@ -47,6 +48,8 @@ export interface PlanContext {
   accountChecksFirst?: boolean;
   /** Point-in-time market data (the engine passes its deps); read only by gates.volCheapness, once per index and day. */
   market?: MarketDataSource;
+  /** The agent account picks its own contract (an Advisor idea's, or the ATM one); absent: the configured selection. */
+  pickContract?: (index: IndexId, spot: number, side: TradeSide, t: number) => Promise<OptionContract | null>;
 }
 
 export interface PlanArgs {
@@ -142,7 +145,15 @@ export async function planEntry(a: PlanArgs, ctx: PlanContext): Promise<PlanDeci
   // Suggested contract and its economics, computed even when a gate fails (for display).
   let contract: OptionContract | null;
   let bandQuote: Quote | null = null;
-  if (cfg.selection.mode === "PREMIUM_BAND") {
+  let pickProblem: string | null = null;
+  if (ctx.pickContract) {
+    try {
+      contract = await ctx.pickContract(index, f.spot, side, t);
+    } catch (err) {
+      contract = null;
+      pickProblem = err instanceof Error ? err.message : String(err);
+    }
+  } else if (cfg.selection.mode === "PREMIUM_BAND") {
     const pick = await choosePremiumBandContract({
       index,
       spot: f.spot,
@@ -164,7 +175,12 @@ export async function planEntry(a: PlanArgs, ctx: PlanContext): Promise<PlanDeci
   }
   decision.contract = contract;
   if (!contract) {
-    gates.push({ gate: "contract", label: "Contract available", passed: false, detail: cfg.selection.mode === "PREMIUM_BAND" ? "no strike near the money" : "no listed contract for the ATM strike" });
+    const detail = ctx.pickContract
+      ? `the account's contract is not available${pickProblem ? ` (${pickProblem})` : ""}`
+      : cfg.selection.mode === "PREMIUM_BAND"
+        ? "no strike near the money"
+        : "no listed contract for the ATM strike";
+    gates.push({ gate: "contract", label: "Contract available", passed: false, detail });
     decision.gates = gates;
     decision.noPlanReason = "no contract";
     return decision;
