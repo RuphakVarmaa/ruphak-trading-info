@@ -6,7 +6,7 @@
  * order: the answer for today, where the market may go, trade ideas, what moves the market, premiums, the
  * zero-hero check, things you may not know, what not to do, sources, past briefs and the honesty line.
  */
-import { useCallback, useEffect, useState, type ReactNode } from "react";
+import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
 import type { AdvisorView } from "@/engine/api-types";
 import { alpha, C } from "@/components/shared/colors";
 import { Btn, Dot, PageHeader, Panel, Pill, Section, Skeleton } from "@/components/shared/ui";
@@ -118,14 +118,20 @@ export default function AdvisorDesk({ initial, initialSource }: { initial: Advis
   const nowMs = useClientNow();
   const busy = view ? isBusy(view.status) : false;
   const hasView = view != null;
+  // Each GET and POST takes a number; a GET answer is dropped when a newer request started after it, so an
+  // idle poll sent just before the Analyze press cannot overwrite the "queued" view the POST returned.
+  const seq = useRef(0);
 
   const refresh = useCallback(async () => {
+    const my = ++seq.current;
     try {
       const res = await fetchEnvelope<AdvisorView>(ADVISOR_URL);
+      if (my !== seq.current) return;
       setView(res.data);
       setSource(res.source);
       setLoadError(null);
     } catch (err) {
+      if (my !== seq.current) return;
       setLoadError(errorText(err));
     }
   }, []);
@@ -149,8 +155,12 @@ export default function AdvisorDesk({ initial, initialSource }: { initial: Advis
   const analyze = async () => {
     setPosting(true);
     setActionError(null);
+    // Polls sent before the press are now stale.
+    ++seq.current;
     try {
       const res = await fetchEnvelope<AdvisorView>(ADVISOR_URL, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ reason: "Analyze button on /advisor" }) }, 20_000);
+      // So are polls sent while the POST was in flight: the server may have read them before the run was queued.
+      ++seq.current;
       setView(res.data);
       setSource(res.source);
       setLoadError(null);

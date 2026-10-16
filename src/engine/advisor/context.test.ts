@@ -188,6 +188,13 @@ describe("the whole context on the mock engine", () => {
     expect(doc.measuredResearch.mainFindings.length).toBeGreaterThan(5);
     expect(doc.todayPlan).toBeTruthy();
     expect(doc.candidates[0]).toHaveProperty("fitsCapital");
+    // The option-implied ranges the outlook is checked against: the same ones the prompt shows.
+    const ranges = ctx.impliedRanges?.NIFTY ?? [];
+    expect(ranges.length).toBeGreaterThan(0);
+    expect(ranges.map((r) => r.days)).toEqual([...ranges.map((r) => r.days)].sort((a, b) => a - b));
+    const shown = doc.indices.NIFTY.outlook.expiries.find((e: { expiry: string }) => e.expiry === ranges[0].expiry);
+    expect(shown.impliedRange).toEqual({ low: ranges[0].low, high: ranges[0].high });
+    expect(ranges.every((r) => r.low < (ctx.market.nifty ?? 0) && (ctx.market.nifty ?? 0) < r.high)).toBe(true);
   });
 
   it("marks missing inputs as gaps instead of inventing them", () => {

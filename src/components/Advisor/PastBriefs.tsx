@@ -3,7 +3,8 @@
 /**
  * Past briefs with their ideas. Opening a brief checks how its ideas did: for each contract still listed it
  * fetches the live chain once per index and expiry (client-side, only when opened) and shows the price now
- * against the ask when the brief was written. Expired contracts are said to be expired, not priced.
+ * against the ask when the brief was written. Expired contracts are said to be expired, not priced, and a day
+ * trade from an earlier day is not priced either (it was for that day only; today's price says nothing about it).
  */
 import { useRef, useState } from "react";
 import type { AdvisorReportSummary, OptionChainView } from "@/engine/api-types";
@@ -11,17 +12,32 @@ import { alpha, C } from "@/components/shared/colors";
 import { Panel, Pill } from "@/components/shared/ui";
 import { errorText, fetchEnvelope } from "@/hooks/engineFetch";
 import { ACTION_META, body } from "./AdvisorParts";
-import { chainKey, daysToExpiry, HORIZON_WORDS, parseContractLabel, pastCheck, plainContract, premium, writtenLine, type ParsedContract } from "./advisorText";
+import { chainKey, daysToExpiry, HORIZON_WORDS, isOldDayTrade, parseContractLabel, pastCheck, plainContract, premium, writtenLine, type ParsedContract } from "./advisorText";
 
 type ChainState = { state: "loading" } | { state: "ok"; chain: OptionChainView } | { state: "error"; error: string };
 
-function IdeaCheck({ idea, parsed, chain, nowMs }: { idea: AdvisorReportSummary["ideas"][number]; parsed: ParsedContract | null; chain: ChainState | undefined; nowMs: number | null }) {
+function IdeaCheck({
+  idea,
+  parsed,
+  chain,
+  createdAt,
+  nowMs,
+}: {
+  idea: AdvisorReportSummary["ideas"][number];
+  parsed: ParsedContract | null;
+  chain: ChainState | undefined;
+  createdAt: string;
+  nowMs: number | null;
+}) {
   const muted = { fontSize: 14.5, color: C.muted2, lineHeight: 1.5 } as const;
+  if (isOldDayTrade(idea.horizon, createdAt, nowMs)) return <div style={muted}>A day trade for that day only: today&apos;s price does not show how it did.</div>;
   if (!parsed) return <div style={muted}>Current price: cannot tell which contract this is.</div>;
   if (nowMs != null && daysToExpiry(parsed.expiry, nowMs) < 0) return <div style={muted}>Expired: no longer listed, so no current price.</div>;
   if (!chain || chain.state === "loading") return <div style={muted}>Checking the price now…</div>;
   if (chain.state === "error") return <div style={muted}>Current price not available ({chain.error})</div>;
-  if (chain.chain.expiry !== parsed.expiry || chain.chain.error) return <div style={muted}>No longer listed, so no current price.</div>;
+  // The chain answered but could not be read (broker or token trouble): that says nothing about the contract.
+  if (chain.chain.error) return <div style={muted}>Current price not available ({chain.chain.error})</div>;
+  if (chain.chain.expiry !== parsed.expiry) return <div style={muted}>No longer listed, so no current price.</div>;
   const row = chain.chain.rows.find((r) => r.strike === parsed.strike);
   const s = parsed.optionType === "CE" ? row?.ce : row?.pe;
   const ltp = s?.ltp ?? null;
@@ -48,10 +64,14 @@ function BriefRow({
 }) {
   const parsed = brief.ideas.map((i) => parseContractLabel(i.label));
   const meta = ACTION_META[brief.todayAction];
+  // Only contracts still listed, and not day trades from an earlier day (those are not priced), are fetched.
+  const toCheck = parsed.filter(
+    (p, i): p is ParsedContract => p != null && (nowMs == null || daysToExpiry(p.expiry, nowMs) >= 0) && !isOldDayTrade(brief.ideas[i].horizon, brief.createdAt, nowMs),
+  );
   return (
     <details
       onToggle={(e) => {
-        if ((e.currentTarget as HTMLDetailsElement).open) onOpen(parsed.filter((p): p is ParsedContract => p != null && (nowMs == null || daysToExpiry(p.expiry, nowMs) >= 0)));
+        if ((e.currentTarget as HTMLDetailsElement).open) onOpen(toCheck);
       }}
       style={{ borderTop: `1px solid ${C.borderSoft}` }}
     >
@@ -80,7 +100,7 @@ function BriefRow({
               <div className="tnum" style={{ fontSize: 14.5, color: C.textSoft }}>
                 Price when written {premium(idea.entryAsk)} · stop {premium(idea.stop)} · target {premium(idea.target)}
               </div>
-              <IdeaCheck idea={idea} parsed={p} chain={p ? chains[chainKey(p)] : undefined} nowMs={nowMs} />
+              <IdeaCheck idea={idea} parsed={p} chain={p ? chains[chainKey(p)] : undefined} createdAt={brief.createdAt} nowMs={nowMs} />
             </div>
           );
         })}
@@ -114,7 +134,7 @@ export default function PastBriefs({ history, latestId, nowMs }: { history: Advi
   return (
     <Panel style={{ background: C.panel }}>
       <div style={{ padding: "12px 16px", fontSize: 14, color: C.muted2, background: alpha(C.gold, 0.04) }}>
-        Open a brief to see what its ideas are worth now, against the price when it was written.
+        Open a brief to see what its ideas are worth now, against the price when it was written. This is the price now; it does not show whether the stop or the target was hit along the way.
       </div>
       {past.map((b) => (
         <BriefRow key={b.id} brief={b} nowMs={nowMs} chains={chains} onOpen={load} />

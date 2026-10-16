@@ -50,12 +50,22 @@ function liveMarket(env: Env): UpstoxLive {
   return live.market;
 }
 
-function withDeadline<T>(p: Promise<T>, ms: number): Promise<T> {
+/** Runs `f` with a deadline; at the deadline its signal aborts (the model calls stop, so a given-up run stops paying). */
+async function withDeadline<T>(f: (signal: AbortSignal) => Promise<T>, ms: number): Promise<T> {
+  const controller = new AbortController();
   let timer: ReturnType<typeof setTimeout> | undefined;
   const t = new Promise<never>((_, reject) => {
-    timer = setTimeout(() => reject(new AdvisorRunError("The analysis took longer than 10 minutes and was stopped.")), ms);
+    timer = setTimeout(() => {
+      const err = new AdvisorRunError("The analysis took longer than 10 minutes and was stopped.");
+      controller.abort(err);
+      reject(err);
+    }, ms);
   });
-  return Promise.race([p, t]).finally(() => clearTimeout(timer));
+  try {
+    return await Promise.race([f(controller.signal), t]);
+  } finally {
+    clearTimeout(timer);
+  }
 }
 
 export class AdvisorDO extends DurableObject<Env> {
@@ -130,7 +140,7 @@ export class AdvisorDO extends DurableObject<Env> {
       if (!key) throw new AdvisorRunError("The advisor is switched off: the engine Worker has no ANTHROPIC_API_KEY secret.");
       const id = `adv-${istIso(now).slice(0, 16).replace(/[-:T]/g, "")}`;
       const result = await withDeadline(
-        runAdvisorPipeline({ sources: this.sources(rt), calendar: rt.calendar, client: advisorClient(key), model: settings.model, id }),
+        (signal) => runAdvisorPipeline({ sources: this.sources(rt), calendar: rt.calendar, client: advisorClient(key), model: settings.model, id, signal }),
         PIPELINE_DEADLINE_MS,
       );
       const history = pushHistory(await this.ctx.storage.get<AdvisorReportSummary[]>(KEY_HISTORY), summarize(result.report));

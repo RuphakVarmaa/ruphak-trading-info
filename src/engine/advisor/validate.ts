@@ -1,8 +1,10 @@
 /**
  * Validation of the model's brief (pure, unit-tested): every idea is mapped to a real listed contract from the
- * candidate list and re-priced against its live ask; ideas that name an unknown contract, a buy zone far from
- * the ask, or a stop/target the engine cannot accept are dropped (small problems are fixed and noted). Today's
- * BUY only stands when its idea survived. The cost of the brief comes from token usage.
+ * candidate list and re-priced against its live ask (the pipeline re-reads those chains after the model
+ * answers); ideas that name an unknown contract, a buy zone far from the ask, or a stop/target the engine
+ * cannot accept are dropped. Small problems are fixed, and each fix is kept on the idea (engineNotes) with the
+ * model's original value. Today's BUY only stands when its idea survived. Outlook ranges are checked against
+ * the index level and the option-implied range. The cost of the brief comes from token usage.
  */
 import type { AdvisorConfidence, AdvisorFactor, AdvisorFactorKey, AdvisorHorizon, AdvisorIdea, AdvisorOutlook, AdvisorReport, AdvisorReportSummary, IndexId } from "../api-types";
 import { computeCharges } from "../broker/charges";
@@ -23,6 +25,12 @@ export const MIN_STOP_PCT = 0.1;
 export const MAX_STOP_PCT = 0.6;
 /** Target at least 1.2 × the risk above the entry. */
 export const MIN_REWARD_RISK = 1.2;
+/** Target at most this many times the entry: the premium may at most double (TODAY), triple (WEEK) or quadruple (MONTH). */
+export const MAX_TARGET_MULT: Record<AdvisorHorizon, number> = { TODAY: 2, WEEK: 3, MONTH: 4 };
+/** An outlook range end may sit at most this far from the index level (fraction of it), per horizon. */
+export const MAX_RANGE_FRAC: Record<AdvisorHorizon, number> = { TODAY: 0.03, WEEK: 0.08, MONTH: 0.15 };
+/** Outlook ranges are clamped to the matching expiry's option-implied range, widened this much about its middle. */
+export const IMPLIED_RANGE_WIDEN = 1.5;
 /** Extra lots only while the total maximum loss stays within this share of the capital. */
 export const MAX_RISK_SHARE = 0.3;
 export const MAX_IDEAS = 6;
@@ -31,6 +39,8 @@ export const MAX_IDEAS = 6;
 export const PRICE_USD = { inputPerM: 4, outputPerM: 20, cacheReadPerM: 0.2, cacheWritePerM: 5, perWebSearch: 0.01 } as const;
 
 const tick = (n: number) => Math.round(n * 20) / 20;
+/** A model's number as quoted back in a note (2 decimals at most). */
+const q = (n: number) => String(Math.round(n * 100) / 100);
 const r2 = (n: number) => Math.round(n * 100) / 100;
 const fin = (n: unknown): n is number => typeof n === "number" && Number.isFinite(n);
 const text = (s: unknown, n = 600) => (typeof s === "string" ? s.replace(/\s+/g, " ").trim().slice(0, n) : "");
@@ -96,8 +106,33 @@ export interface IdeaInput {
   confidence: AdvisorConfidence;
 }
 
+/**
+ * |delta| at `strike` for one expiry and option type, interpolated between the listed strikes on either side
+ * (the market's rough odds that the index ends beyond that strike); null outside the strikes with a delta.
+ */
+export function deltaAtStrike(peers: readonly AdvisorCandidate[], c: Pick<AdvisorCandidate, "index" | "expiry" | "optionType">, strike: number): number | null {
+  const pts = peers
+    .filter((p) => p.index === c.index && p.expiry === c.expiry && p.optionType === c.optionType && fin(p.delta))
+    .map((p) => ({ k: p.strike, d: Math.min(1, Math.abs(p.delta as number)) }))
+    .sort((a, b) => a.k - b.k);
+  const exact = pts.find((p) => p.k === strike);
+  if (exact) return exact.d;
+  const below = pts.filter((p) => p.k < strike).at(-1);
+  const above = pts.find((p) => p.k > strike);
+  if (!below || !above) return null;
+  return below.d + ((above.d - below.d) * (strike - below.k)) / (above.k - below.k);
+}
+
+export interface ValidateIdeaOptions {
+  id: string;
+  nowMs: number;
+  capital?: number;
+  /** The candidates (same expiry ones are used) for the odds at the break-even. */
+  peers?: readonly AdvisorCandidate[];
+}
+
 /** Validates and re-prices one idea against its candidate contract. */
-export function validateIdea(raw: IdeaInput, c: AdvisorCandidate | undefined, opts: { id: string; nowMs: number; capital?: number }): IdeaCheck {
+export function validateIdea(raw: IdeaInput, c: AdvisorCandidate | undefined, opts: ValidateIdeaOptions): IdeaCheck {
   if (!c) return { ok: false, reason: `unknown contract id "${text(raw.candidateId, 60)}"` };
   const ask = c.price;
   if (!(ask > 0)) return { ok: false, reason: `${c.label}: no live price` };
@@ -109,7 +144,8 @@ export function validateIdea(raw: IdeaInput, c: AdvisorCandidate | undefined, op
   if (gap > MAX_ZONE_GAP) return { ok: false, reason: `${c.label}: buy zone ₹${lo}–${hi} is ${Math.round(gap * 100)}% away from the live price ₹${ask}` };
   lo = tick(Math.min(Math.max(lo, ask * ZONE_FLOOR), ask * ZONE_CAP));
   hi = tick(Math.max(Math.min(hi, ask * ZONE_CAP), lo));
-  if (lo !== tick(Math.min(raw.entryLow, raw.entryHigh)) || hi !== tick(Math.max(raw.entryLow, raw.entryHigh))) notes.push(`buy zone clamped to ₹${lo}–${hi} around the live price ₹${ask}`);
+  if (lo !== tick(Math.min(raw.entryLow, raw.entryHigh)) || hi !== tick(Math.max(raw.entryLow, raw.entryHigh)))
+    notes.push(`buy zone clamped to ₹${lo}–${hi} (was ₹${q(Math.min(raw.entryLow, raw.entryHigh))}–${q(Math.max(raw.entryLow, raw.entryHigh))}) around the live price ₹${ask}`);
   // The price a buyer pays now, inside the zone.
   const entry = tick(Math.min(Math.max(ask, lo), hi));
   if (!(raw.stop > 0) || raw.stop >= ask) return { ok: false, reason: `${c.label}: stop ₹${raw.stop} is not below the live price ₹${ask}` };
@@ -119,16 +155,23 @@ export function validateIdea(raw: IdeaInput, c: AdvisorCandidate | undefined, op
   const widest = tick(entry * (1 - MAX_STOP_PCT));
   if (stop > tightest) {
     stop = tightest;
-    notes.push(`stop widened to ₹${stop} (at least 10% below the entry)`);
+    notes.push(`stop widened to ₹${stop} (was ₹${q(raw.stop)}; at least 10% below the entry ₹${entry})`);
   } else if (stop < widest) {
     stop = widest;
-    notes.push(`stop raised to ₹${stop} (at most 60% below the entry)`);
+    notes.push(`stop raised to ₹${stop} (was ₹${q(raw.stop)}; at most 60% below the entry ₹${entry})`);
   }
   let target = tick(raw.target);
   const minTarget = tick(entry + MIN_REWARD_RISK * (entry - stop));
   if (target < minTarget) {
     target = minTarget;
-    notes.push(`target raised to ₹${target} (at least 1.2× the risk)`);
+    notes.push(`target raised to ₹${target} (was ₹${q(raw.target)}; at least 1.2× the risk)`);
+  }
+  const mult = MAX_TARGET_MULT[raw.horizon] ?? MAX_TARGET_MULT.TODAY;
+  const maxTarget = tick(entry * mult);
+  if (maxTarget < minTarget) return { ok: false, reason: `${c.label}: no target fits between 1.2× the risk (₹${minTarget}) and ${mult}× the entry (₹${maxTarget})` };
+  if (target > maxTarget) {
+    target = maxTarget;
+    notes.push(`target lowered to ₹${target} (was ₹${q(raw.target)}; at most ${mult}× the entry for a ${raw.horizon} idea)`);
   }
   if (!(stop < ask && ask < target)) return { ok: false, reason: `${c.label}: stop ₹${stop} / target ₹${target} do not bracket the live price ₹${ask}` };
 
@@ -141,7 +184,9 @@ export function validateIdea(raw: IdeaInput, c: AdvisorCandidate | undefined, op
   const fit = Math.max(1, Math.floor(capital / costPerLot));
   const byRisk = maxLossPerLot > 0 ? Math.max(1, Math.floor((capital * MAX_RISK_SHARE) / maxLossPerLot)) : fit;
   const lots = Math.min(fit, byRisk);
-  if (c.priceBasis === "ltp") notes.push("no live ask was quoted (market closed): checked against the last traded price");
+  if (c.priceBasis === "ltp") notes.push(`no live ask was quoted (market closed): checked against the last traded price ₹${ask}`);
+  const breakeven = r2(c.optionType === "CE" ? c.strike + entry : c.strike - entry);
+  const beyond = deltaAtStrike(opts.peers ?? [c], c, breakeven);
 
   const idea: AdvisorIdea = {
     id: opts.id,
@@ -155,13 +200,16 @@ export function validateIdea(raw: IdeaInput, c: AdvisorCandidate | undefined, op
     costPerLot,
     maxLossPerLot,
     rewardPerLot,
-    breakevenAtExpiry: r2(c.optionType === "CE" ? c.strike + entry : c.strike - entry),
+    breakevenAtExpiry: breakeven,
     delta: c.delta,
     iv: c.iv,
+    // |delta|: the chance it ends in the money, not in profit (that needs the index past the break-even).
     probItm: c.delta == null ? null : r2(Math.min(1, Math.abs(c.delta))),
     why: texts(raw.why, 6),
     wrongIf: text(raw.wrongIf, 300) || "The index moves against the idea and the stop is hit.",
     confidence: raw.confidence,
+    probAboveBreakeven: beyond == null ? null : r2(beyond),
+    engineNotes: [...notes],
   };
   return { ok: true, idea, notes };
 }
@@ -198,11 +246,19 @@ function factorsOf(advice: AdviceOut, research: ResearchResult): AdvisorFactor[]
     });
   }
   if (!research.ok) {
+    // The engine has no feed for these: without the research, any figures would come from the model's memory.
     byKey.set("FII_DII", {
       key: "FII_DII",
       label: FACTOR_LABELS.FII_DII,
       reading: "NO_DATA",
       detail: `No data: ${research.error ?? "the web research did not run"} FII/DII figures could not be checked this time.`,
+      source: "web research (failed)",
+    });
+    byKey.set("GLOBAL_CUES", {
+      key: "GLOBAL_CUES",
+      label: FACTOR_LABELS.GLOBAL_CUES,
+      reading: "NO_DATA",
+      detail: "No data: global markets could not be checked this time (the web research did not run).",
       source: "web research (failed)",
     });
   }
@@ -212,7 +268,48 @@ function factorsOf(advice: AdviceOut, research: ResearchResult): AdvisorFactor[]
   return FACTOR_ORDER.map((k) => byKey.get(k)).filter((f): f is AdvisorFactor => f != null);
 }
 
-function outlookOf(advice: AdviceOut): AdvisorOutlook[] {
+/** Calendar days a horizon looks ahead, to pick the expiry whose implied range bounds it. */
+const HORIZON_DAYS: Record<AdvisorHorizon, number> = { TODAY: 0, WEEK: 7, MONTH: 30 };
+
+/** The option-implied range of the first expiry at or past the horizon (else the farthest), widened 1.5× about its middle. */
+function impliedBand(ctx: AdvisorContext, index: IndexId, horizon: AdvisorHorizon): { low: number; high: number; expiry: string } | null {
+  const list = (ctx.impliedRanges?.[index] ?? []).filter((r) => fin(r.low) && fin(r.high) && r.high > r.low).sort((a, b) => a.days - b.days);
+  const r = list.find((x) => x.days >= HORIZON_DAYS[horizon]) ?? list.at(-1);
+  if (!r) return null;
+  const mid = (r.low + r.high) / 2;
+  const half = ((r.high - r.low) / 2) * IMPLIED_RANGE_WIDEN;
+  return { low: mid - half, high: mid + half, expiry: r.expiry };
+}
+
+const spotOf = (ctx: AdvisorContext, index: IndexId) => (index === "NIFTY" ? ctx.market.nifty : ctx.market.sensex);
+
+/** The model's range, checked: dropped without an index level or when an end is far from it, else clamped to the implied band. */
+function checkedRange(o: { index: IndexId; horizon: AdvisorHorizon }, lo: number | null, hi: number | null, ctx: AdvisorContext, notes: string[]): [number | null, number | null] {
+  if (lo == null && hi == null) return [null, null];
+  const what = `outlook ${o.index} ${o.horizon}: range ${lo ?? "?"}–${hi ?? "?"}`;
+  const spot = spotOf(ctx, o.index);
+  if (!fin(spot) || spot <= 0) {
+    notes.push(`${what} dropped (no index level to check it against)`);
+    return [null, null];
+  }
+  const maxGap = MAX_RANGE_FRAC[o.horizon] * spot;
+  if ([lo, hi].some((v) => v != null && Math.abs(v - spot) > maxGap)) {
+    notes.push(`${what} dropped (an end is more than ${Math.round(MAX_RANGE_FRAC[o.horizon] * 100)}% from the index at ${spot})`);
+    return [null, null];
+  }
+  const band = impliedBand(ctx, o.index, o.horizon);
+  if (!band) return [lo, hi];
+  const clamp = (v: number | null) => (v == null ? null : v < band.low ? Math.round(band.low) : v > band.high ? Math.round(band.high) : v);
+  const [nlo, nhi] = [clamp(lo), clamp(hi)];
+  if (nlo != null && nhi != null && nlo >= nhi) {
+    notes.push(`${what} dropped (outside the ${band.expiry} option-implied range, widened ${IMPLIED_RANGE_WIDEN}×)`);
+    return [null, null];
+  }
+  if (nlo !== lo || nhi !== hi) notes.push(`${what} clamped to ${nlo ?? "?"}–${nhi ?? "?"} (the ${band.expiry} option-implied range, widened ${IMPLIED_RANGE_WIDEN}×)`);
+  return [nlo, nhi];
+}
+
+function outlookOf(advice: AdviceOut, ctx: AdvisorContext, notes: string[]): AdvisorOutlook[] {
   const seen = new Set<string>();
   const out: AdvisorOutlook[] = [];
   for (const o of advice.outlook ?? []) {
@@ -223,6 +320,7 @@ function outlookOf(advice: AdviceOut): AdvisorOutlook[] {
     let lo = fin(o.rangeLow) && o.rangeLow > 0 ? o.rangeLow : null;
     let hi = fin(o.rangeHigh) && o.rangeHigh > 0 ? o.rangeHigh : null;
     if (lo != null && hi != null && lo > hi) [lo, hi] = [hi, lo];
+    [lo, hi] = checkedRange(o, lo, hi, ctx, notes);
     out.push({ index: o.index, horizon: o.horizon, lean: o.lean, confidence: o.confidence, rangeLow: lo, rangeHigh: hi, why: texts(o.why, 6) });
   }
   const rank = (o: AdvisorOutlook) => (o.index === "NIFTY" ? 0 : 3) + HORIZONS.indexOf(o.horizon);
@@ -244,10 +342,27 @@ function sourcesOf(advice: AdviceOut, research: ResearchResult, ctx: AdvisorCont
 function zeroHeroOf(advice: AdviceOut, ctx: AdvisorContext): AdvisorReport["zeroHero"] {
   const expiry = ctx.expiryToday.NIFTY ?? ctx.expiryToday.SENSEX ?? null;
   if (!expiry) return { applicable: false, expiry: null, summary: "No expiry today." };
-  const best = [...ctx.zeroHeroCandidates].filter((z) => z.delta != null).sort((a, b) => Math.abs(b.delta as number) - Math.abs(a.delta as number))[0];
-  const odds = best
-    ? ` Market odds: ${best.label} at ₹${best.price} (${rupees(best.costPerLot)} a lot) has delta ${Math.abs(best.delta as number).toFixed(2)}, so options like it expire worthless roughly ${best.impliedWorthlessPct}% of the time by the market's own pricing.`
-    : " No far out-of-the-money contract at ₹10 or less had a usable price.";
+  // The range across every listed ticket, not the most favourable one.
+  const priced = ctx.zeroHeroCandidates.filter((z) => z.delta != null && z.impliedWorthlessPct != null);
+  const span = (xs: number[], f: (n: number) => string) => {
+    const [lo, hi] = [Math.min(...xs), Math.max(...xs)];
+    return lo === hi ? f(lo) : `${f(lo)}–${f(hi)}`;
+  };
+  const odds =
+    priced.length > 0
+      ? ` Market odds: the ${priced.length} far out-of-the-money contract${priced.length === 1 ? "" : "s"} listed at ₹10 or less (${span(
+          priced.map((z) => z.costPerLot),
+          rupees,
+        )} a lot, |delta| ${span(
+          priced.map((z) => Math.abs(z.delta as number)),
+          (n) => n.toFixed(2),
+        )}) expire worthless roughly ${span(
+          priced.map((z) => z.impliedWorthlessPct as number),
+          String,
+        )}% of the time by the market's own pricing. On real prices, even NIFTY weeklies just 2 strikes out of the money expired worthless 62% of the time when held to expiry (research §10); these are further out.`
+      : ctx.zeroHeroCandidates.length > 0
+        ? " The far out-of-the-money contracts at ₹10 or less had no delta, so the market's own odds are not known; most such options expire worthless."
+        : " No far out-of-the-money contract at ₹10 or less had a usable price.";
   const summary = text(advice.zeroHero?.summary, 800) || "Expiry-day lottery tickets: most expire worthless.";
   return { applicable: true, expiry, summary: `${summary}${odds}` };
 }
@@ -281,7 +396,7 @@ export function buildReport(i: BuildReportInput): BuildReportResult {
     const key = `${raw.candidateId}|${raw.horizon}`;
     if (seen.has(key)) continue;
     seen.add(key);
-    const check = validateIdea(raw, byId.get(raw.candidateId), { id: `${i.id}-${ideas.length + 1}`, nowMs: i.nowMs, capital: i.capital });
+    const check = validateIdea(raw, byId.get(raw.candidateId), { id: `${i.id}-${ideas.length + 1}`, nowMs: i.nowMs, capital: i.capital, peers: context.candidates });
     if (!check.ok) {
       notes.push(`dropped: ${check.reason}`);
       continue;
@@ -292,6 +407,7 @@ export function buildReport(i: BuildReportInput): BuildReportResult {
 
   let action = advice.today?.action ?? "WAIT";
   let summary = text(advice.today?.summary, 1200) || "No summary.";
+  let headline = text(advice.headline, 300) || "No headline.";
   let ideaId: string | null = null;
   if (action === "BUY") {
     const wanted = advice.today?.candidateId ?? null;
@@ -301,6 +417,10 @@ export function buildReport(i: BuildReportInput): BuildReportResult {
     else {
       action = "WAIT";
       summary = `${summary} (Changed to WAIT: ${wanted ? "the suggested contract did not pass the engine's live-price checks" : "no contract was named"}.)`;
+      // The model's headline recommends the rejected trade; the answer-first line must match the WAIT.
+      headline = wanted
+        ? "WAIT: the suggested trade did not pass the engine's live-price checks, so there is no trade today."
+        : "WAIT: the brief named no contract to buy, so there is no trade today.";
       notes.push(`today: BUY changed to WAIT (${wanted ? `idea ${wanted} not valid` : "no idea named"})`);
     }
   }
@@ -312,9 +432,9 @@ export function buildReport(i: BuildReportInput): BuildReportResult {
     durationMs: Math.max(0, Math.round(i.durationMs)),
     costUsd: costUsd(i.usage),
     market: context.market,
-    headline: text(advice.headline, 300) || "No headline.",
+    headline,
     today: { action, summary, ideaId },
-    outlook: outlookOf(advice),
+    outlook: outlookOf(advice, context, notes),
     factors: factorsOf(advice, i.research),
     ideas,
     zeroHero: zeroHeroOf(advice, context),

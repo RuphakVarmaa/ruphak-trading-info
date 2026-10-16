@@ -1,6 +1,7 @@
 /**
  * The advice call: Claude (claude-opus-5-5, effort "high") reads the engine's context JSON and the research
  * notes and answers in a fixed structure (Zod schema → structured output, with server-side refusal fallbacks).
+ * The call streams (a long answer at effort high can take minutes) and the SDK parses the finished message.
  * Ideas name a candidate id only; src/engine/advisor/validate.ts maps each id to the real listed contract,
  * re-prices it and drops what does not hold up.
  */
@@ -11,10 +12,18 @@ import { ALSO_KNOW_TOPICS, HONESTY_LINE } from "./knowledge";
 import type { ResearchResult } from "./research";
 import { usageOf } from "./research";
 import type { AdvisorUsage } from "./types";
+import { MAX_TARGET_MULT } from "./validate";
 
 export const ADVICE_MAX_TOKENS = 32_000;
-/** Long enough for effort "high" on a large context; it runs in a Durable Object alarm. */
+/**
+ * How long the stream may take to open (the SDK's timeout covers the request until the response headers
+ * arrive; a refusal fallback before any output adds to it). The whole call is bounded by the Durable Object's
+ * deadline through the abort signal.
+ */
 export const ADVICE_TIMEOUT_MS = 240_000;
+/** The beta header `messages.parse()` sends for structured outputs; `messages.stream()` does not add it. */
+export const STRUCTURED_OUTPUTS_BETA = "structured-outputs-2025-12-15";
+export const FALLBACK_BETA = "server-side-fallback-2026-07-01";
 
 const Horizon = z.enum(["TODAY", "WEEK", "MONTH"]);
 const Confidence = z.enum(["LOW", "MEDIUM", "HIGH"]);
@@ -83,7 +92,7 @@ export const ADVICE_SYSTEM = [
   "Trade ideas:",
   "- Pick ideas ONLY by candidate id from `candidates`. Never invent a contract, a strike or an expiry. zeroHero candidates are never ideas.",
   "- For each idea give the buy zone (entryLow–entryHigh), stop and target as option premium prices in rupees, the exit-by time (IST), why, and what would prove it wrong (wrongIf).",
-  "- Keep the buy zone near the live ask, the stop 10–60% below the entry, and the target at least 1.2× the risk. Prefer contracts that fit the capital (fitsCapital).",
+  `- Keep the buy zone near the live ask, the stop 10–60% below the entry, and the target at least 1.2× the risk and at most ${MAX_TARGET_MULT.TODAY}× the entry for TODAY, ${MAX_TARGET_MULT.WEEK}× for WEEK and ${MAX_TARGET_MULT.MONTH}× for MONTH (the engine lowers a higher target). Prefer contracts that fit the capital (fitsCapital).`,
   "- At most 6 ideas across TODAY, WEEK and MONTH. Fewer is fine. Zero ideas is fine.",
   "- Say WAIT or AVOID when nothing is worth buying: that is a valid and often correct answer. Respect the plan's no-trade rules (todayPlan) and the measured findings.",
   "- The project's research found no proven edge for buying options. Say so once, plainly, in today's summary or in avoid; do not lecture. Never promise profit. |delta| is only a rough market estimate of the chance of finishing in the money; the implied range is what option prices imply, not a forecast.",
@@ -119,26 +128,68 @@ export interface AdviceOptions {
   model: string;
   contextJson: string;
   research: ResearchResult;
+  /** Aborts the stream (the Durable Object's deadline), so a run that is given up stops paying. */
+  signal?: AbortSignal;
 }
 
-/** The structured advice call; throws on transport errors (the pipeline reports them in plain words). */
+/** The parts of a finished (or parsed) message the advice reads. */
+interface AdviceMessage {
+  model: string;
+  stop_reason: string | null;
+  usage: unknown;
+  content: readonly { type: string; text?: string }[];
+  parsed_output?: unknown;
+}
+
+/**
+ * The brief from the message's text when the SDK could not parse it: after a refusal fallback mid-stream the
+ * JSON is split across the text blocks either side of the `fallback` block, so they are joined first.
+ */
+export function adviceFromText(content: AdviceMessage["content"]): AdviceOut | null {
+  const joined = content
+    .filter((b) => b.type === "text" && typeof b.text === "string")
+    .map((b) => b.text)
+    .join("");
+  if (!joined.trim()) return null;
+  try {
+    const r = AdviceSchema.safeParse(JSON.parse(joined));
+    return r.success ? r.data : null;
+  } catch {
+    return null;
+  }
+}
+
+const isParseError = (err: unknown) => /Failed to parse structured output/.test(String((err as { message?: unknown })?.message ?? err));
+
+/** The structured advice call, streamed; throws on transport errors and aborts (the pipeline reports them in plain words). */
 export async function runAdvice(client: Anthropic, opts: AdviceOptions): Promise<AdviceResult> {
   const fallbacks = FALLBACK_MODELS.has(opts.model);
-  const resp = await client.beta.messages.parse(
+  const stream = client.beta.messages.stream(
     {
       model: opts.model,
       max_tokens: ADVICE_MAX_TOKENS,
       system: [{ type: "text", text: ADVICE_SYSTEM, cache_control: { type: "ephemeral" } }],
       messages: [{ role: "user", content: adviceUserMessage(opts.contextJson, opts.research) }],
       output_config: { format: betaZodOutputFormat(AdviceSchema), effort: "high" },
-      ...(fallbacks ? { betas: ["server-side-fallback-2026-07-01"], fallbacks: "default" as const } : {}),
+      betas: [...(fallbacks ? [FALLBACK_BETA] : []), STRUCTURED_OUTPUTS_BETA],
+      ...(fallbacks ? { fallbacks: "default" as const } : {}),
     },
-    { timeout: ADVICE_TIMEOUT_MS },
+    { timeout: ADVICE_TIMEOUT_MS, ...(opts.signal ? { signal: opts.signal } : {}) },
   );
-  const usage = usageOf(resp.usage as unknown as Anthropic.Usage);
+  let resp: AdviceMessage;
+  try {
+    resp = (await stream.finalMessage()) as unknown as AdviceMessage;
+  } catch (err) {
+    // The SDK parses the JSON as the stream ends and throws when it does not parse (a cut-off or refused
+    // answer, or text split by a mid-stream fallback). The message did arrive: judge it from its stop reason.
+    const snap = stream.currentMessage as unknown as AdviceMessage | undefined;
+    if (!isParseError(err) || !snap || snap.stop_reason == null) throw err;
+    resp = { ...snap, parsed_output: undefined };
+  }
+  const usage = usageOf(resp.usage as Anthropic.Usage);
   const stopReason = resp.stop_reason ?? null;
   if (stopReason === "refusal") return { parsed: null, usage, model: resp.model, stopReason, error: "The model declined to write the brief." };
   if (stopReason === "max_tokens") return { parsed: null, usage, model: resp.model, stopReason, error: "The brief was cut off (too long)." };
-  const parsed = (resp.parsed_output as AdviceOut | null) ?? null;
+  const parsed = (resp.parsed_output as AdviceOut | null | undefined) ?? adviceFromText(resp.content);
   return { parsed, usage, model: resp.model, stopReason, error: parsed ? null : "The brief did not match the expected structure." };
 }

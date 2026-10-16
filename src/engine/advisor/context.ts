@@ -26,7 +26,7 @@ import { SESSION, istDate, istIso, istMinutes, istParts } from "../clock";
 import { FLOW_STATS } from "../flow/flowStats";
 import { optionTradingSymbol } from "../instruments/syntheticInstruments";
 import { RESEARCH_FINDINGS } from "./knowledge";
-import type { AdvisorCalendar, AdvisorCandidate, AdvisorContext, AdvisorInputs, CandidateExpiryKind, ZeroHeroCandidate } from "./types";
+import type { AdvisorCalendar, AdvisorCandidate, AdvisorContext, AdvisorImpliedRange, AdvisorInputs, CandidateExpiryKind, ZeroHeroCandidate } from "./types";
 
 export const ADVISOR_INDICES: readonly IndexId[] = ["NIFTY", "SENSEX"];
 /** Calendar days of expiries the outlook reads. */
@@ -480,6 +480,7 @@ export function buildAdvisorContext(inputs: AdvisorInputs, calendar: AdvisorCale
   const candidates: AdvisorCandidate[] = [];
   const zeroHero: ZeroHeroCandidate[] = [];
   const expiryToday: Partial<Record<IndexId, string>> = {};
+  const impliedRanges: Partial<Record<IndexId, AdvisorImpliedRange[]>> = {};
   const perIndex: Record<string, unknown> = {};
   const gaps = [...inputs.errors];
 
@@ -503,6 +504,7 @@ export function buildAdvisorContext(inputs: AdvisorInputs, calendar: AdvisorCale
       horizonDays: OUTLOOK_DAYS,
       error: input.listed.length === 0 ? "No expiry list (the option chain could not be read)." : null,
     });
+    impliedRanges[index] = outlook.expiries.flatMap((e) => (e.range ? [{ expiry: e.expiry, days: e.days, low: e.range.low, high: e.range.high }] : []));
     const expiries = outlook.expiries.map((e) => {
       const totals = chainOiTotals(chains.get(e.expiry));
       return {
@@ -634,6 +636,7 @@ export function buildAdvisorContext(inputs: AdvisorInputs, calendar: AdvisorCale
   return {
     promptJson: JSON.stringify(doc),
     candidates,
+    impliedRanges,
     zeroHeroCandidates: zeroHero,
     market: { nifty: nifty?.price ?? null, sensex: sensex?.price ?? null, vix: vixPrice, phase },
     expiryToday,

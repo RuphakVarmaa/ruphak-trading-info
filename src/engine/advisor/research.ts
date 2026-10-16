@@ -4,7 +4,7 @@
  * cash flows, FII index-futures positioning, GIFT Nifty and global cues, the next two weeks' big events, and
  * current uncertainty for Indian markets. It returns plain notes with a source URL for every number, the URLs
  * the search actually returned, and token usage. A failure is not fatal: the advice runs without it and the
- * FII/DII factor reads "no data".
+ * FII/DII and global-cues factors read "no data".
  */
 import type Anthropic from "@anthropic-ai/sdk";
 import { istIso } from "../clock";
@@ -75,6 +75,9 @@ function allowedHost(url: string): boolean {
   }
 }
 
+/** A URL as the sources list keys it (no #fragment); null when it is not http(s) on an allowed domain. */
+const sourceKey = (url: unknown): string | null => (httpUrl(url) && allowedHost(url) ? url.replace(/#.*$/, "") : null);
+
 /**
  * The source URLs in a response: every web_search_result inside web_search_tool_result blocks, plus the URLs
  * text blocks cite (web_search_result_location). De-duplicated, http(s) only, on the allowed domains.
@@ -82,8 +85,8 @@ function allowedHost(url: string): boolean {
 export function extractSources(content: readonly Anthropic.ContentBlock[] | readonly unknown[]): ResearchSource[] {
   const out = new Map<string, ResearchSource>();
   const add = (url: unknown, title: unknown) => {
-    if (!httpUrl(url) || !allowedHost(url)) return;
-    const key = url.replace(/#.*$/, "");
+    const key = sourceKey(url);
+    if (key == null) return;
     if (!out.has(key)) out.set(key, { url: key, title: typeof title === "string" && title.trim() ? title.trim().slice(0, 200) : new URL(key).hostname });
   };
   for (const raw of content) {
@@ -95,6 +98,24 @@ export function extractSources(content: readonly Anthropic.ContentBlock[] | read
     }
   }
   return [...out.values()];
+}
+
+/**
+ * One response's notes: its text blocks joined as they came (web search splits an answer into small blocks at
+ * citation boundaries, so they are not trimmed or put on separate lines), each block followed by the URLs it
+ * cites in brackets, so the advice can tie a number to its source.
+ */
+export function responseNotes(content: readonly Anthropic.ContentBlock[] | readonly unknown[]): string {
+  let out = "";
+  for (const raw of content) {
+    const b = raw as { type?: string; text?: unknown; citations?: unknown };
+    if (b?.type !== "text" || typeof b.text !== "string") continue;
+    const cited = Array.isArray(b.citations)
+      ? [...new Set((b.citations as { type?: string; url?: unknown }[]).filter((c) => c?.type === "web_search_result_location").map((c) => sourceKey(c.url)).filter((u): u is string => u != null))]
+      : [];
+    out += cited.length ? `${b.text} [${cited.join(", ")}]` : b.text;
+  }
+  return out;
 }
 
 export function usageOf(u: Anthropic.Usage | null | undefined): AdvisorUsage {
@@ -119,6 +140,8 @@ export interface ResearchOptions {
   model: string;
   nowMs: number;
   maxContinuations?: number;
+  /** Aborts the call (the Durable Object's deadline). */
+  signal?: AbortSignal;
 }
 
 /** Runs the research call, continuing a paused turn up to 3 times; never throws. */
@@ -132,18 +155,22 @@ export async function runResearch(client: Anthropic, opts: ResearchOptions): Pro
   const maxContinuations = opts.maxContinuations ?? RESEARCH_MAX_CONTINUATIONS;
   try {
     for (let turn = 0; turn <= maxContinuations; turn++) {
-      const resp = await client.messages.create({
-        model: opts.model,
-        max_tokens: RESEARCH_MAX_TOKENS,
-        system: [{ type: "text", text: RESEARCH_SYSTEM, cache_control: { type: "ephemeral" } }],
-        messages,
-        tools: [researchTool()],
-        output_config: { effort: "medium" },
-      });
+      const resp = await client.messages.create(
+        {
+          model: opts.model,
+          max_tokens: RESEARCH_MAX_TOKENS,
+          system: [{ type: "text", text: RESEARCH_SYSTEM, cache_control: { type: "ephemeral" } }],
+          messages,
+          tools: [researchTool()],
+          output_config: { effort: "medium" },
+        },
+        opts.signal ? { signal: opts.signal } : undefined,
+      );
       usage = addUsage(usage, usageOf(resp.usage));
       stopReason = resp.stop_reason ?? null;
       for (const s of extractSources(resp.content)) if (!sources.has(s.url)) sources.set(s.url, s);
-      for (const b of resp.content) if (b.type === "text" && b.text.trim()) texts.push(b.text.trim());
+      const text = responseNotes(resp.content);
+      if (text.trim()) texts.push(text);
       if (resp.stop_reason !== "pause_turn") break;
       // Resume the paused turn: send the assistant content back as it came (no extra user message; the API
       // joins consecutive assistant messages into one turn).
@@ -155,6 +182,11 @@ export async function runResearch(client: Anthropic, opts: ResearchOptions): Pro
   if (stopReason === "refusal") return { ok: false, notes: "", sources: [...sources.values()], usage, error: "Web research was declined by the model.", stopReason };
   const notes = texts.join("\n").trim();
   if (!notes) return { ok: false, notes: "", sources: [...sources.values()], usage, error: "Web research returned no notes.", stopReason };
-  const paused = stopReason === "pause_turn" ? "\n(Research stopped early after 3 continuations; some items may be missing.)" : "";
-  return { ok: true, notes: `${notes}${paused}`, sources: [...sources.values()], usage, error: null, stopReason };
+  const cut =
+    stopReason === "pause_turn"
+      ? `\n(Research stopped early after ${maxContinuations} continuations; some items may be missing.)`
+      : stopReason === "max_tokens"
+        ? "\n(Research was cut off; some items may be missing.)"
+        : "";
+  return { ok: true, notes: `${notes}${cut}`, sources: [...sources.values()], usage, error: null, stopReason };
 }

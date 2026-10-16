@@ -6,7 +6,7 @@
 
 /** The project's main measured findings, one line each, with the section they come from. */
 export const RESEARCH_FINDINGS: readonly string[] = [
-  "3,303 rule variants were tested on real NIFTY and SENSEX option prices (2019–2026); none gives an option buyer a proven edge after costs (§0, §15).",
+  "3,303 rule variants tested (656 on real 1-minute NIFTY/SENSEX option prices, 2021–2026); none passes the bar, buying or selling (§0, §15).",
   "SEBI: 87.7% of individual F&O traders lost money in FY26; 97% of individuals are mostly option buyers (§1, §13).",
   "Buying in the first 15 minutes is the most expensive time: an hour's hold bought at 09:15 cost ₹2,176 a NIFTY lot vs ₹818 bought at 09:30 (§0).",
   "Expiry day 14:00–15:00 is the worst hour to hold a bought option: about 15% of the premium is lost (§0).",
@@ -24,7 +24,7 @@ export const RESEARCH_FINDINGS: readonly string[] = [
 
 /** The standing caution printed under every brief. */
 export const HONESTY_LINE =
-  "This project's research tested 3,303 rule variants on real NIFTY and SENSEX option prices and found no proven edge for buying options; about 9 in 10 retail F&O traders lost money in FY26. Treat every idea here as decision support, not a promise: size small, use the stop, and never trade money you cannot afford to lose.";
+  "This project's research tested 3,303 trading-rule variants (656 of them on real 1-minute NIFTY and SENSEX option prices, 2021–2026) and none passed; it found no proven edge for buying options. About 9 in 10 retail F&O traders lost money in FY26. Treat every idea here as decision support, not a promise: size small, use the stop, and never trade money you cannot afford to lose.";
 
 /** Reputable finance-news domains the web research may read (exchanges' own sites are left out on purpose). */
 export const RESEARCH_DOMAINS: readonly string[] = [

@@ -16,15 +16,19 @@ import {
   chainHref,
   chanceWords,
   CONFIDENCE_WORDS,
+  engineNotesWords,
   exitByWords,
   groupIdeas,
   HORIZON_WORDS,
   HORIZONS,
   ideaLine,
+  itmWords,
   LEAN_META,
+  oldBriefDay,
   plainContract,
   premium,
   PREMIUM_WORDS,
+  profitSide,
   rangeWords,
   READING_META,
   rupees,
@@ -101,6 +105,9 @@ export function TodayCard({ report, nowMs }: { report: AdvisorReport; nowMs: num
   const { action, summary, ideaId } = report.today;
   const meta = ACTION_META[action];
   const idea = action === "BUY" && ideaId ? (report.ideas.find((i) => i.id === ideaId) ?? null) : null;
+  // A brief from an earlier IST day must not read as today's call: muted, labelled with its day, no copy button.
+  const oldDay = oldBriefDay(report.createdAt, nowMs);
+  const color = oldDay ? C.muted : meta.color;
   const m = report.market;
   const strip = [
     m.nifty != null ? `NIFTY ${fmtNum(m.nifty, 0)}` : null,
@@ -109,32 +116,37 @@ export function TodayCard({ report, nowMs }: { report: AdvisorReport; nowMs: num
     m.phase ? `Market ${m.phase.toLowerCase().replace(/_/g, " ")}` : null,
   ].filter(Boolean);
   return (
-    <Panel style={{ border: `2px solid ${alpha(meta.color, 0.45)}`, padding: "22px 20px", display: "grid", gap: 16 }}>
+    <Panel style={{ border: `2px solid ${alpha(color, 0.45)}`, padding: "22px 20px", display: "grid", gap: 16 }}>
       <div style={{ display: "flex", flexWrap: "wrap", alignItems: "center", gap: "8px 14px" }}>
-        <span style={{ ...microLabel, fontSize: 13, color: C.muted }}>Today</span>
+        <span style={{ ...microLabel, fontSize: 13, color: C.muted }}>{oldDay ? `Call for ${oldDay}` : "Today"}</span>
         <span
           style={{
             fontSize: "clamp(38px, 9vw, 56px)",
             fontWeight: 800,
             letterSpacing: "0.02em",
             lineHeight: 1,
-            color: meta.color,
+            color,
           }}
         >
           {action}
         </span>
-        <span style={{ ...small, fontSize: 14.5, color: C.muted, flex: "1 1 200px" }}>{meta.note}</span>
+        <span style={{ ...small, fontSize: 14.5, color: C.muted, flex: "1 1 200px" }}>{oldDay ? "What that day's brief said; it is not a call for today." : meta.note}</span>
       </div>
+      {oldDay && (
+        <div role="status" style={{ background: alpha(C.orange, 0.07), border: `1px solid ${alpha(C.orange, 0.35)}`, borderRadius: 10, padding: "10px 12px", fontSize: 15.5, lineHeight: 1.5, color: C.textSoft }}>
+          <b>This brief is from {oldDay}.</b> Its call and prices are out of date: press Analyze for today&apos;s.
+        </div>
+      )}
       <h2 style={{ margin: 0, fontFamily: SERIF, fontSize: "clamp(23px, 3.4vw, 30px)", fontWeight: 500, lineHeight: 1.25, color: C.textStrong, overflowWrap: "anywhere" }}>{report.headline}</h2>
       <p style={{ margin: 0, ...body, fontSize: 17 }}>{summary}</p>
       {idea && (
-        <div style={{ display: "grid", gap: 12, background: alpha(C.green, 0.06), border: `1px solid ${alpha(C.green, 0.3)}`, borderRadius: 12, padding: "14px 14px" }}>
-          <div style={{ ...microLabel, color: C.muted }}>The order, in one line</div>
-          <div className="tnum" style={{ fontSize: 17, fontWeight: 650, lineHeight: 1.5, color: C.textStrong, overflowWrap: "anywhere" }}>
+        <div style={{ display: "grid", gap: 12, background: alpha(oldDay ? C.muted : C.green, 0.06), border: `1px solid ${alpha(oldDay ? C.muted : C.green, 0.3)}`, borderRadius: 12, padding: "14px 14px" }}>
+          <div style={{ ...microLabel, color: C.muted }}>{oldDay ? `The order it gave on ${oldDay} (out of date)` : "The order, in one line"}</div>
+          <div className="tnum" style={{ fontSize: 17, fontWeight: 650, lineHeight: 1.5, color: oldDay ? C.muted : C.textStrong, overflowWrap: "anywhere" }}>
             {ideaLine(idea)}
           </div>
           <div style={{ ...small }}>{plainContract(idea.contract, nowMs ?? Date.parse(report.createdAt))}. Details in the idea card below.</div>
-          <CopyAction text={ideaLine(idea)} label="Copy order" style={{ justifySelf: "start" }} />
+          {!oldDay && <CopyAction text={ideaLine(idea)} label="Copy order" style={{ justifySelf: "start" }} />}
         </div>
       )}
       {strip.length > 0 && <div style={{ ...small, borderTop: `1px solid ${C.borderSoft}`, paddingTop: 12 }}>{strip.join(" · ")} · when written</div>}
@@ -215,15 +227,31 @@ export function OutlookSection({ report }: { report: AdvisorReport }) {
 // 4. Trade ideas
 // ---------------------------------------------------------------------------
 
-export function IdeaCard({ idea, isPick, nowMs, fallbackNow }: { idea: AdvisorIdea; isPick: boolean; nowMs: number | null; fallbackNow: number }) {
+export function IdeaCard({
+  idea,
+  isPick,
+  nowMs,
+  fallbackNow,
+  oldDay = null,
+}: {
+  idea: AdvisorIdea;
+  isPick: boolean;
+  nowMs: number | null;
+  fallbackNow: number;
+  /** The day of a brief written on an earlier IST day (its pick was that day's, not today's). */
+  oldDay?: string | null;
+}) {
   const c = idea.contract;
   const lots = Math.max(1, idea.lots);
   const chance = chanceWords(idea.probItm);
+  const profitChance = chanceWords(idea.probAboveBreakeven ?? null);
+  const side = profitSide(c.optionType);
+  const adjusted = engineNotesWords(idea.engineNotes);
   return (
-    <Panel id={`idea-${idea.id}`} style={{ padding: "18px 16px", display: "grid", gap: 14, border: isPick ? `2px solid ${alpha(C.green, 0.45)}` : undefined }}>
+    <Panel id={`idea-${idea.id}`} style={{ padding: "18px 16px", display: "grid", gap: 14, border: isPick ? `2px solid ${alpha(oldDay ? C.muted : C.green, 0.45)}` : undefined }}>
       <div style={{ display: "grid", gap: 8 }}>
         <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
-          {isPick && <Pill color={C.green} solid>Today&apos;s pick</Pill>}
+          {isPick && (oldDay ? <Pill color={C.muted}>Pick for {oldDay}</Pill> : <Pill color={C.green} solid>Today&apos;s pick</Pill>)}
           <Pill color={c.optionType === "CE" ? C.green : C.red}>{c.optionType === "CE" ? "Call: gains if the index rises" : "Put: gains if the index falls"}</Pill>
           <Pill color={idea.confidence === "HIGH" ? C.green : idea.confidence === "MEDIUM" ? C.blue : C.muted}>{CONFIDENCE_WORDS[idea.confidence]}</Pill>
         </div>
@@ -243,25 +271,44 @@ export function IdeaCard({ idea, isPick, nowMs, fallbackNow }: { idea: AdvisorId
         </div>
         <div style={{ display: "flex", flexWrap: "wrap", gap: 8 }}>
           <Fact label="Cost" value={rupees(idea.costPerLot * lots)} note={idea.costPerLot * lots > CAPITAL ? "more than ₹10,000" : undefined} />
-          <Fact label="Most you can lose (at the stop)" value={rupees(idea.maxLossPerLot * lots)} note="incl. charges; gaps can make it worse" color={C.red} />
+          <Fact
+            label="Most you can lose (at the stop)"
+            value={rupees(idea.maxLossPerLot * lots)}
+            note={`incl. charges. Worst case, if the stop does not fill or the price gaps past it: all ${rupees(idea.costPerLot * lots)}`}
+            color={C.red}
+          />
           <Fact label="Gain at the target" value={rupees(idea.rewardPerLot * lots)} note="after charges" color={C.green} />
         </div>
       </div>
-      <div style={{ ...body, fontSize: 15.5 }}>
-        {chance ? (
-          <>
-            Chance it ends in the money at expiry <b>{chance}</b>: a rough market estimate from delta (how much the option moves for a 1-point move in the index).
+      <div style={{ ...body, fontSize: 15.5, display: "grid", gap: 6 }}>
+        <div>
+          {chance ? (
+            <>
+              Chance it ends in the money at expiry ({itmWords(c)}) <b>{chance}</b>: a rough market estimate from delta (how much the option moves for a 1-point move in the index).
+              {idea.breakevenAtExpiry != null && !profitChance && (
+                <>
+                  {" "}
+                  To end in profit {c.index} must be {side} <b className="tnum">{fmtNum(idea.breakevenAtExpiry, 0)}</b> at expiry (the break-even), so the chance of profit is lower.
+                </>
+              )}
+            </>
+          ) : (
+            <>Chance it ends in the money at expiry ({itmWords(c)}): no data.</>
+          )}
+        </div>
+        {profitChance && (
+          <div>
+            Chance it ends {side} break-even (in profit) at expiry
             {idea.breakevenAtExpiry != null && (
               <>
                 {" "}
-                To end in profit {c.index} must be {c.optionType === "CE" ? "above" : "below"} <b className="tnum">{fmtNum(idea.breakevenAtExpiry, 0)}</b> at expiry (the break-even), so the chance of profit is lower.
+                ({c.index} {side} <span className="tnum">{fmtNum(idea.breakevenAtExpiry, 0)}</span>, the strike {c.optionType === "CE" ? "plus" : "minus"} what you paid)
               </>
-            )}
-          </>
-        ) : (
-          "Chance it ends in the money: no data."
+            )}{" "}
+            <b>{profitChance}</b>: the same rough estimate, read at the break-even.
+          </div>
         )}
-        {idea.iv != null && <span style={{ color: C.muted }}> IV {idea.iv.toFixed(1)}% (implied volatility: the yearly swing this option&apos;s price assumes).</span>}
+        {idea.iv != null && <div style={{ color: C.muted }}>IV {idea.iv.toFixed(1)}% (implied volatility: the yearly swing this option&apos;s price assumes).</div>}
       </div>
       {idea.why.length > 0 && (
         <div>
@@ -272,6 +319,11 @@ export function IdeaCard({ idea, isPick, nowMs, fallbackNow }: { idea: AdvisorId
       <div style={{ background: alpha(C.red, 0.05), border: `1px solid ${alpha(C.red, 0.25)}`, borderRadius: 10, padding: "10px 12px", ...body, fontSize: 15.5 }}>
         <b style={{ color: C.red }}>Wrong if:</b> {idea.wrongIf}
       </div>
+      {adjusted && (
+        <div style={{ ...small, background: alpha(C.blue, 0.05), border: `1px solid ${alpha(C.blue, 0.22)}`, borderRadius: 10, padding: "8px 12px", overflowWrap: "anywhere" }}>
+          <b style={{ color: C.textSoft }}>Engine adjusted:</b> {adjusted}. The prices above are the adjusted ones; the reasons may still quote the originals.
+        </div>
+      )}
       <a href={chainHref(c)} className="link-quiet" style={{ color: C.gold, fontWeight: 600, fontSize: 15, textDecoration: "none", justifySelf: "start" }}>
         See it in the option chain →
       </a>
@@ -282,6 +334,7 @@ export function IdeaCard({ idea, isPick, nowMs, fallbackNow }: { idea: AdvisorId
 export function IdeasSection({ report, nowMs }: { report: AdvisorReport; nowMs: number | null }) {
   const groups = groupIdeas(report.ideas);
   const fallbackNow = Date.parse(report.createdAt);
+  const oldDay = oldBriefDay(report.createdAt, nowMs);
   if (!groups.length)
     return (
       <Panel style={{ padding: "18px 18px", ...body }}>
@@ -292,9 +345,9 @@ export function IdeasSection({ report, nowMs }: { report: AdvisorReport; nowMs: 
     <div style={{ display: "grid", gap: 22 }}>
       {groups.map((g) => (
         <div key={g.horizon} style={{ display: "grid", gap: 12 }}>
-          <h3 style={h3}>{HORIZON_WORDS[g.horizon]}</h3>
+          <h3 style={h3}>{oldDay && g.horizon === "TODAY" ? `Day trades for ${oldDay} (that day only)` : HORIZON_WORDS[g.horizon]}</h3>
           {g.ideas.map((idea) => (
-            <IdeaCard key={idea.id} idea={idea} isPick={report.today.action === "BUY" && report.today.ideaId === idea.id} nowMs={nowMs} fallbackNow={fallbackNow} />
+            <IdeaCard key={idea.id} idea={idea} isPick={report.today.action === "BUY" && report.today.ideaId === idea.id} nowMs={nowMs} fallbackNow={fallbackNow} oldDay={oldDay} />
           ))}
         </div>
       ))}
@@ -355,6 +408,8 @@ export function PremiumCard({ premium: p }: { premium: AdvisorReport["premium"] 
 
 export function ZeroHeroCard({ zeroHero }: { zeroHero: AdvisorReport["zeroHero"] }) {
   if (!zeroHero.applicable) {
+    // An expiry is set but the advisor ruled zero-hero out (no cheap strike, too late …): its summary says why.
+    if (zeroHero.expiry) return <Panel style={{ padding: "14px 18px", ...body, overflowWrap: "anywhere" }}>{zeroHero.summary}</Panel>;
     const extra = zeroHero.summary.replace(/^no expiry today\.?\s*/i, "");
     return (
       <Panel style={{ padding: "14px 18px", ...body }}>

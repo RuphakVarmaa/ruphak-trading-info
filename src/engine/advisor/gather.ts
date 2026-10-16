@@ -1,11 +1,13 @@
 /**
  * Reads everything the advisor needs through the same calls EngineAdmin serves (AdvisorSources), with a
  * timeout per read. A failed read becomes null plus a plain line in `errors`; it never stops the brief.
+ * After the model answers, refreshCandidates re-reads the chains its ideas use, so they are checked against
+ * fresh prices rather than the ones read minutes earlier.
  */
 import { outlookExpiries } from "../../lib/options/outlook";
 import type { EventClusterView, IndexId, OptionChainView } from "../api-types";
-import { ADVISOR_INDICES, NEWS_HOURS, OUTLOOK_DAYS, candidateExpiries } from "./context";
-import type { AdvisorCalendar, AdvisorIndexInput, AdvisorInputs, AdvisorSources } from "./types";
+import { ADVISOR_INDICES, NEWS_HOURS, OUTLOOK_DAYS, candidateExpiries, chainCandidates } from "./context";
+import type { AdvisorCalendar, AdvisorCandidate, AdvisorIndexInput, AdvisorInputs, AdvisorSources } from "./types";
 
 export const READ_TIMEOUT_MS = 12_000;
 /** Chains read per index (the default one included): about 5 weeklies within 35 days plus a monthly. */
@@ -13,7 +15,7 @@ export const MAX_CHAINS_PER_INDEX = 7;
 
 const message = (err: unknown) => (err instanceof Error ? err.message : String(err)).replace(/\s+/g, " ").slice(0, 160);
 
-function withTimeout<T>(p: Promise<T>, ms: number, what: string): Promise<T> {
+export function withTimeout<T>(p: Promise<T>, ms: number, what: string): Promise<T> {
   let timer: ReturnType<typeof setTimeout> | undefined;
   const timeout = new Promise<never>((_, reject) => {
     timer = setTimeout(() => reject(new Error(`${what} did not answer within ${Math.round(ms / 1000)} s`)), ms);
@@ -95,4 +97,65 @@ export async function gatherAdvisorInputs(src: AdvisorSources, calendar: Advisor
     positions,
     errors,
   };
+}
+
+export interface RefreshResult {
+  /** The candidates, with those of each re-read expiry replaced by fresh ones (same ids). */
+  candidates: AdvisorCandidate[];
+  /** Plain lines for the log ("NIFTY 2026-10-20: checked against the 12:38 prices (…)"). */
+  notes: string[];
+  /** Per "INDEX|expiry" whose re-read failed: the line to put on that expiry's ideas. */
+  stale: Map<string, string>;
+}
+
+const expiryKey = (c: Pick<AdvisorCandidate, "index" | "expiry">) => `${c.index}|${c.expiry}`;
+
+/**
+ * Re-reads, one at a time (the Upstox budget is shared), the chain of every (index, expiry) the given
+ * candidate ids use, and rebuilds those candidates from it. Only contracts already on the list are replaced:
+ * one the fresh chain has no price for gets price 0 (the idea is then dropped for "no live price"). A failed
+ * re-read keeps the earlier prices and says so.
+ */
+export async function refreshCandidates(
+  src: Pick<AdvisorSources, "getOptionChain">,
+  candidates: readonly AdvisorCandidate[],
+  ids: readonly string[],
+  now: () => number,
+  timeoutMs = READ_TIMEOUT_MS,
+): Promise<RefreshResult> {
+  const byId = new Map(candidates.map((c) => [c.id, c]));
+  const wanted = new Map<string, AdvisorCandidate>();
+  for (const id of ids) {
+    const c = byId.get(id);
+    if (c && !wanted.has(expiryKey(c))) wanted.set(expiryKey(c), c);
+  }
+  const replaced = new Map<string, AdvisorCandidate>();
+  const notes: string[] = [];
+  const stale = new Map<string, string>();
+  for (const [key, rep] of wanted) {
+    const what = `option chain ${rep.index} ${rep.expiry}`;
+    let chain: OptionChainView | null = null;
+    let why: string | null = null;
+    try {
+      chain = await withTimeout(src.getOptionChain(rep.index, rep.expiry), timeoutMs, what);
+    } catch (err) {
+      why = message(err);
+    }
+    if (chain && chain.expiry !== rep.expiry) why = `the chain came back for ${chain.expiry}`;
+    else if (chain?.error) why = chain.error.replace(/\s+/g, " ").slice(0, 160);
+    // Every strike of the fresh chain: the index may have moved the ATM away from the idea's strike.
+    const fresh = chain && why == null ? chainCandidates(chain, rep.expiryKind, rep.monthly, now(), chain.rows.length) : [];
+    if (!chain || fresh.length === 0) {
+      const line = `checked against the ${rep.asOf.slice(11, 16)} prices (the re-read after the brief failed: ${why ?? "no prices"})`;
+      stale.set(key, line);
+      notes.push(`${rep.index} ${rep.expiry}: ${line}`);
+      continue;
+    }
+    const freshById = new Map(fresh.map((c) => [c.id, c]));
+    for (const c of candidates) {
+      if (expiryKey(c) !== key) continue;
+      replaced.set(c.id, freshById.get(c.id) ?? { ...c, bid: null, ask: null, ltp: null, price: 0, asOf: chain.fetchedAt });
+    }
+  }
+  return { candidates: candidates.map((c) => replaced.get(c.id) ?? c), notes, stale };
 }

@@ -4,7 +4,7 @@ import { HONESTY_LINE } from "./knowledge";
 import type { ResearchResult } from "./research";
 import type { AdvisorCandidate, AdvisorContext } from "./types";
 import { ZERO_USAGE } from "./types";
-import { buildReport, costUsd, exitByFor, parseIstDateTime, roundTripCharges, summarize, validateIdea, type IdeaInput } from "./validate";
+import { MAX_TARGET_MULT, buildReport, costUsd, deltaAtStrike, exitByFor, parseIstDateTime, roundTripCharges, summarize, validateIdea, type IdeaInput } from "./validate";
 
 const ist = (s: string) => Date.parse(`${s}+05:30`);
 const NOW = ist("2026-10-16T11:00:00");
@@ -76,6 +76,9 @@ describe("one idea against its real contract", () => {
     expect(x.lots).toBe(1); // ₹6,500 a lot: one fits ₹10,000.
     expect(x.exitBy).toBe("2026-10-16T14:30:00+05:30");
     expect(r.notes).toEqual([]);
+    expect(x.engineNotes).toEqual([]);
+    // No other strikes to read the odds at the break-even from.
+    expect(x.probAboveBreakeven).toBeNull();
   });
 
   it("drops a hallucinated contract id", () => {
@@ -124,11 +127,66 @@ describe("one idea against its real contract", () => {
     expect(cheap.idea.lots * cheap.idea.maxLossPerLot).toBeLessThanOrEqual(3000);
   });
 
-  it("checks against the last trade when no ask is quoted, and says so", () => {
+  it("checks against the last trade when no ask is quoted, and says so on the idea", () => {
     const r = validateIdea(idea(), cand({ ask: null, bid: null, price: 99.8, priceBasis: "ltp" }), opts);
     if (!r.ok) throw new Error(r.reason);
     expect(r.idea.entry.ask).toBe(99.8);
-    expect(r.notes.join(" ")).toMatch(/last traded price/);
+    expect(r.notes.join(" ")).toMatch(/last traded price ₹99\.8/);
+    expect(r.idea.engineNotes).toEqual(r.notes);
+  });
+
+  it("caps the target: at most 2× the entry today, 3× this week, 4× this month", () => {
+    expect(MAX_TARGET_MULT).toEqual({ TODAY: 2, WEEK: 3, MONTH: 4 });
+    // The review's probe: a target 50× the ask on a ₹38.75 put used to promise ₹1,23,128 a lot.
+    const put = cand({ id: "NIFTY-2026-10-19-22500-PE", expiry: "2026-10-19", strike: 22500, optionType: "PE", label: "NIFTY 19-OCT-2026 22500 PE", price: 38.75, ask: 38.75, delta: -0.3 });
+    const r = validateIdea(idea({ candidateId: put.id, entryLow: 38, entryHigh: 39.5, stop: 27, target: 38.75 * 50 }), put, opts);
+    if (!r.ok) throw new Error(r.reason);
+    expect(r.idea.target).toBe(77.5);
+    expect(r.idea.rewardPerLot).toBeLessThan(38.75 * 65);
+    expect(r.notes).toEqual(["target lowered to ₹77.5 (was ₹1937.5; at most 2× the entry for a TODAY idea)"]);
+    const week = validateIdea(idea({ horizon: "WEEK", target: 5000 }), cand(), opts);
+    const month = validateIdea(idea({ horizon: "MONTH", target: 5000 }), cand(), opts);
+    if (!week.ok || !month.ok) throw new Error("dropped");
+    expect([week.idea.target, month.idea.target]).toEqual([300, 400]);
+    // A target inside the cap is left alone.
+    const fine = validateIdea(idea({ target: 180 }), cand(), opts);
+    if (!fine.ok) throw new Error(fine.reason);
+    expect(fine.idea.target).toBe(180);
+  });
+
+  it("keeps every fix on the idea with the model's original value", () => {
+    const r = validateIdea(idea({ entryLow: 88, entryHigh: 120, stop: 96, target: 120 }), cand(), opts);
+    if (!r.ok) throw new Error(r.reason);
+    expect(r.idea.engineNotes).toEqual([
+      "buy zone clamped to ₹88–105 (was ₹88–120) around the live price ₹100",
+      "stop widened to ₹90 (was ₹96; at least 10% below the entry ₹100)",
+    ]);
+    const low = validateIdea(idea({ stop: 70, target: 120 }), cand(), opts);
+    if (!low.ok) throw new Error(low.reason);
+    expect(low.idea.engineNotes).toEqual(["target raised to ₹136 (was ₹120; at least 1.2× the risk)"]);
+    const wide = validateIdea(idea({ stop: 20 }), cand(), opts);
+    if (!wide.ok) throw new Error(wide.reason);
+    expect(wide.idea.engineNotes?.[0]).toBe("stop raised to ₹40 (was ₹20; at most 60% below the entry ₹100)");
+  });
+
+  it("reads the odds of ending past the break-even from |delta| at the break-even strike, apart from the odds of ending in the money", () => {
+    const peers = [
+      cand({ price: 75, ask: 75 }),
+      cand({ id: "NIFTY-2026-10-20-23250-CE", strike: 23250, delta: 0.46 }),
+      cand({ id: "NIFTY-2026-10-20-23300-CE", strike: 23300, delta: 0.38 }),
+      // Other types and expiries do not count.
+      cand({ id: "NIFTY-2026-10-20-23300-PE", strike: 23300, optionType: "PE", delta: -0.9 }),
+      cand({ id: "NIFTY-2026-10-27-23300-CE", expiry: "2026-10-27", strike: 23300, delta: 0.9 }),
+    ];
+    const r = validateIdea(idea({ entryLow: 73, entryHigh: 77, stop: 55, target: 120 }), peers[0], { ...opts, peers });
+    if (!r.ok) throw new Error(r.reason);
+    expect(r.idea.breakevenAtExpiry).toBe(23275);
+    expect(r.idea.probItm).toBe(0.52); // ends in the money
+    expect(r.idea.probAboveBreakeven).toBe(0.42); // ends in profit: halfway between 0.46 and 0.38
+    // Puts: |delta| below the strike; outside the listed strikes there is no estimate.
+    const puts = [cand({ id: "P1", strike: 23000, optionType: "PE", delta: -0.3 }), cand({ id: "P2", strike: 23050, optionType: "PE", delta: -0.36 })];
+    expect(deltaAtStrike(puts, { index: "NIFTY", expiry: "2026-10-20", optionType: "PE" }, 23010)).toBeCloseTo(0.312, 6);
+    expect(deltaAtStrike(puts, { index: "NIFTY", expiry: "2026-10-20", optionType: "PE" }, 22900)).toBeNull();
   });
 });
 
@@ -209,24 +267,34 @@ describe("the whole report", () => {
   });
 
   it("turns a BUY whose idea failed the checks into WAIT and says why", () => {
-    const { report } = build(advice({ today: { action: "BUY", summary: "Buy it.", candidateId: "NIFTY-2026-10-20-99999-CE" } }));
+    const { report } = build(advice({ headline: "Buy the NIFTY 99999 CE today: strong breakout expected.", today: { action: "BUY", summary: "Buy it.", candidateId: "NIFTY-2026-10-20-99999-CE" } }));
     expect(report.today.action).toBe("WAIT");
     expect(report.today.ideaId).toBeNull();
     expect(report.today.summary).toMatch(/Changed to WAIT/);
+    // The answer-first line no longer recommends the rejected trade.
+    expect(report.headline).toBe("WAIT: the suggested trade did not pass the engine's live-price checks, so there is no trade today.");
     const none = build(advice({ today: { action: "BUY", summary: "Buy.", candidateId: null } })).report;
     expect(none.today.action).toBe("WAIT");
+    expect(none.headline).toMatch(/^WAIT: the brief named no contract/);
     const wait = build(advice({ today: { action: "AVOID", summary: "Stay out.", candidateId: "NIFTY-2026-10-20-23200-CE" } })).report;
     expect(wait.today).toEqual({ action: "AVOID", summary: "Stay out.", ideaId: null });
+    expect(wait.headline).toBe("Wait for a cleaner setup; premiums are fair.");
+    expect(build(advice()).report.headline).toBe("Wait for a cleaner setup; premiums are fair.");
   });
 
-  it("orders factors, fills missing ones with no data, and forces FII/DII to no data when the research failed", () => {
-    const ok = build(advice()).report;
+  it("orders factors, fills missing ones with no data, and forces FII/DII and global cues to no data when the research failed", () => {
+    const withCues = advice({ factors: [...advice().factors, { key: "GLOBAL_CUES", label: "Global", reading: "SUPPORTS_UP", detail: "S&P 500 +1.2%.", source: "model" }] });
+    const ok = build(withCues).report;
     expect(ok.factors.map((f) => f.key)).toEqual(["FII_DII", "NEWS_UNCERTAINTY", "GLOBAL_CUES", "SHORT_COVERING", "OPTIONS_POSITIONING", "VOLATILITY_PREMIUM", "TREND", "EVENTS"]);
     expect(ok.factors[0].reading).toBe("SUPPORTS_DOWN");
     expect(ok.factors[1].reading).toBe("NO_DATA");
-    const failed = build(advice(), research(false)).report;
+    expect(ok.factors[2].reading).toBe("SUPPORTS_UP");
+    const failed = build(withCues, research(false)).report;
     expect(failed.factors[0]).toMatchObject({ key: "FII_DII", reading: "NO_DATA", source: "web research (failed)" });
     expect(failed.factors[0].detail).toMatch(/HTTP 529/);
+    // Without the research the engine has no feed for global markets: the model's figures would be from memory.
+    expect(failed.factors[2]).toMatchObject({ key: "GLOBAL_CUES", reading: "NO_DATA", source: "web research (failed)" });
+    expect(failed.factors[2].detail).not.toMatch(/1\.2%/);
   });
 
   it("keeps only sources that came from the research or the news, sorts the outlook and fixes swapped ranges", () => {
@@ -236,18 +304,50 @@ describe("the whole report", () => {
     expect(report.outlook[0]).toMatchObject({ lean: "UP", rangeLow: 23050, rangeHigh: 23300 });
   });
 
-  it("shows zero-hero only on an expiry day, with the market's own odds", () => {
-    expect(build(advice()).report.zeroHero).toEqual({ applicable: false, expiry: null, summary: "No expiry today." });
-    const c = ctx({
-      expiryToday: { NIFTY: "2026-10-16" },
-      zeroHeroCandidates: [
-        { id: "z1", index: "NIFTY", expiry: "2026-10-16", strike: 23500, optionType: "CE", label: "NIFTY 16-OCT-2026 23500 CE", lotSize: 65, price: 4, priceBasis: "ask", delta: 0.04, costPerLot: 260, distancePct: 1.4, impliedWorthlessPct: 96 },
+  it("checks outlook ranges against the index level and the option-implied range", () => {
+    const rows: AdviceOut["outlook"] = [
+      { index: "NIFTY", horizon: "TODAY", lean: "UP", confidence: "LOW", rangeLow: 22600, rangeHigh: 23300, why: [] },
+      { index: "NIFTY", horizon: "WEEK", lean: "UP", confidence: "LOW", rangeLow: 22000, rangeHigh: 24500, why: [] },
+      { index: "NIFTY", horizon: "MONTH", lean: "UP", confidence: "LOW", rangeLow: 1, rangeHigh: 999_999, why: [] },
+      { index: "SENSEX", horizon: "WEEK", lean: "SIDEWAYS", confidence: "LOW", rangeLow: 75000, rangeHigh: 77000, why: [] },
+    ];
+    const impliedRanges = {
+      NIFTY: [
+        { expiry: "2026-10-20", days: 4, low: 22900, high: 23500 },
+        { expiry: "2026-10-27", days: 11, low: 22600, high: 23800 },
       ],
-    });
-    const z = build(advice(), research(), c).report.zeroHero;
+    };
+    const { report, notes } = build(advice({ outlook: rows }), research(), ctx({ impliedRanges }));
+    const range = (i: string, h: string) => report.outlook.find((o) => o.index === i && o.horizon === h);
+    // TODAY uses the 20 Oct range (23,200 ± 300, widened 1.5× to ± 450): the low end is clamped.
+    expect(range("NIFTY", "TODAY")).toMatchObject({ rangeLow: 22750, rangeHigh: 23300 });
+    // WEEK uses the first expiry at least 7 days out (23,200 ± 600 → ± 900).
+    expect(range("NIFTY", "WEEK")).toMatchObject({ rangeLow: 22300, rangeHigh: 24100 });
+    // 1 to 9,99,999 is more than 15% from the index: dropped.
+    expect(range("NIFTY", "MONTH")).toMatchObject({ rangeLow: null, rangeHigh: null });
+    // No implied range for SENSEX: within 8% of the index, so kept.
+    expect(range("SENSEX", "WEEK")).toMatchObject({ rangeLow: 75000, rangeHigh: 77000 });
+    expect(notes.filter((n) => n.startsWith("outlook ")).length).toBe(3);
+    // Without an index level a range cannot be checked.
+    const noSpot = build(advice({ outlook: rows }), research(), ctx({ market: { nifty: null, sensex: 76000, vix: 12.4, phase: "OPEN" } })).report;
+    expect(noSpot.outlook.filter((o) => o.index === "NIFTY").every((o) => o.rangeLow == null && o.rangeHigh == null)).toBe(true);
+  });
+
+  it("shows zero-hero only on an expiry day, with the market's own odds across every listed ticket", () => {
+    expect(build(advice()).report.zeroHero).toEqual({ applicable: false, expiry: null, summary: "No expiry today." });
+    const z1 = { id: "z1", index: "NIFTY" as const, expiry: "2026-10-16", strike: 23500, optionType: "CE" as const, label: "NIFTY 16-OCT-2026 23500 CE", lotSize: 65, price: 4, priceBasis: "ask" as const, delta: 0.04, costPerLot: 260, distancePct: 1.4, impliedWorthlessPct: 96 };
+    const z2 = { ...z1, id: "z2", strike: 22900, optionType: "PE" as const, label: "NIFTY 16-OCT-2026 22900 PE", price: 9, delta: -0.1, costPerLot: 585, impliedWorthlessPct: 90 };
+    const z3 = { ...z1, id: "z3", strike: 23600, label: "NIFTY 16-OCT-2026 23600 CE", price: 2, delta: null, costPerLot: 130, impliedWorthlessPct: null };
+    const z = build(advice(), research(), ctx({ expiryToday: { NIFTY: "2026-10-16" }, zeroHeroCandidates: [z1, z2, z3] })).report.zeroHero;
     expect(z.applicable).toBe(true);
     expect(z.expiry).toBe("2026-10-16");
-    expect(z.summary).toMatch(/delta 0\.04/);
-    expect(z.summary).toMatch(/96% of the time/);
+    expect(z.summary).toMatch(/the 2 far out-of-the-money contracts/);
+    expect(z.summary).toMatch(/₹260–₹585 a lot, \|delta\| 0\.04–0\.10/);
+    expect(z.summary).toMatch(/roughly 90–96% of the time/);
+    expect(z.summary).toMatch(/62% of the time when held to expiry/);
+    const one = build(advice(), research(), ctx({ expiryToday: { NIFTY: "2026-10-16" }, zeroHeroCandidates: [z1] })).report.zeroHero;
+    expect(one.summary).toMatch(/the 1 far out-of-the-money contract listed .* roughly 96% of the time/);
+    const noDelta = build(advice(), research(), ctx({ expiryToday: { NIFTY: "2026-10-16" }, zeroHeroCandidates: [z3] })).report.zeroHero;
+    expect(noDelta.summary).toMatch(/odds are not known/);
   });
 });

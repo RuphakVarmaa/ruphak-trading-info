@@ -7,15 +7,20 @@ import {
   costWords,
   daysToExpiry,
   daysWords,
+  engineNotesWords,
   exitByWords,
   groupIdeas,
   ideaLine,
+  isOldDayTrade,
+  itmWords,
   modelName,
   nextAllowedLine,
+  oldBriefDay,
   parseContractLabel,
   pastCheck,
   plainContract,
   premium,
+  profitSide,
   rangeWords,
   shortExpiry,
   sortFactors,
@@ -75,10 +80,24 @@ describe("dates and contracts", () => {
     expect(shortExpiry("2026-10-23")).toBe("23-Oct");
   });
 
-  it("writes the one-line order with the lot count and the max loss for all lots", () => {
-    expect(ideaLine(idea())).toBe("BUY NIFTY 23200 CE 23-Oct · 1 lot · buy between ₹140–145.50 · stop ₹100 · target ₹210 · max loss ₹2,852");
+  it("writes the one-line order with the lot count and the max loss (at the stop) for all lots", () => {
+    expect(ideaLine(idea())).toBe("BUY NIFTY 23200 CE 23-Oct · 1 lot · buy between ₹140–145.50 · stop ₹100 · target ₹210 · max loss ₹2,852 at the stop");
     expect(ideaLine(idea({ lots: 2 }))).toContain("2 lots");
-    expect(ideaLine(idea({ lots: 2 }))).toContain("max loss ₹5,705");
+    expect(ideaLine(idea({ lots: 2 }))).toContain("max loss ₹5,705 at the stop");
+  });
+
+  it("explains in the money and which side of the break-even is profit", () => {
+    expect(itmWords({ index: "NIFTY", strike: 23200, optionType: "CE" })).toBe("NIFTY above 23,200, so the option is worth something");
+    expect(itmWords({ index: "SENSEX", strike: 82000, optionType: "PE" })).toBe("SENSEX below 82,000, so the option is worth something");
+    expect(profitSide("CE")).toBe("above");
+    expect(profitSide("PE")).toBe("below");
+  });
+
+  it("joins the engine's adjustments into one line, and says nothing when there are none", () => {
+    expect(engineNotesWords(["stop raised to ₹35.55 (was ₹38.40).", " target lowered to ₹90 (was ₹140) "])).toBe("stop raised to ₹35.55 (was ₹38.40); target lowered to ₹90 (was ₹140)");
+    expect(engineNotesWords([])).toBeNull();
+    expect(engineNotesWords(["  "])).toBeNull();
+    expect(engineNotesWords(undefined)).toBeNull();
   });
 
   it("formats premiums, ranges, chances and the chain link", () => {
@@ -121,7 +140,20 @@ describe("top bar", () => {
     expect(modelName("mock")).toBe("mock");
     expect(costWords(0.3812)).toBe("$0.38");
     expect(costWords(0.004)).toBe("under $0.01");
+    expect(costWords(0)).toBe("$0.00");
     expect(costWords(null)).toBeNull();
+  });
+
+  it("marks a brief from an earlier IST day as out of date, by IST calendar day", () => {
+    expect(oldBriefDay("2026-10-15T09:59:00+05:30", NOW)).toBe("Thu 15 Oct");
+    expect(oldBriefDay("2026-10-16T09:26:00+05:30", NOW)).toBeNull();
+    // 00:10 IST on the 16th is still the 15th in UTC, but today in IST.
+    expect(oldBriefDay("2026-10-16T00:10:00+05:30", NOW)).toBeNull();
+    // 23:50 IST on the 15th is the 15th; at 09:15 IST next morning it is yesterday's brief.
+    expect(oldBriefDay("2026-10-15T23:50:00+05:30", Date.parse("2026-10-16T09:15:00+05:30"))).toBe("Thu 15 Oct");
+    // Unknown clock (first paint) or an unreadable time: not marked.
+    expect(oldBriefDay("2026-10-15T09:59:00+05:30", null)).toBeNull();
+    expect(oldBriefDay("garbage", NOW)).toBeNull();
   });
 
   it("shows the rate limit only while it holds", () => {
@@ -162,6 +194,13 @@ describe("past briefs", () => {
     expect(parseContractLabel("NIFTY 23200 CALL, 3 Nov 2026")).toEqual({ index: "NIFTY", expiry: "2026-11-03", strike: 23200, optionType: "CE" });
     expect(parseContractLabel("NIFTY 23200 CE")).toBeNull();
     expect(parseContractLabel("BANKNIFTY 20-OCT-2026 50000 CE")).toBeNull();
+  });
+
+  it("does not price an earlier day's day trade at today's price", () => {
+    expect(isOldDayTrade("TODAY", "2026-10-15T12:00:00+05:30", NOW)).toBe(true);
+    expect(isOldDayTrade("TODAY", "2026-10-16T09:40:00+05:30", NOW)).toBe(false);
+    expect(isOldDayTrade("WEEK", "2026-10-15T12:00:00+05:30", NOW)).toBe(false);
+    expect(isOldDayTrade("TODAY", "2026-10-15T12:00:00+05:30", null)).toBe(false);
   });
 
   it("compares the price now with the ask when the brief was written", () => {

@@ -104,6 +104,26 @@ function side(chain: OptionChainView, strike: number, type: OptionType): OptionS
   return (type === "CE" ? row?.ce : row?.pe) ?? null;
 }
 
+/**
+ * |delta| of the given side at an index level between listed strikes, interpolated between the strikes on
+ * either side of it: a rough chance the index ends beyond that level at expiry. Null when the level is
+ * outside the listed strikes or a delta is missing.
+ */
+export function deltaAtLevel(chain: OptionChainView, level: number, type: OptionType): number | null {
+  const pts = chain.rows
+    .map((r) => ({ strike: r.strike, d: (type === "CE" ? r.ce : r.pe)?.delta ?? null }))
+    .filter((p): p is { strike: number; d: number } => p.d != null && Number.isFinite(p.d))
+    .sort((a, b) => a.strike - b.strike);
+  const hi = pts.findIndex((p) => p.strike >= level);
+  if (hi < 0) return null;
+  if (pts[hi].strike === level) return round2(Math.abs(pts[hi].d));
+  if (hi === 0) return null;
+  const a = pts[hi - 1];
+  const b = pts[hi];
+  const t = (level - a.strike) / (b.strike - a.strike);
+  return round2(Math.abs(a.d + t * (b.d - a.d)));
+}
+
 function mid(s: OptionSideView | null): number | null {
   if (!s) return null;
   if (s.bid != null && s.ask != null) return (s.bid + s.ask) / 2;
@@ -187,6 +207,7 @@ function buildIdea(args: {
   const lot = chain.lotSize;
   const charges = optionCharges("BUY", ask, lot, chain.index).total + optionCharges("SELL", stop, lot, chain.index).total;
   const costPerLot = round2(ask * lot);
+  const breakeven = round2(args.type === "CE" ? args.strike + ask : args.strike - ask);
   const contract = { index: chain.index, expiry: chain.expiry, strike: args.strike, optionType: args.type };
   return {
     id: `${chain.index}-${chain.expiry}-${args.strike}-${args.type}`,
@@ -200,10 +221,11 @@ function buildIdea(args: {
     costPerLot,
     maxLossPerLot: round2((ask - stop) * lot + charges),
     rewardPerLot: round2((target - ask) * lot - charges),
-    breakevenAtExpiry: round2(args.type === "CE" ? args.strike + ask : args.strike - ask),
+    breakevenAtExpiry: breakeven,
     delta: s.delta,
     iv: s.iv,
     probItm: s.delta == null ? null : round2(Math.abs(s.delta)),
+    probAboveBreakeven: deltaAtLevel(chain, breakeven, args.type),
     why: args.why,
     wrongIf: args.wrongIf,
     confidence: args.confidence,
@@ -336,7 +358,19 @@ export function buildMockAdvisorReport(m: MockAdvisorMarket, createdAtMs: number
       label: "Short covering (option sellers buying back)",
       reading: covering ? "SUPPORTS_UP" : unwinding ? "SUPPORTS_DOWN" : "NEUTRAL",
       detail: nifty
-        ? `Near the money on NIFTY's ${dayWords(nifty.chain.expiry)} expiry, call OI (open contracts) ${ceChg >= 0 ? "rose" : "fell"} by ${lakh(ceChg)} and put OI ${peChg >= 0 ? "rose" : "fell"} by ${lakh(peChg)} since yesterday, with NIFTY ${signedPct(niftyPct)}. ${covering ? "Call writers are covering as the index rises: a bullish push." : unwinding ? "Put OI falling while the index falls: bearish." : "Writers are adding, not covering: no short-covering push."}`
+        ? `Near the money on NIFTY's ${dayWords(nifty.chain.expiry)} expiry, call OI (open contracts) ${ceChg >= 0 ? "rose" : "fell"} by ${lakh(ceChg)} and put OI ${peChg >= 0 ? "rose" : "fell"} by ${lakh(peChg)} since yesterday, with NIFTY ${signedPct(niftyPct)}. ${
+            covering
+              ? "Call writers are covering as the index rises: a bullish push."
+              : unwinding
+                ? "Put OI falling while the index falls: bearish."
+                : niftyPct != null && niftyPct > 0
+                  ? "Call OI is not falling as the index rises, so call writers are not buying back: no short-covering push."
+                  : niftyPct != null && niftyPct < 0
+                    ? "Put OI is not falling as the index falls: put writers are holding."
+                    : niftyPct == null
+                      ? "No index move to read it against: no short-covering read."
+                      : "The index is flat: no short-covering read."
+          }`
         : "No chain.",
       source: "mock option chain",
     },
@@ -492,10 +526,11 @@ export function buildMockAdvisorReport(m: MockAdvisorMarket, createdAtMs: number
     createdAt,
     model: MOCK_MODEL,
     durationMs,
-    costUsd: null,
+    // No Claude call, so the run cost nothing (null would read "cost not known").
+    costUsd: 0,
     market: { nifty: spot("NIFTY"), sensex: spot("SENSEX"), vix: m.vix, phase: m.phase },
     headline: pick
-      ? `Demo: NIFTY leans up, so one small ${pick.contract.optionType === "CE" ? "CALL" : "PUT"} with a stop at most; SENSEX has no clear lean.`
+      ? `Demo: NIFTY leans up, so at most one small ${pick.contract.optionType === "CE" ? "CALL" : "PUT"} with a stop; SENSEX has no clear lean.`
       : "Demo: no clear lean on either index today, so WAIT.",
     today: pick
       ? {

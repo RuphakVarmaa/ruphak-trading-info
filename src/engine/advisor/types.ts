@@ -121,10 +121,21 @@ export interface ZeroHeroCandidate {
   impliedWorthlessPct: number | null;
 }
 
+/** One expiry's option-implied range (ATM strike ∓ the ATM straddle), from the chain the context was built on. */
+export interface AdvisorImpliedRange {
+  expiry: string;
+  /** Calendar days to the expiry (0 on expiry day). */
+  days: number;
+  low: number;
+  high: number;
+}
+
 export interface AdvisorContext {
   /** The compact JSON the advice call reads. */
   promptJson: string;
   candidates: AdvisorCandidate[];
+  /** Option-implied ranges per index, nearest expiry first; outlook ranges are checked against them. */
+  impliedRanges?: Partial<Record<IndexId, AdvisorImpliedRange[]>>;
   zeroHeroCandidates: ZeroHeroCandidate[];
   market: AdvisorReport["market"];
   /** Expiring today (IST) per index, when there is one. */

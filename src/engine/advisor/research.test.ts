@@ -1,7 +1,7 @@
 import type Anthropic from "@anthropic-ai/sdk";
 import { describe, expect, it, vi } from "vitest";
 import { RESEARCH_DOMAINS } from "./knowledge";
-import { extractSources, researchTool, runResearch } from "./research";
+import { extractSources, researchTool, responseNotes, runResearch } from "./research";
 
 const NOW = Date.parse("2026-10-16T08:50:00+05:30");
 
@@ -13,7 +13,7 @@ const searchResult = (url: string, title: string) => ({ type: "web_search_result
 function fakeClient(responses: (() => unknown)[]) {
   const calls: Record<string, unknown>[] = [];
   let i = 0;
-  const create = vi.fn(async (body: Record<string, unknown>) => {
+  const create = vi.fn<(body: Record<string, unknown>, o?: { signal?: AbortSignal }) => Promise<unknown>>(async (body) => {
     calls.push(JSON.parse(JSON.stringify(body)));
     const next = responses[Math.min(i++, responses.length - 1)];
     return next();
@@ -60,7 +60,36 @@ describe("source extraction", () => {
   });
 });
 
+const cite = (url: string) => ({ type: "web_search_result_location", url, title: "t", cited_text: "", encrypted_index: "" });
+
+describe("research notes", () => {
+  it("keep each text block's citation URLs and do not break sentences at citation boundaries", () => {
+    const content = [
+      { type: "text", text: "FII_DII: ", citations: null },
+      { type: "text", text: "FIIs sold ₹850 crore", citations: [cite("https://www.livemint.com/fii#x"), cite("https://www.livemint.com/fii"), cite("https://www.nseindia.com/fii")] },
+      { type: "text", text: " on 15 Oct (provisional); DIIs bought ", citations: null },
+      { type: "text", text: "₹1,100 crore.", citations: [cite("https://www.moneycontrol.com/dii")] },
+      { type: "web_search_tool_result", tool_use_id: "s1", content: [] },
+    ];
+    expect(responseNotes(content)).toBe(
+      "FII_DII: FIIs sold ₹850 crore [https://www.livemint.com/fii] on 15 Oct (provisional); DIIs bought ₹1,100 crore. [https://www.moneycontrol.com/dii]",
+    );
+  });
+});
+
 describe("the research call (fake client)", () => {
+  it("passes the abort signal and marks an answer cut off at max_tokens", async () => {
+    const { client, create } = fakeClient([
+      () => ({ model: "m", stop_reason: "max_tokens", content: [{ type: "text", text: "FII_DII: FIIs sold ₹850 crore", citations: [cite("https://www.livemint.com/fii")] }], usage: usage(10, 8_000) }),
+    ]);
+    const signal = new AbortController().signal;
+    const r = await runResearch(client, { model: "claude-opus-5-5", nowMs: NOW, signal });
+    expect(create.mock.calls[0][1]).toEqual({ signal });
+    expect(r.ok).toBe(true);
+    expect(r.stopReason).toBe("max_tokens");
+    expect(r.notes).toBe("FII_DII: FIIs sold ₹850 crore [https://www.livemint.com/fii]\n(Research was cut off; some items may be missing.)");
+  });
+
   it("continues a paused turn by sending the assistant content back, then returns notes, sources and usage", async () => {
     const paused = [
       { type: "server_tool_use", id: "s1", name: "web_search", input: { query: "FII DII provisional" } },

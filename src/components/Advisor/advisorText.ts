@@ -117,7 +117,7 @@ export function rupees(n: number): string {
   return fmtInr(Math.round(n));
 }
 
-/** The one-line order: "BUY NIFTY 23200 CE 23-Oct · 1 lot · buy between ₹X–Y · stop ₹S · target ₹T · max loss ₹L". */
+/** The one-line order: "BUY NIFTY 23200 CE 23-Oct · 1 lot · buy between ₹X–Y · stop ₹S · target ₹T · max loss ₹L at the stop". */
 export function ideaLine(idea: AdvisorIdea): string {
   const c = idea.contract;
   const lots = Math.max(1, idea.lots);
@@ -127,8 +127,24 @@ export function ideaLine(idea: AdvisorIdea): string {
     `buy between ${premium(idea.entry.low)}–${premium(idea.entry.high).replace("₹", "")}`,
     `stop ${premium(idea.stop)}`,
     `target ${premium(idea.target)}`,
-    `max loss ${rupees(idea.maxLossPerLot * lots)}`,
+    `max loss ${rupees(idea.maxLossPerLot * lots)} at the stop`,
   ].join(" · ");
+}
+
+/** What "in the money at expiry" means for this contract: "NIFTY above 23,200, so the option is worth something". */
+export function itmWords(c: { index: IndexId; strike: number; optionType: OptionType }): string {
+  return `${c.index} ${c.optionType === "CE" ? "above" : "below"} ${fmtNum(c.strike, 0)}, so the option is worth something`;
+}
+
+/** The engine's changes to an idea as one line ("stop raised to ₹35.55 (was ₹38.40); target lowered …"); null when it changed nothing. */
+export function engineNotesWords(notes: readonly string[] | undefined): string | null {
+  const parts = (notes ?? []).map((n) => n.trim().replace(/[.;]+$/, "")).filter((n) => n !== "");
+  return parts.length ? parts.join("; ") : null;
+}
+
+/** "above" for a call, "below" for a put: the side of the break-even where the trade ends in profit. */
+export function profitSide(t: OptionType): "above" | "below" {
+  return t === "CE" ? "above" : "below";
 }
 
 /** The options-page link for a contract's expiry. */
@@ -179,6 +195,21 @@ export function writtenLine(createdAt: string, nowMs: number | null): string {
   const today = nowMs != null && istDate(ms) === istDate(nowMs);
   const when = today || nowMs == null ? `${fmtIstHm(ms)} IST` : `${fmtIstDay(ms)}, ${fmtIstHm(ms)} IST`;
   return nowMs == null ? `Written ${when}` : `Written ${when}, ${agoWords(nowMs - ms)}`;
+}
+
+/**
+ * The IST day ("Thu 15 Oct") a brief was written on when that is an earlier IST day than now, so its call and
+ * prices are out of date; null when it was written today, when the clock is not known yet or the time is not a date.
+ */
+export function oldBriefDay(createdAt: string, nowMs: number | null): string | null {
+  const ms = Date.parse(createdAt);
+  if (nowMs == null || !Number.isFinite(ms)) return null;
+  return istDate(ms) < istDate(nowMs) ? fmtIstDay(ms) : null;
+}
+
+/** A day-trade idea from a brief written on an earlier IST day: it was for that day only, so today's price says nothing about it. */
+export function isOldDayTrade(horizon: AdvisorHorizon, createdAt: string, nowMs: number | null): boolean {
+  return horizon === "TODAY" && oldBriefDay(createdAt, nowMs) != null;
 }
 
 /** "Claude Opus 5.5" for the model id; other ids are shown as they are. */
