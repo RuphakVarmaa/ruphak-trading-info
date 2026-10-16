@@ -144,6 +144,11 @@ export interface AccountView {
   shortLabel: string;
   paperOnly: boolean;
   capitalRupees: number;
+  /**
+   * Set only for the options agent's paper account (a model judges each candle; code trades). Absent for
+   * main and the followers, so their DTOs stay exactly as before.
+   */
+  kind?: "agent";
 }
 
 // ---------------------------------------------------------------------------
@@ -1123,6 +1128,8 @@ export interface AdvisorIdea {
    * null only when the idea is a buy now. Briefs stored before this field existed lack it.
    */
   condition?: string | null;
+  /** The strongest specific argument against the idea; null when nothing specific argues against it. Older briefs lack it. */
+  bearCase?: string | null;
 }
 
 export interface AdvisorReport {
@@ -1176,6 +1183,233 @@ export interface AdvisorView {
   history: AdvisorReportSummary[];
 }
 
+// ---------------------------------------------------------------------------
+// Options agent: a paper experiment (src/engine/agent, workers/engine/src/do/AgentDO.ts). A fast model
+// judges each closed 5-minute candle; code owns every threshold, size, order and exit.
+// ---------------------------------------------------------------------------
+
+export type AgentMode = "off" | "shadow" | "paper";
+export type AgentRegime = "TRENDING" | "MEAN_REVERTING" | "HIGH_VOL" | "CRISIS";
+export type AgentDirection = "LONG" | "SHORT" | "NEUTRAL";
+export type AgentRiskLevel = "SAFE" | "NEAR_LIMIT" | "REDUCE";
+export type AgentFinalistKind = "GENERIC" | "IDEA";
+export type AgentDecisionSource = "REFLEX" | "ESCALATION";
+/**
+ * What the code did with a decision. SHADOW_* is what paper mode would have done. EXIT_PENDING: a decision
+ * exit was not sent because an exit order already rests on the position, or it is no longer open.
+ */
+export type AgentAction = "ENTERED" | "ENTRY_PENDING" | "EXITED" | "EXIT_PENDING" | "NO_ENTRY" | "SHADOW_ENTRY" | "SHADOW_EXIT" | "NOT_EXECUTED";
+
+export interface AgentFinalistView {
+  id: string;
+  kind: AgentFinalistKind;
+  index: IndexId;
+  label: string;
+  side: "LONG" | "SHORT" | null;
+  contract: { tradingSymbol: string; strike: number; optionType: OptionType; expiry: string } | null;
+  condition: string | null;
+  wrongIf: string | null;
+  bearCase: string | null;
+  briefId: string | null;
+}
+
+export interface AgentGateLineView {
+  gate: string;
+  passed: boolean | null;
+  /** Plain English, e.g. "Setup quality 3 of 3 (needs 2)". */
+  words: string;
+}
+
+export interface AgentDecisionView {
+  id: string;
+  /** Bar close, ISO IST. */
+  barAt: string;
+  finalistId: string;
+  source: AgentDecisionSource;
+  regime: AgentRegime;
+  direction: AgentDirection;
+  directionConfidence: number;
+  toxicFlow: boolean;
+  setupQuality: 0 | 1 | 2 | 3;
+  riskState: AgentRiskLevel;
+  reason: string;
+  /** The code's gate, in order; null until TE executed the batch. */
+  gate: { fired: boolean; summary: string; lines: AgentGateLineView[] } | null;
+  action: AgentAction | null;
+  actionDetail: string | null;
+  /** The measured-edge check this account skips, as it would have read. */
+  edge: { passed: boolean; detail: string } | null;
+  sizing: { p: number; b: number; kelly: number; riskPct: number; lots: number } | null;
+  outcome: { status: "PENDING" | "HIT" | "MISS" | "NEUTRAL" | "CENSORED" | "MISSING"; ret30Pct: number | null };
+}
+
+export interface AgentSnapshotFieldView {
+  key: string;
+  label: string;
+  value: string;
+}
+
+export interface AgentIndexCardView {
+  index: IndexId;
+  barAt: string | null;
+  close: number | null;
+  snapshot: AgentSnapshotFieldView[] | null;
+  snapshotTokensEst: number | null;
+  /** The latest bar's effective decisions for this index, one per finalist. */
+  decisions: AgentDecisionView[];
+  position: { side: "LONG" | "SHORT"; tradingSymbol: string; lots: number; pnlPct: number | null; finalistId: string | null } | null;
+}
+
+export interface AgentEscalationView {
+  id: string;
+  requestedAt: string;
+  index: IndexId;
+  finalistId: string;
+  trigger: "LOW_CONFIDENCE" | "CRISIS_FLIP";
+  status: "QUEUED" | "RUNNING" | "DONE" | "FAILED" | "LATE" | "SKIPPED";
+  decision: { direction: AgentDirection; directionConfidence: number; setupQuality: 0 | 1 | 2 | 3; regime: AgentRegime; riskState: AgentRiskLevel; reason: string } | null;
+  reason: string | null;
+  appliedToBarAt: string | null;
+  costUsd: number | null;
+}
+
+export interface AgentRiskView {
+  asOf: string | null;
+  equity: number | null;
+  peakEquity: number | null;
+  drawdownPct: number | null;
+  maxDrawdownPct: number;
+  dayLossPct: number | null;
+  dailyLossCapPct: number;
+  openPositions: number;
+  maxOpenPositions: number;
+  maxLotsPerPosition: number;
+  killSwitch: boolean;
+  killReason: string | null;
+  mainKillSwitch: boolean;
+  /** True from a 15% drawdown halt until the operator re-arms. */
+  drawdownHalt: boolean;
+  codeRiskState: AgentRiskLevel;
+}
+
+export interface AgentCalibrationBucketView {
+  from: number;
+  to: number;
+  n: number;
+  statedMean: number | null;
+  hitRate: number | null;
+  /** Share of the bucket's calls where the index moved enough (0.15%) to pay for an option. */
+  paidRate: number | null;
+}
+
+export interface AgentCalibrationView {
+  asOf: string | null;
+  graded: number;
+  brier: number | null;
+  /** Brier score of always forecasting the observed base rate (lower is better; skill = 1 − brier / baseline). */
+  baselineBrier: number | null;
+  byIndex: { index: IndexId; n: number; brier: number | null }[];
+  byKind: { kind: AgentFinalistKind; n: number; brier: number | null }[];
+  /** Reflex and escalation calls scored apart; only reflex calls feed sizing. */
+  bySource: { source: AgentDecisionSource; n: number; brier: number | null }[];
+  /** NEUTRAL calls on their own line: right when the index stayed within 0.15% either way over 30 minutes. Never used for sizing. */
+  neutral: { n: number; brier: number | null; baselineBrier: number | null };
+  buckets: AgentCalibrationBucketView[];
+  sizingMode: "pooled" | "buckets";
+  /**
+   * The probability sizing uses for a confidence above 0.80 now: a cautious (20th percentile) estimate of the
+   * chance of a move of at least 0.15% in the called direction, from graded reflex calls; never the model's own number.
+   */
+  sizingP: number | null;
+  /** Effective number of graded calls behind sizingP, after overlapping 30-minute windows are counted once. */
+  sizingN: number;
+  /** The payoff ratio b sizing uses (capped at 1 until enough agent trades have closed). */
+  payoffB: number;
+  /** b measured from the agent's closed trades; null until it has both a win and a loss. */
+  payoffMeasured: number | null;
+  /** Closed agent trades behind payoffMeasured. */
+  payoffTrades: number;
+  /** Share of graded directional calls where the index moved enough (0.15%) to pay for an option. */
+  paidRate: number | null;
+  trades: { n: number; wins: number; netRupees: number };
+  note: string;
+}
+
+export interface AgentReviewView {
+  date: string;
+  status: "PENDING" | "RUNNING" | "DONE" | "FAILED" | "SKIPPED";
+  writtenAt: string | null;
+  model: string | null;
+  costUsd: number | null;
+  summary: string;
+  fills: string[];
+  misses: string[];
+  mistakes: string[];
+  lessons: string[];
+  error: string | null;
+}
+
+export interface AgentCandidateView {
+  id: string;
+  date: string;
+  createdAt: string;
+  status: "SCORING" | "PENDING" | "APPROVED" | "REJECTED" | "SUPERSEDED" | "FAILED";
+  baseVersion: string;
+  guidance: string;
+  currentGuidance: string;
+  rationale: string;
+  wouldBeWrongIf: string;
+  /**
+   * Today's stored candles judged again with the candidate text and with the current text, on identical inputs.
+   * brierCurrentLive is the live record on the same candles: its gap to brierCurrentReplayed shows how much
+   * the score moves from run to run with no change of text.
+   */
+  replay: {
+    bars: number;
+    graded: number;
+    brierCandidate: number | null;
+    brierCurrentReplayed: number | null;
+    brierCurrentLive: number | null;
+    firesCandidate: number;
+    firesCurrent: number;
+    complete: boolean;
+    label: "in-sample, not proof";
+  } | null;
+  decidedAt: string | null;
+  decidedBy: string | null;
+}
+
+export interface AgentCostView {
+  date: string;
+  spentUsd: number;
+  capUsd: number;
+  capReached: boolean;
+  byKind: { kind: "REFLEX" | "ESCALATION" | "REVIEW" | "REPLAY"; calls: number; usd: number }[];
+  reflexLatencyMs: { p50: number | null; p95: number | null };
+}
+
+export interface AgentView {
+  mode: AgentMode;
+  /** The agent account is in the engine's ACCOUNTS list. */
+  enabled: boolean;
+  date: string;
+  generatedAt: string;
+  honesty: string;
+  account: AccountView | null;
+  models: { reflex: string; escalation: string; review: string };
+  instructionVersion: string;
+  /** `paused`: the operator paused the agent (/ops/agent-pause); only its exits run, and no candle is judged. */
+  status: { state: "OFF" | "CLOSED" | "WAITING" | "RUNNING" | "COST_CAP" | "ERROR"; lastBarAt: string | null; lastError: string | null; paused: boolean };
+  indices: AgentIndexCardView[];
+  finalists: AgentFinalistView[];
+  escalations: AgentEscalationView[];
+  risk: AgentRiskView;
+  calibration: AgentCalibrationView;
+  review: AgentReviewView | null;
+  candidate: AgentCandidateView | null;
+  cost: AgentCostView;
+}
+
 export interface EngineApi {
   getState(account?: string): Promise<EngineStateDTO>;
   getSignals(account?: string): Promise<SignalView[]>;
@@ -1202,6 +1436,8 @@ export interface EngineApi {
   getAdvisor(): Promise<AdvisorView>;
   /** Starts a new advisor analysis unless one is running or the rate limit says wait; returns the view at once (poll getAdvisor). */
   runAdvisor(reason: string): Promise<AdvisorView>;
+  /** The options agent (a paper experiment): decisions, risk, calibration, review and cost for an IST date (default today). */
+  getAgent(date?: string): Promise<AgentView>;
 
   /** Admin methods re-check the token inside the engine (defense in depth). */
   verifyAdmin(token: string): Promise<boolean>;
@@ -1210,6 +1446,10 @@ export interface EngineApi {
   setKillSwitch(token: string, req: KillSwitchRequest, actor: string, account?: string): Promise<EngineStateDTO>;
   setMode(token: string, mode: EngineMode, actor: string): Promise<EngineStateDTO>;
   startBacktest(token: string, params: BacktestParams, actor: string): Promise<{ runId: string; status: "RUNNING" | "DONE" }>;
+  /** Approves or rejects the pending candidate guidance from the nightly review (only outside the session). */
+  setAgentCandidate(token: string, candidateId: string, decision: "approve" | "reject", actor: string): Promise<AgentView>;
+  /** Clears the agent account's drawdown halt and kill switch; its peak equity restarts at the current equity. */
+  rearmAgent(token: string, actor: string): Promise<AgentView>;
 }
 
 // ---------------------------------------------------------------------------

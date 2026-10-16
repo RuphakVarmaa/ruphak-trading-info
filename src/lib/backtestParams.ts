@@ -15,8 +15,11 @@ export interface BacktestAccount {
   targetPct: number;
 }
 
-/** Every account in src/engine/accounts.ts, main first: a new account appears here without a code change. */
-export const BACKTEST_ACCOUNTS: readonly BacktestAccount[] = (Object.keys(ACCOUNTS) as AccountId[]).map((id) => {
+/**
+ * Every account in src/engine/accounts.ts, main first: a new account appears here without a code change.
+ * The agent account is left out: its decisions come from a model, so a replay cannot reproduce them.
+ */
+export const BACKTEST_ACCOUNTS: readonly BacktestAccount[] = (Object.keys(ACCOUNTS) as AccountId[]).filter((id) => ACCOUNTS[id].kind !== "agent").map((id) => {
   const spec = ACCOUNTS[id];
   const patch = spec.configPatch;
   return {
@@ -58,9 +61,9 @@ function num(v: string | undefined, lo: number, hi: number, def: number): number
   return Number.isFinite(n) && n >= lo && n <= hi ? n : def;
 }
 
-/** Lenient: anything invalid falls back to the default for that field (an unknown account means main). */
+/** Lenient: anything invalid falls back to the default for that field (an unknown account, or one the form does not offer, means main). */
 export function paramsFromQuery(q: Query, todayIst: string): BacktestParams {
-  const account = parseAccountId(first(q.account)) ?? "main";
+  const account = backtestAccount(parseAccountId(first(q.account)) ?? "main").id;
   const d = defaultBacktestParams(todayIst, account);
   const from = first(q.from);
   const to = first(q.to);

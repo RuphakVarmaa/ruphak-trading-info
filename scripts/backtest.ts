@@ -39,7 +39,7 @@
 import type { BacktestParams } from "../src/engine/api-types";
 import { loadYahooHistory, type MarketHistory } from "../src/engine/backtest/history";
 import { attribution } from "../src/engine/backtest/metrics";
-import { ACCOUNT_IDS, accountConfig, accountSpec, parseAccountId } from "../src/engine/accounts";
+import { ACCOUNT_IDS, ACCOUNTS, accountConfig, accountSpec, parseAccountId } from "../src/engine/accounts";
 import { configForParams, runBacktest, runBacktestAccounts, type BacktestOutput } from "../src/engine/backtest/runBacktest";
 import { followerExitGrid, makeFolds, walkForward, walkForwardFollower } from "../src/engine/backtest/walkForward";
 import { addDays, istDate } from "../src/engine/clock";
@@ -80,6 +80,7 @@ const opt = (name: string): number | undefined => {
   return v;
 };
 const account = parseAccountId(str(args, "account", "main")) ?? fail(`--account must be one of ${ACCOUNT_IDS.join(", ")}`);
+if (ACCOUNTS[account].kind === "agent") fail("the agent account cannot be backtested: its decisions come from a model");
 const follows = account !== "main";
 // With a follower account, --stop/--target apply to the follower; main keeps its default exits.
 const mainParams = follows ? { ...params, stopPct: Math.abs(DEFAULT_CONFIG.exits.stopPct), targetPct: DEFAULT_CONFIG.exits.targetPct } : params;

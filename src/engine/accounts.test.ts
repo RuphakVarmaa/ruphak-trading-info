@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { accountConfig, accountSpec, accountStateKey, bookAccount, bookMode, parseAccountId, parseAccounts, unbookMode } from "./accounts";
+import { ACCOUNTS, accountConfig, accountSpec, accountStateKey, bookAccount, bookMode, followerIds, parseAccountId, parseAccounts, unbookMode } from "./accounts";
 import { roundTripChargesPerUnit } from "./broker/charges";
 import { DEFAULT_CONFIG, makeConfig, maxOpenTotal, premiumBand } from "./config";
 import { defaultSettings } from "./settings";
@@ -84,6 +84,35 @@ describe("accountConfig", () => {
     expect(premiumBand(cfg, "SENSEX").minPremium * lot("SENSEX")).toBe(premiumBand(cfg, "NIFTY").minPremium * lot("NIFTY"));
   });
 
+  it("pins the agent account's values even when the Worker config differs", () => {
+    const base = makeConfig({ capitalRupees: 123, indices: ["NIFTY"], sizing: { maxOpenPerIndex: 2, maxTradesPerDay: 8 }, gates: { expectedMoveModel: "legacy" } });
+    const cfg = accountConfig(base, "agent");
+    expect(cfg.capitalRupees).toBe(500_000);
+    expect(cfg.indices).toEqual(["NIFTY", "SENSEX"]);
+    expect(cfg.sizing.maxOpenPerIndex).toBe(1);
+    expect(maxOpenTotal(cfg)).toBe(2);
+    expect(cfg.sizing.maxTradesPerDay).toBe(6);
+    expect(cfg.sizing.maxLots).toBe(3);
+    expect(cfg.sizing.maxRiskPctPerTrade).toBe(1);
+    expect(cfg.sizing.kellyFraction).toBe(0.25);
+    expect(cfg.gates.expectedMoveModel).toBe("calibrated");
+    expect(cfg.selection.mode).toBe("ATM");
+    expect(cfg.strategy.mode).toBe("CONVICTION");
+    expect(cfg.risk.dailyLossCapPct).toBe(3);
+    expect(cfg.exits.squareOffIst).toBe("15:05");
+    // Caps derived from the account config: ₹15,000 a day, ₹20,000 of premium a trade, two positions.
+    const s = defaultSettings(cfg, 0);
+    expect(s.dailyLossCapInr).toBe(15_000);
+    expect(s.maxPremiumPerTradeInr).toBe(20_000);
+    expect(s.maxOpenPositions).toBe(2);
+    expect(cfg.conviction).toEqual(base.conviction);
+    expect(accountSpec("agent")).toMatchObject({ label: "Agent ₹5L", shortLabel: "Agent", paperOnly: true, kind: "agent" });
+  });
+
+  it("validates the agent account's patch on the default config", () => {
+    expect(() => accountConfig(DEFAULT_CONFIG, "agent")).not.toThrow();
+  });
+
   it("caps open positions per index times indices unless a total is set", () => {
     expect(maxOpenTotal(makeConfig({ indices: ["NIFTY", "SENSEX"], sizing: { maxOpenPerIndex: 2 } }))).toBe(4);
     expect(maxOpenTotal(makeConfig({ indices: ["NIFTY", "SENSEX"], sizing: { maxOpenPerIndex: 2, maxOpenTotal: 2 } }))).toBe(2);
@@ -109,6 +138,7 @@ describe("account ids and book modes", () => {
     expect(parseAccountId(" ")).toBe("main");
     expect(parseAccountId("small10k")).toBe("small10k");
     expect(parseAccountId("small5k")).toBe("small5k");
+    expect(parseAccountId("agent")).toBe("agent");
     expect(parseAccountId("other")).toBeNull();
     expect(parseAccountId("SMALL5K")).toBeNull();
   });
@@ -120,6 +150,18 @@ describe("account ids and book modes", () => {
     // The production and preview value in workers/engine/wrangler.jsonc.
     expect(parseAccounts("main,small10k,small5k")).toEqual(["main", "small10k", "small5k"]);
     expect(parseAccounts("small5k,small10k")).toEqual(["main", "small5k", "small10k"]);
+    expect(parseAccounts("main,small10k,small5k,agent")).toEqual(["main", "small10k", "small5k", "agent"]);
+  });
+
+  it("gives every account a kind, and lists only the followers of main's signals as followers", () => {
+    expect(ACCOUNTS.main.kind).toBe("main");
+    expect(ACCOUNTS.small10k.kind).toBe("follower");
+    expect(ACCOUNTS.small5k.kind).toBe("follower");
+    expect(ACCOUNTS.agent.kind).toBe("agent");
+    expect(followerIds(["main", "small10k", "small5k", "agent"])).toEqual(["small10k", "small5k"]);
+    // The production list today: the same followers as before the agent existed.
+    expect(followerIds(parseAccounts("main,small10k,small5k"))).toEqual(["small10k", "small5k"]);
+    expect(followerIds(["main"])).toEqual([]);
   });
 
   it("maps modes to stored book modes and back", () => {
@@ -132,11 +174,14 @@ describe("account ids and book modes", () => {
     expect(bookMode("small5k", "PAPER")).toBe("PAPER@small5k");
     expect(bookAccount("PAPER@small5k")).toBe("small5k");
     expect(unbookMode("PAPER@small5k")).toBe("PAPER");
+    expect(bookMode("agent", "PAPER")).toBe("PAPER@agent");
+    expect(bookAccount("PAPER@agent")).toBe("agent");
   });
 
   it("prefixes state keys for accounts other than main", () => {
     expect(accountStateKey("main", "decision:last:NIFTY")).toBe("decision:last:NIFTY");
     expect(accountStateKey("small10k", "decision:last:NIFTY")).toBe("acct:small10k:decision:last:NIFTY");
     expect(accountStateKey("small5k", "settings")).toBe("acct:small5k:settings");
+    expect(accountStateKey("agent", "settings")).toBe("acct:agent:settings");
   });
 });

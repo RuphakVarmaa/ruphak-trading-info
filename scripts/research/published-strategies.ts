@@ -27,7 +27,7 @@
  */
 import { appendFileSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
-import { ACCOUNT_IDS, accountConfig, type AccountId } from "../../src/engine/accounts";
+import { ACCOUNT_IDS, accountConfig, followerIds, type AccountId } from "../../src/engine/accounts";
 import { computeCharges } from "../../src/engine/broker/charges";
 import { BacktestRun, seededRandom } from "../../src/engine/backtest/runBacktest";
 import { TradingCalendar, loadBundledHolidays } from "../../src/engine/calendar/calendar";
@@ -83,7 +83,8 @@ const BAR5 = 5 * MINUTE_MS;
 const HOUR = 60 * MINUTE_MS;
 const LAG = 90_000;
 const INDICES: IndexId[] = ["NIFTY", "SENSEX"];
-const ACCOUNTS: AccountId[] = [...ACCOUNT_IDS];
+// Main and the accounts that follow its signals (the agent account's decisions come from a model).
+const ACCOUNTS: AccountId[] = ["main", ...followerIds(ACCOUNT_IDS)];
 /** Main at production's limits (8 entries a day, 2 open in total), one position per index as the rules require. */
 const MAIN_LIMITS: DeepPartial<EngineConfig> = { sizing: { maxOpenPerIndex: 1, maxOpenTotal: 2, maxTradesPerDay: 8 } };
 

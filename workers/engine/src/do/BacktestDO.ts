@@ -5,7 +5,7 @@
  * finished results are also written to the optional R2 archive (backtests/<runId>.json).
  */
 import { DurableObject } from "cloudflare:workers";
-import { parseAccountId } from "../../../../src/engine/accounts";
+import { ACCOUNTS, parseAccountId } from "../../../../src/engine/accounts";
 import type { BacktestParams, BacktestResult } from "../../../../src/engine/api-types";
 import { loadYahooHistory } from "../../../../src/engine/backtest/history";
 import { BacktestRun, configForParams, followerConfigForParams, toBacktestResult } from "../../../../src/engine/backtest/runBacktest";
@@ -69,6 +69,7 @@ export class BacktestDO extends DurableObject<Env> {
         const events = meta.params.noEvents ? [] : await rt.repo.events.active(istMidnight(from) - 2 * DAY_MS);
         const account = parseAccountId(meta.params.account);
         if (account === null) return this.fail(meta, `unknown account ${String(meta.params.account).slice(0, 40)}`);
+        if (ACCOUNTS[account].kind === "agent") return this.fail(meta, "the agent account cannot be backtested: its decisions come from a model");
         const follows = account !== "main";
         // A follower backtest replays main with its own exits and applies the run's stop and target to the follower.
         const mainParams = follows ? { ...meta.params, stopPct: Math.abs(rt.cfg.exits.stopPct), targetPct: rt.cfg.exits.targetPct } : meta.params;

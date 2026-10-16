@@ -1,11 +1,12 @@
 import { describe, expect, it } from "vitest";
-import { ACCOUNTS } from "@/engine/accounts";
+import { ACCOUNTS, type AccountId } from "@/engine/accounts";
 import { DEFAULT_CONFIG } from "@/engine/config";
 import { BACKTEST_ACCOUNTS, backtestAccount, paramsFromQuery } from "./backtestParams";
 
 describe("backtest accounts", () => {
-  it("lists every account in the registry, main first, with its own exits and capital", () => {
-    expect(BACKTEST_ACCOUNTS.map((a) => a.id)).toEqual(Object.keys(ACCOUNTS));
+  it("lists every account in the registry except the agent, main first, with its own exits and capital", () => {
+    expect(BACKTEST_ACCOUNTS.map((a) => a.id)).toEqual(Object.keys(ACCOUNTS).filter((id) => ACCOUNTS[id as AccountId].kind !== "agent"));
+    expect(BACKTEST_ACCOUNTS.map((a) => a.id)).not.toContain("agent");
     expect(BACKTEST_ACCOUNTS[0].id).toBe("main");
     for (const a of BACKTEST_ACCOUNTS) {
       const patch = ACCOUNTS[a.id].configPatch;
@@ -31,5 +32,9 @@ describe("backtest accounts", () => {
     const unknown = paramsFromQuery({ account: "nope", stopPct: "-25" }, "2026-10-08");
     expect(unknown.account).toBeUndefined();
     expect(unknown.stopPct).toBe(-25);
+    // The agent account cannot be backtested: the query falls back to main.
+    const agent = paramsFromQuery({ account: "agent" }, "2026-10-08");
+    expect(agent.account).toBeUndefined();
+    expect(backtestAccount("agent").id).toBe("main");
   });
 });

@@ -12,6 +12,7 @@
 import type {
   AdvisorView,
   AccountView,
+  AgentView,
   BacktestParams,
   BacktestResult,
   ChargesView,
@@ -44,6 +45,8 @@ import type {
   OptionFlowView,
   TodayPlanView,
 } from "@/engine/api-types";
+import { emptyAgentView } from "@/engine/agent/view";
+import type { AgentSettings } from "@/engine/agent/types";
 import { defaultCalendar } from "@/engine/calendar/calendar";
 import { DEFAULT_CONFIG } from "@/engine/config";
 import { buildTodayPlan } from "@/engine/strategy/todayPlan";
@@ -171,6 +174,16 @@ const FOLLOWERS: FollowerSpec[] = [
     perTrade: { mean: 58, sd: 520, lo: -760, hi: 1280 },
   },
 ];
+
+/** The demo has no agent and makes no model call. */
+const MOCK_AGENT_SETTINGS: AgentSettings = {
+  mode: "off",
+  reflexModel: "demo (no model call)",
+  escalationModel: "demo (no model call)",
+  reviewModel: "demo (no model call)",
+  dailyUsdCap: 3,
+  escalationsPerDay: 8,
+};
 
 /** One paper account's book. Main's comes from the fixture seed; a follower's mirrors main's trades. */
 interface Book {
@@ -890,6 +903,13 @@ export class MockEngineApi implements EngineApi {
     return clone(await mockAdvisorFor(this).run(() => loadMockAdvisorMarket(this)));
   }
 
+  /** The options agent's view: empty until the demo agent exists (the agent account is not in the mock). */
+  async getAgent(date?: string): Promise<AgentView> {
+    const now = this.read();
+    void date;
+    return clone(emptyAgentView(now, MOCK_AGENT_SETTINGS, false, null));
+  }
+
 
   async getEvents(q: EventsQuery): Promise<EventClusterView[]> {
     const now = this.read();
@@ -1078,6 +1098,20 @@ export class MockEngineApi implements EngineApi {
       this.armedUntil = null;
     }
     return clone(this.stateDto(now));
+  }
+
+  async setAgentCandidate(token: string, candidateId: string, decision: "approve" | "reject", actor: string): Promise<AgentView> {
+    void candidateId;
+    void decision;
+    void actor;
+    this.assertToken(token);
+    throw new Error("CONFLICT: not implemented");
+  }
+
+  async rearmAgent(token: string, actor: string): Promise<AgentView> {
+    void actor;
+    this.assertToken(token);
+    throw new Error("CONFLICT: not implemented");
   }
 
   async startBacktest(token: string, params: BacktestParams, actor: string): Promise<{ runId: string; status: "RUNNING" | "DONE" }> {

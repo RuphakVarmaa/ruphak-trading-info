@@ -6,6 +6,7 @@
 import { WorkerEntrypoint } from "cloudflare:workers";
 import type {
   AdvisorView,
+  AgentView,
   BacktestParams,
   BacktestResult,
   CopyTicketView,
@@ -210,6 +211,12 @@ export class EngineAdmin extends WorkerEntrypoint<Env> implements EngineApi {
     return this.advisor().run(String(reason ?? "").trim().slice(0, 100)) as Promise<AdvisorView>;
   }
 
+  /** The options agent's view. Not deployed yet: the AgentDO arrives with the agent's Worker changes. */
+  async getAgent(date?: string): Promise<AgentView> {
+    void date;
+    throw new AdminError("CONFLICT", "agent not deployed");
+  }
+
 
   async verifyAdmin(token: string): Promise<boolean> {
     try {
@@ -250,5 +257,19 @@ export class EngineAdmin extends WorkerEntrypoint<Env> implements EngineApi {
   async startBacktest(token: string, params: BacktestParams, actor: string): Promise<{ runId: string; status: "RUNNING" | "DONE" }> {
     this.requireAdmin(token);
     return startBacktest(this.env, this.ctx, params, cleanActor(actor));
+  }
+
+  async setAgentCandidate(token: string, candidateId: string, decision: "approve" | "reject", actor: string): Promise<AgentView> {
+    this.requireAdmin(token);
+    void candidateId;
+    void decision;
+    void actor;
+    throw new AdminError("CONFLICT", "agent not deployed");
+  }
+
+  async rearmAgent(token: string, actor: string): Promise<AgentView> {
+    this.requireAdmin(token);
+    void actor;
+    throw new AdminError("CONFLICT", "agent not deployed");
   }
 }

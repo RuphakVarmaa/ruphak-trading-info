@@ -13,7 +13,7 @@
  * plus RELAY_LIVE on the relay; otherwise every order is simulated by the PaperBroker.
  */
 import { DurableObject } from "cloudflare:workers";
-import { parseAccountId, type AccountId } from "../../../../src/engine/accounts";
+import { followerIds, parseAccountId, type AccountId } from "../../../../src/engine/accounts";
 import type { AccountView, OptionFlowView } from "../../../../src/engine/api-types";
 import type { TradingCalendar } from "../../../../src/engine/calendar/calendar";
 import { MINUTE_MS, istAt, istDate, istIso, systemClock } from "../../../../src/engine/clock";
@@ -240,8 +240,7 @@ export class TradingEngineDO extends DurableObject<Env> {
       trailSent: new Set(),
     });
     this.copy = copyFor(repo, cfg, view("main"), this.alerts);
-    this.followers = ids
-      .filter((id) => id !== "main")
+    this.followers = followerIds(ids)
       .map((id) => {
         const a = accountRuntime(this.rt, id);
         // Its alert dedupe keys live under the account's prefix (the scoped repo's state).

@@ -1,13 +1,17 @@
 /**
- * Paper accounts. "main" is the engine's own book; every other account follows main's signals with
- * its own capital, strike choice, sizing, loss caps and exits, and is never LIVE. Pure (no I/O), so
- * the dashboard can import it.
+ * Paper accounts. "main" is the engine's own book. A "follower" follows main's signals with its own
+ * capital, strike choice, sizing, loss caps and exits. The "agent" account is a paper experiment whose
+ * entries come from a model's judgement of each 5-minute candle, gated, sized and exited by code
+ * (src/engine/agent). Only main can be LIVE. Pure (no I/O), so the dashboard can import it.
  */
 import { withOverrides, type DeepPartial, type EngineConfig } from "./config";
 import type { TradingMode } from "./types";
 
-export const ACCOUNT_IDS = ["main", "small10k", "small5k"] as const;
+export const ACCOUNT_IDS = ["main", "small10k", "small5k", "agent"] as const;
 export type AccountId = (typeof ACCOUNT_IDS)[number];
+
+/** "main": the engine's own book; "follower": trades main's signals; "agent": the options agent's paper experiment. */
+export type AccountKind = "main" | "follower" | "agent";
 
 export interface AccountSpec {
   id: AccountId;
@@ -15,6 +19,7 @@ export interface AccountSpec {
   /** Prefix for alerts and compact UI. */
   shortLabel: string;
   paperOnly: boolean;
+  kind: AccountKind;
   /**
    * Applied on top of the Worker config. It pins every value the account depends on, so the main
    * account's Worker variables (capital, indices, position and entry limits) cannot leak in.
@@ -23,12 +28,13 @@ export interface AccountSpec {
 }
 
 export const ACCOUNTS: Record<AccountId, AccountSpec> = {
-  main: { id: "main", label: "Main account", shortLabel: "Main", paperOnly: false, configPatch: {} },
+  main: { id: "main", label: "Main account", shortLabel: "Main", paperOnly: false, kind: "main", configPatch: {} },
   small10k: {
     id: "small10k",
     label: "₹10k account",
     shortLabel: "₹10k",
     paperOnly: true,
+    kind: "follower",
     configPatch: {
       capitalRupees: 10_000,
       indices: ["NIFTY", "SENSEX"],
@@ -65,6 +71,7 @@ export const ACCOUNTS: Record<AccountId, AccountSpec> = {
     label: "₹5k account",
     shortLabel: "₹5k",
     paperOnly: true,
+    kind: "follower",
     configPatch: {
       capitalRupees: 5_000,
       indices: ["NIFTY", "SENSEX"],
@@ -104,6 +111,42 @@ export const ACCOUNTS: Record<AccountId, AccountSpec> = {
       exits: { stopPct: -35, targetPct: 60 },
     },
   },
+  agent: {
+    id: "agent",
+    label: "Agent ₹5L",
+    shortLabel: "Agent",
+    paperOnly: true,
+    kind: "agent",
+    // A paper experiment: a model judges each 5-minute candle; code owns every threshold, size and exit.
+    // Pins every value the Worker vars set (CAPITAL_INR, INDICES, MAX_OPEN_PER_INDEX, MAX_TRADES_PER_DAY,
+    // EDGE_GATE; workers/engine/src/runtime.ts) so main's settings cannot leak in. The limits must agree
+    // with AGENT_LIMITS (src/engine/agent/constants.ts).
+    configPatch: {
+      capitalRupees: 500_000,
+      indices: ["NIFTY", "SENSEX"],
+      selection: { mode: "ATM", itmSteps: 0 },
+      // The verdict recorded with every decision uses the calibrated edge check; the agent's entries skip
+      // the measured-edge checks, as the paper practice quota does.
+      gates: { expectedMoveModel: "calibrated" },
+      strategy: { mode: "CONVICTION" },
+      sizing: {
+        defaultRiskPct: 1,
+        minRiskPct: 0.25,
+        maxRiskPctPerTrade: 1,
+        maxPremiumPctPerTrade: 4,
+        maxCombinedPremiumPct: 8,
+        kellyFraction: 0.25,
+        kellyMinTrades: 20,
+        maxLots: 3,
+        maxOpenPerIndex: 1,
+        maxOpenTotal: 2,
+        maxTradesPerDay: 6,
+        useCurrentEquity: true,
+      },
+      risk: { dailyLossCapPct: 3, weeklyLossCapPct: 6, maxConsecutiveLossesPerDay: 3, prospectiveLossCap: true },
+      exits: { stopPct: -30, targetPct: 50, trailActivatePct: 30, trailGivebackPct: 50, timeStopMinPnlPct: 10, squareOffIst: "15:05" },
+    },
+  },
 };
 
 export function accountSpec(id: AccountId): AccountSpec {
@@ -113,6 +156,11 @@ export function accountSpec(id: AccountId): AccountSpec {
 /** The account's engine config: the Worker config for main, otherwise the Worker config with the account's patch. */
 export function accountConfig(base: EngineConfig, id: AccountId): EngineConfig {
   return id === "main" ? base : withOverrides(base, ACCOUNTS[id].configPatch);
+}
+
+/** The accounts that follow main's signals (never main, never the agent). */
+export function followerIds(ids: readonly AccountId[]): AccountId[] {
+  return ids.filter((id) => ACCOUNTS[id].kind === "follower");
 }
 
 /** Known account id, "main" when empty, or null when the value names no account. */

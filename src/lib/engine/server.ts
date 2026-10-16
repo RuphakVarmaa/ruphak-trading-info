@@ -56,11 +56,14 @@ const RPC_METHODS = [
   "getCopyTickets",
   "getAdvisor",
   "runAdvisor",
+  "getAgent",
   "verifyAdmin",
   "setArmed",
   "setKillSwitch",
   "setMode",
   "startBacktest",
+  "setAgentCandidate",
+  "rearmAgent",
 ] as const satisfies readonly (keyof EngineApi)[];
 
 // Every EngineApi method must be forwarded: a method missing from RPC_METHODS fails to compile here.
