@@ -49,8 +49,8 @@ function fakeClient(opts: { adviceThrows?: boolean; researchThrows?: boolean; on
       outlook: [{ index: "NIFTY", horizon: "TODAY", lean: "UP", confidence: "LOW", rangeLow: null, rangeHigh: null, why: ["covering"] }],
       factors: [{ key: "FII_DII", label: "Funds", reading: "SUPPORTS_DOWN", detail: "FIIs sold ₹850 crore.", source: "web research: Mint" }],
       ideas: [
-        { candidateId: pick.id, horizon: "TODAY", entryLow: ask * 0.98, entryHigh: ask * 1.01, stop: ask * 0.7, target: ask * 1.5, exitBy: `${ctx.now.slice(0, 10)}T14:45`, why: ["covering"], wrongIf: "The index falls back below VWAP.", confidence: "LOW", condition: null },
-        { candidateId: "NIFTY-2099-01-01-1-CE", horizon: "WEEK", entryLow: 10, entryHigh: 11, stop: 7, target: 20, exitBy: "", why: [], wrongIf: "", confidence: "LOW", condition: null },
+        { candidateId: pick.id, horizon: "TODAY", entryLow: ask * 0.98, entryHigh: ask * 1.01, stop: ask * 0.7, target: ask * 1.5, exitBy: `${ctx.now.slice(0, 10)}T14:45`, why: ["covering"], wrongIf: "The index falls back below VWAP.", confidence: "LOW", condition: null, bearCase: "Call writers are still adding above the strike." },
+        { candidateId: "NIFTY-2099-01-01-1-CE", horizon: "WEEK", entryLow: 10, entryHigh: 11, stop: 7, target: 20, exitBy: "", why: [], wrongIf: "", confidence: "LOW", condition: null, bearCase: null },
       ],
       zeroHero: { applicable: false, summary: "" },
       premium: { verdict: "NORMAL", detail: "IV close to VIX." },
