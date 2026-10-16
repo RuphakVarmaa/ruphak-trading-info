@@ -35,7 +35,10 @@
       { "name": "BACKTEST_DO", "class_name": "BacktestDO" },
       { "name": "MARKET_FEED_DO", "class_name": "MarketFeedDO" },
       // The Advisor tab's plain-English brief (Claude Opus 5.5 + web research), run on demand and once a trading day.
-      { "name": "ADVISOR_DO", "class_name": "AdvisorDO" }
+      { "name": "ADVISOR_DO", "class_name": "AdvisorDO" },
+      // The options agent (a paper experiment, docs/AGENT.md): model calls, decisions, cost ledger and nightly review.
+      // It never places orders; the trading DO executes its decisions on the agent's own paper account.
+      { "name": "AGENT_DO", "class_name": "AgentDO" }
     ]
   },
   "migrations": [
@@ -44,7 +47,9 @@
     // Upstox Market Data Feed V3 WebSocket (1-second index levels and option quotes).
     { "tag": "v3", "new_sqlite_classes": ["MarketFeedDO"] },
     // The advisor's brief, run state and history (AdvisorDO).
-    { "tag": "v4", "new_sqlite_classes": ["AdvisorDO"] }
+    { "tag": "v4", "new_sqlite_classes": ["AdvisorDO"] },
+    // The options agent's records in its own SQLite (AgentDO).
+    { "tag": "v5", "new_sqlite_classes": ["AgentDO"] }
   ],
   "d1_databases": [
     {
@@ -103,8 +108,9 @@
     "MAX_TRADES_PER_DAY": "8",
     // Paper accounts to run, comma-separated; main is always on. "small10k" and "small5k" add the
     // ₹10,000 and ₹5,000 accounts that follow main's signals with one cheaper out-of-the-money lot
-    // (src/engine/accounts.ts).
-    "ACCOUNTS": "main,small10k,small5k",
+    // (src/engine/accounts.ts). "agent" adds the options agent's ₹5L paper book (a paper experiment run by a
+    // model's judgement of each 5-minute candle; code owns every limit, size and exit; docs/AGENT.md).
+    "ACCOUNTS": "main,small10k,small5k,agent",
     // Edge gate for every account: "calibrated" re-runs the edge check on measured index moves and
     // realized volatility (reports/wp2-wp5-gates.md). On today's signals it blocks every entry, so it
     // pauses buying until a signal earns its decay and costs (owner's decision, 9 Oct 2026).
@@ -126,7 +132,18 @@
     "ADVISOR_MODEL": "claude-opus-5-5",
     "ADVISOR_MAX_RUNS_PER_DAY": "24",
     "ADVISOR_MIN_GAP_MIN": "4",
-    "ADVISOR_AUTO_RUN": "09:25"
+    "ADVISOR_AUTO_RUN": "09:25",
+    // Options agent (a paper experiment; docs/AGENT.md), with the ANTHROPIC_API_KEY secret. AGENT_MODE: "off",
+    // "shadow" (every candle judged and gated, decisions and what paper mode would have done recorded; no orders,
+    // positions or trades) or "paper" (orders on the agent's own paper account only; never LIVE).
+    "AGENT_MODE": "shadow",
+    // The reflex model judges each closed 5-minute candle; the deep model handles escalations and the nightly review.
+    "AGENT_MODEL": "claude-haiku-5-5",
+    "AGENT_ESCALATION_MODEL": "claude-opus-5-5",
+    "AGENT_REVIEW_MODEL": "claude-opus-5-5",
+    // USD per IST day across every agent model call; past it no more candles are judged (no new entries).
+    "AGENT_DAILY_USD_CAP": "3",
+    "AGENT_ESCALATIONS_PER_DAY": "8"
   },
   "env": {
     "preview": {
@@ -152,7 +169,14 @@
         "ADVISOR_MODEL": "claude-opus-5-5",
         "ADVISOR_MAX_RUNS_PER_DAY": "24",
         "ADVISOR_MIN_GAP_MIN": "4",
-        "ADVISOR_AUTO_RUN": "off"
+        "ADVISOR_AUTO_RUN": "off",
+        // The same keys as the top level (so the generated Env requires them); the agent stays off in preview.
+        "AGENT_MODE": "off",
+        "AGENT_MODEL": "claude-haiku-5-5",
+        "AGENT_ESCALATION_MODEL": "claude-opus-5-5",
+        "AGENT_REVIEW_MODEL": "claude-opus-5-5",
+        "AGENT_DAILY_USD_CAP": "3",
+        "AGENT_ESCALATIONS_PER_DAY": "8"
       },
       "d1_databases": [
         {
@@ -183,7 +207,8 @@
           { "name": "INGEST_DO", "class_name": "IngestDO" },
           { "name": "BACKTEST_DO", "class_name": "BacktestDO" },
           { "name": "MARKET_FEED_DO", "class_name": "MarketFeedDO" },
-          { "name": "ADVISOR_DO", "class_name": "AdvisorDO" }
+          { "name": "ADVISOR_DO", "class_name": "AdvisorDO" },
+          { "name": "AGENT_DO", "class_name": "AgentDO" }
         ]
       },
       // The same migrations as the top level (an environment would otherwise inherit them).
@@ -191,7 +216,8 @@
         { "tag": "v1", "new_sqlite_classes": ["TradingEngineDO", "IngestDO"] },
         { "tag": "v2", "new_sqlite_classes": ["BacktestDO"] },
         { "tag": "v3", "new_sqlite_classes": ["MarketFeedDO"] },
-        { "tag": "v4", "new_sqlite_classes": ["AdvisorDO"] }
+        { "tag": "v4", "new_sqlite_classes": ["AdvisorDO"] },
+        { "tag": "v5", "new_sqlite_classes": ["AgentDO"] }
       ],
       "triggers": { "crons": ["*/30 * * * *"] }
     }

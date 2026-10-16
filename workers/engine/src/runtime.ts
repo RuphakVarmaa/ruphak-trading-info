@@ -5,6 +5,8 @@
  */
 import { ACCOUNTS, accountConfig, parseAccounts, type AccountId, type AccountSpec } from "../../../src/engine/accounts";
 import { parseAdvisorSettings, type AdvisorSettings } from "../../../src/engine/advisor/runState";
+import { parseAgentSettings } from "../../../src/engine/agent/config";
+import type { AgentSettings } from "../../../src/engine/agent/types";
 import type { AccountView } from "../../../src/engine/api-types";
 import { TradingCalendar, defaultCalendar } from "../../../src/engine/calendar/calendar";
 import { makeConfig, parseExpectedMoveModel, parseIndices, parseMaxOpenPerIndex, parseMaxTradesPerDay, type EngineConfig } from "../../../src/engine/config";
@@ -18,7 +20,7 @@ import { UPSTOX_QUOTE_SOURCE, UpstoxQuotes } from "../../../src/engine/market/up
 import { D1Repository } from "./db/d1Repository";
 import type { QuoteSource } from "./quoteRecorder";
 
-export const ENGINE_VERSION = "2026.10.16-5";
+export const ENGINE_VERSION = "2026.10.17-1";
 
 export interface Runtime {
   env: Env;
@@ -115,6 +117,23 @@ export function enabledAccounts(env: Env): AccountId[] {
   return parseAccounts(env.ACCOUNTS);
 }
 
+/** True when ACCOUNTS lists the options agent's paper account (a paper experiment; docs/AGENT.md). */
+export function agentEnabled(env: Env): boolean {
+  return enabledAccounts(env).includes("agent");
+}
+
+/** The options agent's mode, models and limits (Worker vars AGENT_*; defaults and bounds in src/engine/agent/config.ts). */
+export function agentSettings(env: Env): AgentSettings {
+  return parseAgentSettings({
+    AGENT_MODE: env.AGENT_MODE,
+    AGENT_MODEL: env.AGENT_MODEL,
+    AGENT_ESCALATION_MODEL: env.AGENT_ESCALATION_MODEL,
+    AGENT_REVIEW_MODEL: env.AGENT_REVIEW_MODEL,
+    AGENT_DAILY_USD_CAP: env.AGENT_DAILY_USD_CAP,
+    AGENT_ESCALATIONS_PER_DAY: env.AGENT_ESCALATIONS_PER_DAY,
+  });
+}
+
 export interface AccountRuntime {
   spec: AccountSpec;
   cfg: EngineConfig;
@@ -127,10 +146,13 @@ export function accountRuntime(rt: Runtime, id: AccountId): AccountRuntime {
   return { spec: ACCOUNTS[id], cfg, repo: accountRepository(rt.repo, id, cfg, Date.now) };
 }
 
-export function accountViews(rt: Runtime, ids: AccountId[]): AccountView[] {
+export function accountViews(rt: Pick<Runtime, "cfg">, ids: AccountId[]): AccountView[] {
   return ids.map((id) => {
     const s = ACCOUNTS[id];
-    return { id, label: s.label, shortLabel: s.shortLabel, paperOnly: s.paperOnly, capitalRupees: accountConfig(rt.cfg, id).capitalRupees };
+    const view: AccountView = { id, label: s.label, shortLabel: s.shortLabel, paperOnly: s.paperOnly, capitalRupees: accountConfig(rt.cfg, id).capitalRupees };
+    // Only the agent's view carries a kind: main's and the followers' DTOs stay exactly as they were.
+    if (s.kind === "agent") view.kind = "agent";
+    return view;
   });
 }
 

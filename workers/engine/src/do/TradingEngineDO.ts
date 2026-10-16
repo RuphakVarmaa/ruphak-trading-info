@@ -3,7 +3,9 @@
  *
  * Alarm loop: every 30 s in market hours (60 s when DEGRADED) it runs the shared trading cycle
  * (features -> conviction -> gates -> plan -> entry) in the current entry mode, then position
- * cycles for every mode with open positions, polling exits twice more while positioned.
+ * cycles for every mode with open positions, polling exits twice more while positioned. Last, under
+ * its own time budget, comes the options agent's step (a paper experiment on its own account,
+ * workers/engine/src/agent/agentRunner.ts): main's work and its timing never wait for it.
  * Off hours it refreshes a market snapshot hourly and sleeps until 09:00 IST.
  * After a tick (never inside it) the read-only quote recorder may take a snapshot of option quotes (the
  * Groww Trade API, or Upstox's free read-only token) for the 09:15 straddle study
@@ -13,7 +15,8 @@
  * plus RELAY_LIVE on the relay; otherwise every order is simulated by the PaperBroker.
  */
 import { DurableObject } from "cloudflare:workers";
-import { followerIds, parseAccountId, type AccountId } from "../../../../src/engine/accounts";
+import { accountStateKey, followerIds, parseAccountId, type AccountId } from "../../../../src/engine/accounts";
+import type { ReflexBatch } from "../../../../src/engine/agent/types";
 import type { AccountView, OptionFlowView } from "../../../../src/engine/api-types";
 import type { TradingCalendar } from "../../../../src/engine/calendar/calendar";
 import { MINUTE_MS, istAt, istDate, istIso, systemClock } from "../../../../src/engine/clock";
@@ -49,6 +52,8 @@ import { randomId, type Broker, type EngineDeps, type MarketDataSource, type Opt
 import { entryMode } from "../../../../src/engine/settings";
 import type { EngineMode, EnginePhase, EngineSettings, Fill, Heartbeat, IndexId, MarketFeatures, Order, Position, TradingMode } from "../../../../src/engine/types";
 import { makeRefId } from "../../../../src/engine/util/refId";
+import { accountRepository } from "../../../../src/engine/repo/accountRepo";
+import { ALERT_PREFIX, AgentRunner, agentQuoteSource, agentStepBudgetMs, killAll, type KillStep } from "../agent/agentRunner";
 import { runBarArchive, type BarArchiveOptions, type BarArchiveStatus } from "../barArchive";
 import { sendEntryAlert, sendExitAlert, sendTrailAlerts, type CopyAlertContext } from "../copyAlerts";
 import { CachedInstruments } from "../instruments";
@@ -56,6 +61,7 @@ import { QUOTE_RECORDER_STATE_KEY, QuoteRecorder, type QuoteRecorderStatus, type
 import {
   accountRuntime,
   accountViews,
+  agentSettings,
   enabledAccounts,
   errorMessage,
   growwDataClient,
@@ -151,6 +157,13 @@ export class TradingEngineDO extends DurableObject<Env> {
   /** Set inside a tick when the next tick must follow immediately (kill switch engaged mid-tick). */
   private tickSoon = false;
   private readonly followers: Follower[];
+  /** The options agent's account is in ACCOUNTS (its runner is built in every AGENT_MODE, so its exits always run). */
+  private readonly agentEnabled: boolean;
+  /** The options agent's runner; null when it is not enabled or could not be built (main is unaffected either way). */
+  private readonly agent: AgentRunner | null = null;
+  private agentInitError: string | null = null;
+  /** Telegram for the agent when its runner is missing, deduplicated under the agent's kv prefix (acct:agent:). */
+  private readonly agentAlerts: Alerts;
   /** The running bar-archive job, if any (concurrent callers share it). */
   private archiving: Promise<BarArchiveStatus> | null = null;
 
@@ -247,6 +260,17 @@ export class TradingEngineDO extends DurableObject<Env> {
         const alerts = new Alerts(env, a.repo.state, logger);
         return { ...a, alerts, errors: 0, copy: copyFor(a.repo, a.cfg, view(id), alerts) };
       });
+    this.agentEnabled = ids.includes("agent");
+    this.agentAlerts = new Alerts(env, { get: <T,>(k: string) => repo.state.get<T>(accountStateKey("agent", k)), set: <T,>(k: string, v: T) => repo.state.set(accountStateKey("agent", k), v) }, logger);
+    if (this.agentEnabled) {
+      // A failure here (for example the agent's pinned config failing validation) leaves the agent off, never main.
+      try {
+        this.agent = this.buildAgentRunner(env, ctx);
+      } catch (err) {
+        this.agentInitError = errorMessage(err).slice(0, 300);
+        logger.error("agent runner not built: the agent stays off", { error: this.agentInitError });
+      }
+    }
     void ctx.blockConcurrencyWhile(async () => {
       this.hot = { ...INITIAL_HOT, ...((await ctx.storage.get<HotState>("hot")) ?? {}) };
     });
@@ -255,6 +279,35 @@ export class TradingEngineDO extends DurableObject<Env> {
   // -------------------------------------------------------------------------
   // Wiring
   // -------------------------------------------------------------------------
+
+  /**
+   * The options agent's runner: its own account (PAPER@agent), its own Upstox quote budget (never paperQuotes, so its
+   * requests cannot push main onto synthetic prices) and the AgentDO and MarketFeedDO stubs; main's market data.
+   */
+  private buildAgentRunner(env: Env, ctx: DurableObjectState): AgentRunner {
+    const account = accountRuntime(this.rt, "agent");
+    const agentDo = () => env.AGENT_DO.get(env.AGENT_DO.idFromName("agent"));
+    const feed = () => env.MARKET_FEED_DO.get(env.MARKET_FEED_DO.idFromName("feed"));
+    return new AgentRunner({
+      account,
+      mainRepo: this.rt.repo,
+      settings: agentSettings(env),
+      storage: { get: <T,>(key: string) => ctx.storage.get<T>(key), put: <T,>(key: string, value: T) => ctx.storage.put(key, value) },
+      agentDo: {
+        submitBar: (input) => agentDo().submitBar(input),
+        takeDecisions: (afterBarMs) => agentDo().takeDecisions(afterBarMs) as Promise<ReflexBatch | null>,
+        recordExecution: (rec) => agentDo().recordExecution(rec),
+      },
+      feed: { getOptionFlowAsOf: (index, asOfMs) => feed().getOptionFlowAsOf(index, asOfMs) as Promise<OptionFlowView | null> },
+      quotes: agentQuoteSource(upstoxLiveClient(env)),
+      market: this.market,
+      instruments: this.instruments,
+      marketContext: this.marketContext,
+      alerts: new Alerts(env, account.repo.state, this.rt.logger),
+      logger: this.rt.logger,
+      calendar: this.rt.calendar,
+    });
+  }
 
   /** Groww data, relay and the LIVE_TRADING var are all present. */
   private get liveAvailable(): boolean {
@@ -553,17 +606,54 @@ export class TradingEngineDO extends DurableObject<Env> {
     counts = await this.openCounts();
     for (const wait of EXIT_POLLS_MS) {
       if (books().length === 0 && (await followersOpen()) === 0) break;
-      await new Promise((r) => setTimeout(r, wait));
+      await this.pollWait(wait, cal);
       for (const book of books()) await this.positionCycle(book, report);
       for (const f of this.followers) await this.followerPositions(f, report, cal);
       counts = await this.openCounts();
     }
+    // The options agent last, under its own time budget: main's exits and polls are done.
+    await this.agentStep(report, cal, degraded, now);
 
     if (this.liveAvailable && (counts.LIVE > 0 || mode === "LIVE") && now - this.hot.lastReconcileMs >= RECONCILE_EVERY_MS) {
       await this.reconcile();
     }
     logger.info("tick", { phase, mode, decisions: report.decisions.length, entries: report.entries.length, halted: report.halted, open: counts });
     return now + (degraded ? DEGRADED_LOOP_MS : LOOP_MS);
+  }
+
+  /** Main's wait between exit polls. The agent's code exits run during it and can never make it longer or fail it. */
+  private async pollWait(ms: number, cal: TradingCalendar): Promise<void> {
+    const pause = new Promise<void>((resolve) => setTimeout(resolve, ms));
+    const runner = this.agent;
+    await Promise.all([pause, runner ? Promise.race([runner.exitsOnly(cal).catch(() => {}), pause]) : pause]);
+  }
+
+  /**
+   * The options agent's step (agentRunner.ts) under its own budget, agentStepBudgetMs: TE waits at most that long, and
+   * the runner checks the same deadline before each remote call. It never throws and never counts toward DEGRADED.
+   */
+  private async agentStep(report: CycleReport, cal: TradingCalendar, degraded: boolean, tickStartMs: number): Promise<void> {
+    if (!this.agentEnabled) return;
+    const runner = this.agent;
+    if (!runner) {
+      await this.agentAlerts.send(`⚠ ${ALERT_PREFIX} is in ACCOUNTS but could not start, so it stays off: ${this.agentInitError ?? "unknown error"}`, { key: "agent-init", minIntervalMs: 6 * 60 * MINUTE_MS });
+      return;
+    }
+    const budget = agentStepBudgetMs(tickStartMs, Date.now());
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    try {
+      await Promise.race([
+        runner.step(report, cal, degraded, Date.now() + budget),
+        new Promise<void>((resolve) => {
+          timer = setTimeout(resolve, budget);
+        }),
+      ]);
+    } catch (err) {
+      // step() never throws; this keeps any surprise out of main's tick.
+      this.rt.logger.error("agent step failed", { error: errorMessage(err) });
+    } finally {
+      clearTimeout(timer);
+    }
   }
 
   private async positionCycle(book: BookMode, report: CycleReport): Promise<PositionReport> {
@@ -791,6 +881,26 @@ export class TradingEngineDO extends DurableObject<Env> {
         logger.error("follower end of day failed", { account: f.spec.id, error: errorMessage(err) });
       }
     }
+    if (this.agentEnabled) {
+      // The options agent closes its leftovers like a follower; the AgentDO's nightly review grades its decisions.
+      try {
+        if (!this.agent) throw new Error(`the agent is not running: ${this.agentInitError ?? "unknown error"}`);
+        const deps = this.agent.deps();
+        for (const p of await deps.repo.positions.open("PAPER")) await this.closeAtMark(deps, p, "SQUARE_OFF", "closed at the last mark after the session");
+        await runEndOfDay(deps, { grade: false, performance: false });
+        lines.push(await this.agent.afterEndOfDay());
+      } catch (err) {
+        lines.push(`Agent: end-of-day failed: ${errorMessage(err)}`);
+        logger.error("agent end of day failed", { error: errorMessage(err) });
+      } finally {
+        // Queued even when the end of day failed (the POSTMARKET cron asks too; the AgentDO keeps one per day).
+        try {
+          await this.env.AGENT_DO.get(this.env.AGENT_DO.idFromName("agent")).scheduleReview(istDate(now));
+        } catch (err) {
+          logger.error("agent review not scheduled", { error: errorMessage(err) });
+        }
+      }
+    }
     await this.alerts.send(`📊 ${istDate(now)} summary\n${lines.join("\n")}`);
     return { ok: true, message: lines.join(" | ") };
   }
@@ -861,12 +971,22 @@ export class TradingEngineDO extends DurableObject<Env> {
    * `inTick` is true when called from inside a tick: the exits then run in an immediate follow-up tick.
    */
   private async engageKill(reason: string, actor: string, squareOff: boolean, inTick = false): Promise<void> {
+    await this.setMainKill(reason, actor, squareOff);
+    if (squareOff) await this.squareOffNow(reason, actor, inTick);
+  }
+
+  /** Main's kill switch on, audited and alerted; no exits yet. */
+  private async setMainKill(reason: string, actor: string, squareOff: boolean): Promise<void> {
     const { repo } = this.rt;
     const now = Date.now();
     await repo.settings.update({ killSwitch: true, killReason: reason.slice(0, 300), armedUntil: null }, actor);
     await repo.audit.append({ ts: now, actor, action: "kill", detail: { reason, squareOff } });
     await this.alerts.send(`🛑 KILL SWITCH by ${actor}: ${reason}${squareOff ? " (squaring off)" : ""}`);
-    if (!squareOff) return;
+  }
+
+  /** Exits every position whose account's kill switch is on: an immediate tick (or the next, inside a tick); LIVE also via the relay's panic. */
+  private async squareOffNow(reason: string, actor: string, inTick = false): Promise<void> {
+    const { repo } = this.rt;
     if (inTick) this.tickSoon = true;
     else {
       if (this.ticking) await this.ticking;
@@ -883,30 +1003,82 @@ export class TradingEngineDO extends DurableObject<Env> {
   }
 
   /**
-   * Kill switch for main (default), one follower account, or "all". A follower's kill switch only
+   * Kill switch for main (default), one follower account, the agent, or "all". A follower's kill switch only
    * stops that account; its position cycles treat it as a halt and exit at market.
    */
   async setKillSwitch(req: { engaged: boolean; squareOff: boolean; reason: string }, actor: string, account?: string): Promise<AdminResult> {
     const target = account === "all" ? "all" : parseAccountId(account);
     if (target === null) return { ok: false, message: `unknown account ${String(account).slice(0, 40)}` };
-    const followers = target === "all" ? this.followers : this.followers.filter((f) => f.spec.id === target);
-    if (target !== "all" && target !== "main" && followers.length === 0) return { ok: false, message: `account ${target} is not enabled` };
-    const messages: string[] = [];
-    for (const f of followers) {
-      await f.repo.settings.update(req.engaged ? { killSwitch: true, killReason: (req.reason || "manual").slice(0, 300) } : { killSwitch: false, killReason: null }, actor);
-      await f.repo.audit.append({ ts: Date.now(), actor, action: req.engaged ? "kill" : "kill_reset", detail: { reason: req.reason, squareOff: req.squareOff } });
-      await f.alerts.send(req.engaged ? `🛑 ${f.spec.shortLabel} KILL SWITCH by ${actor}: ${req.reason || "manual"}` : `✅ ${f.spec.shortLabel} kill switch reset by ${actor}`);
-      messages.push(`${f.spec.shortLabel} kill switch ${req.engaged ? "engaged" : "reset"}`);
+    if (target === "all") return this.killAllAccounts(req, actor);
+    if (target === "agent") return this.agentKill(req, actor, false);
+    if (target === "main") return this.setMainKillSwitch(req, actor);
+    const f = this.followers.find((x) => x.spec.id === target);
+    if (!f) return { ok: false, message: `account ${target} is not enabled` };
+    const res = await this.followerKill(f, req, actor);
+    if (req.engaged && req.squareOff) {
+      if (this.ticking) await this.ticking;
+      await this.runTick();
     }
-    if (target !== "all" && target !== "main") {
-      if (req.engaged && req.squareOff) {
-        if (this.ticking) await this.ticking;
-        await this.runTick();
-      }
-      return { ok: true, message: messages.join("; ") };
+    return res;
+  }
+
+  /**
+   * "all" (Telegram /kill): main's switch first, then each follower's and the agent's, each on its own so one failure
+   * never stops the rest (killAll). Then one tick squares off every account at once.
+   */
+  private async killAllAccounts(req: { engaged: boolean; squareOff: boolean; reason: string }, actor: string): Promise<AdminResult> {
+    const reason = req.reason || "manual";
+    const main: KillStep = {
+      label: "main",
+      run: async () => {
+        if (!req.engaged) return this.setMainKillSwitch(req, actor);
+        await this.setMainKill(reason, actor, req.squareOff);
+        return { ok: true, message: "kill switch engaged" };
+      },
+    };
+    const others: KillStep[] = this.followers.map((f) => ({ label: f.spec.shortLabel, run: () => this.followerKill(f, req, actor) }));
+    if (this.agentEnabled) others.push({ label: "Agent", run: () => this.agentKill(req, actor, true) });
+    const res = await killAll(req.engaged, main, others);
+    if (req.engaged && req.squareOff) await this.squareOffNow(reason, actor);
+    return res;
+  }
+
+  /** One follower's kill switch. */
+  private async followerKill(f: Follower, req: { engaged: boolean; squareOff: boolean; reason: string }, actor: string): Promise<AdminResult> {
+    await f.repo.settings.update(req.engaged ? { killSwitch: true, killReason: (req.reason || "manual").slice(0, 300) } : { killSwitch: false, killReason: null }, actor);
+    await f.repo.audit.append({ ts: Date.now(), actor, action: req.engaged ? "kill" : "kill_reset", detail: { reason: req.reason, squareOff: req.squareOff } });
+    await f.alerts.send(req.engaged ? `🛑 ${f.spec.shortLabel} KILL SWITCH by ${actor}: ${req.reason || "manual"}` : `✅ ${f.spec.shortLabel} kill switch reset by ${actor}`);
+    return { ok: true, message: `${f.spec.shortLabel} kill switch ${req.engaged ? "engaged" : "reset"}` };
+  }
+
+  /**
+   * The agent account's kill switch (AgentRunner.setKill). Alone, an engage that squares off runs the agent's own
+   * exits and never a tick; for "all", the one tick after every switch does it. A reset is refused during the
+   * agent's drawdown halt (use Re-arm).
+   */
+  private async agentKill(req: { engaged: boolean; squareOff: boolean; reason: string }, actor: string, all: boolean): Promise<AdminResult> {
+    if (!this.agentEnabled) return { ok: false, message: "account agent is not enabled" };
+    if (!this.agent) {
+      // The runner did not start; the switch is still the account's own (kv acct:agent:settings).
+      const repo = accountRepository(this.rt.repo, "agent", this.rt.cfg, Date.now);
+      await repo.settings.update(req.engaged ? { killSwitch: true, killReason: (req.reason || "manual").slice(0, 300) } : { killSwitch: false, killReason: null }, actor);
+      return { ok: true, message: `Agent kill switch ${req.engaged ? "engaged" : "reset"} (the agent is not running: ${this.agentInitError ?? "unknown error"})` };
     }
-    const res = await this.setMainKillSwitch(req, actor);
-    return { ok: res.ok, message: [res.message, ...messages].join("; ") };
+    return this.agent.setKill(req, actor, { all, calendar: this.calendarFor(await this.rt.repo.settings.get()) });
+  }
+
+  /** The Agent page's Re-arm (EngineAdmin.rearmAgent): clears the agent's drawdown halt and kill switch. */
+  async rearmAgent(actor: string): Promise<AdminResult> {
+    if (!this.agentEnabled) return { ok: false, message: "account agent is not enabled" };
+    if (!this.agent) return { ok: false, message: `the agent is not running: ${this.agentInitError ?? "unknown error"}` };
+    return this.agent.rearm(actor);
+  }
+
+  /** /ops/agent-pause: while paused only the agent's code exits run (the AgentDO also refuses candles). */
+  async setAgentPaused(on: boolean, actor: string): Promise<AdminResult> {
+    if (!this.agentEnabled) return { ok: false, message: "account agent is not enabled" };
+    if (!this.agent) return { ok: false, message: `the agent is not running: ${this.agentInitError ?? "unknown error"}` };
+    return this.agent.setPaused(Boolean(on), actor);
   }
 
   private async setMainKillSwitch(req: { engaged: boolean; squareOff: boolean; reason: string }, actor: string): Promise<AdminResult> {
@@ -959,6 +1131,8 @@ export class TradingEngineDO extends DurableObject<Env> {
       lines.push(`${f.spec.shortLabel}: kill switch ${fs.killSwitch ? "ON" : "off"} · open ${open.length} · today net ₹${net.toFixed(0)}`);
       for (const p of open) lines.push(`  ${f.spec.shortLabel} ${p.contract.tradingSymbol} x${p.qty} @ ${p.avgEntry.toFixed(2)} mark ${p.markPremium.toFixed(2)}`);
     }
+    if (this.agent) lines.push(...(await this.agent.statusLines()));
+    else if (this.agentEnabled) lines.push(`Agent (paper experiment): not running (${this.agentInitError ?? "unknown error"})`);
     return lines.join("\n");
   }
 }
