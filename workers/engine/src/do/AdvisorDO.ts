@@ -192,6 +192,7 @@ export class AdvisorDO extends DurableObject<Env> {
       getTodayPlan: () => model().getTodayPlan(),
       getPnl: (days) => model().getPnl(days),
       getPositions: () => model().getPositions(),
+      getState: () => model().getState(),
     };
   }
 

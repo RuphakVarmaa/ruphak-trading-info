@@ -466,6 +466,22 @@ export interface BuildContextOptions {
   capital?: number;
 }
 
+/** The main paper account's limits as read: the only basis for saying the engine hit a cap or was stopped. */
+export function limitsOf(state: AdvisorInputs["state"]) {
+  if (!state) return null;
+  const { dailyLossCap, dailyLossUsed, ordersToday, maxOrdersPerDay } = state.caps;
+  return {
+    dailyLossCap,
+    dailyLossUsed,
+    dailyLossLeft: Math.max(0, dailyLossCap - dailyLossUsed),
+    dailyLossCapHit: dailyLossCap > 0 && dailyLossUsed >= dailyLossCap,
+    ordersToday,
+    maxOrdersPerDay,
+    killSwitch: state.killSwitch,
+    killReason: state.killReason ? clip(state.killReason, 120) : null,
+  };
+}
+
 export function buildAdvisorContext(inputs: AdvisorInputs, calendar: AdvisorCalendar, opts: BuildContextOptions = {}): AdvisorContext {
   const { nowMs } = inputs;
   const today = istDate(nowMs);
@@ -580,7 +596,9 @@ export function buildAdvisorContext(inputs: AdvisorInputs, calendar: AdvisorCale
   const book = {
     today: inputs.pnl ? { realized: inputs.pnl.today.realized, unrealized: inputs.pnl.today.unrealized, net: inputs.pnl.today.net, trades: inputs.pnl.today.trades } : null,
     open: (inputs.positions ?? []).map((p) => ({ contract: p.contract.label, qty: p.qty, avgPrice: p.avgPrice, ltp: p.ltp, pnl: p.pnl, stop: p.stopPrice, target: p.targetPrice })),
+    limits: limitsOf(inputs.state ?? null),
   };
+  if (!inputs.state) gaps.push("engine limits (loss cap, kill switch): could not be read");
 
   const p = istParts(nowMs);
   const doc = {

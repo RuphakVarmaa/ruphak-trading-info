@@ -5,6 +5,7 @@
  */
 import type {
   AdvisorReport,
+  EngineStateDTO,
   EventClusterView,
   EventsQuery,
   IndexId,
@@ -30,6 +31,7 @@ export interface AdvisorSources {
   getTodayPlan(): Promise<TodayPlanView>;
   getPnl(days: number): Promise<PnlResponse>;
   getPositions(): Promise<PositionView[]>;
+  getState(): Promise<EngineStateDTO>;
 }
 
 /** What the advisor needs from the trading calendar (TradingCalendar provides it). */
@@ -58,6 +60,8 @@ export interface AdvisorInputs {
   plan: TodayPlanView | null;
   pnl: PnlResponse | null;
   positions: PositionView[] | null;
+  /** The main paper account's state: its loss cap, order count and kill switch. */
+  state?: EngineStateDTO | null;
   /** Reads that failed, in plain words ("option chain NIFTY 2026-10-27: timed out"). */
   errors: string[];
 }

@@ -85,6 +85,7 @@ function movingSources(api: MockEngineApi, state: { answered: boolean; factor?: 
     getTodayPlan: () => api.getTodayPlan(),
     getPnl: (days) => api.getPnl(days),
     getPositions: () => api.getPositions(),
+    getState: () => api.getState(),
     getOptionChain: async (index, expiry): Promise<OptionChainView> => {
       const chain = await api.getOptionChain(index, expiry);
       if (!state.answered) return chain;

@@ -103,6 +103,7 @@ export const ADVICE_SYSTEM = [
   `alsoKnow: 4–8 short things a beginner should know that they did not ask about, tied to today's market where possible. Ideas: ${ALSO_KNOW_TOPICS.join("; ")}.`,
   "avoid: what not to do today (short lines).",
   "",
+  "The paper engine: say it hit a loss cap or was stopped only when paperEngineBook.limits shows it (dailyLossCapHit, killSwitch); otherwise give its P&L as it is.",
   "Numbers: quote numbers only from the context or the research notes, and name the source. Missing data is 'no data'. sources: only URLs that appear in the research notes, the research sources or the news items.",
   `The standing caution shown under the brief: "${HONESTY_LINE}"`,
 ].join("\n");

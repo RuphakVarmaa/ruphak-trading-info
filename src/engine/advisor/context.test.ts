@@ -11,6 +11,7 @@ import {
   candidateExpiries,
   chainCandidates,
   flowShortCoveringRead,
+  limitsOf,
   premiumRead,
   shortCoveringRead,
   topNews,
@@ -187,6 +188,8 @@ describe("the whole context on the mock engine", () => {
     expect(doc.measuredResearch.flowStudy.length).toBeGreaterThan(0);
     expect(doc.measuredResearch.mainFindings.length).toBeGreaterThan(5);
     expect(doc.todayPlan).toBeTruthy();
+    const state = await api.getState();
+    expect(doc.paperEngineBook.limits).toMatchObject({ dailyLossCap: state.caps.dailyLossCap, dailyLossUsed: state.caps.dailyLossUsed, killSwitch: state.killSwitch });
     expect(doc.candidates[0]).toHaveProperty("fitsCapital");
     // The option-implied ranges the outlook is checked against: the same ones the prompt shows.
     const ranges = ctx.impliedRanges?.NIFTY ?? [];
@@ -205,6 +208,16 @@ describe("the whole context on the mock engine", () => {
     expect(ctx.market).toEqual({ nifty: null, sensex: null, vix: null, phase: "OPEN" });
     expect(doc.dataGaps).toEqual(expect.arrayContaining(["index levels: timed out", "NIFTY: no inputs", "news: could not be read"]));
     expect(doc.zeroHero.note).toBe("No index expires today.");
+    expect(doc.paperEngineBook.limits).toBeNull();
+    expect(doc.dataGaps).toContain("engine limits (loss cap, kill switch): could not be read");
+  });
+
+  it("says the loss cap was hit only when today's loss reached it", async () => {
+    const state = await new MockEngineApi("sim").getState();
+    const at = (used: number) => limitsOf({ ...state, caps: { ...state.caps, dailyLossCap: 15_000, dailyLossUsed: used } });
+    expect(at(2_059)).toMatchObject({ dailyLossLeft: 12_941, dailyLossCapHit: false });
+    expect(at(15_000)).toMatchObject({ dailyLossLeft: 0, dailyLossCapHit: true });
+    expect(limitsOf(null)).toBeNull();
   });
 
   it("only adds zero-hero tickets on an expiry day", () => {

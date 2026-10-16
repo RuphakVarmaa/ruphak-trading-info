@@ -70,7 +70,7 @@ export async function gatherAdvisorInputs(src: AdvisorSources, calendar: Advisor
       return null;
     }
   };
-  const [indices, signals, events, scheduled, plan, pnl, positions, ...perIndex] = await Promise.all([
+  const [indices, signals, events, scheduled, plan, pnl, positions, state, ...perIndex] = await Promise.all([
     read("index levels", () => src.getLiveIndices()),
     read("signals", () => src.getSignals()),
     read("news", () => src.getEvents({ sinceMs: nowMs - NEWS_HOURS * 3_600_000, limit: 200 })),
@@ -78,6 +78,7 @@ export async function gatherAdvisorInputs(src: AdvisorSources, calendar: Advisor
     read("today's plan", () => src.getTodayPlan()),
     read("paper P&L", () => src.getPnl(1)),
     read("paper positions", () => src.getPositions()),
+    read("engine state", () => src.getState()),
     ...ADVISOR_INDICES.map((index) => gatherIndex(src, calendar, index, nowMs, errors, o)),
   ]);
   if (indices?.error) errors.push(`index levels: ${indices.error.slice(0, 160)}`);
@@ -95,6 +96,7 @@ export async function gatherAdvisorInputs(src: AdvisorSources, calendar: Advisor
     plan,
     pnl,
     positions,
+    state: state as AdvisorInputs["state"],
     errors,
   };
 }
