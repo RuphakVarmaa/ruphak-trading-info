@@ -3,6 +3,7 @@
 import type { CopyTicketView } from "@/engine/api-types";
 import { useSharedPoll, type PollState } from "@/components/Copy/sharedPoll";
 import { ticketsUrl } from "@/components/Copy/useIndexActions";
+import { isAgentAccount } from "./engineView";
 import { useEngineState, useNow } from "@/hooks/useEngineState";
 import { istDate, sessionPhaseAt } from "@/lib/ist";
 import { REFRESH_CLOSED_MS, REFRESH_IMPORTANT_MS } from "@/lib/refresh";
@@ -13,6 +14,8 @@ export interface TodayTickets {
   /** IST date of today on the engine's clock (null during server render). */
   date: string | null;
   poll: PollState<CopyTicketView[]>;
+  /** The options agent's paper account: it has no copy tickets, so nothing is polled and `poll` stays empty. */
+  agent: boolean;
 }
 
 /**
@@ -29,6 +32,7 @@ export function useTodayTickets(accountProp?: string): TodayTickets {
   const holiday = sameDay && (state.market.phase === "HOLIDAY" || state.market.isHoliday === true);
   const phase = now != null ? (holiday ? "HOLIDAY" : sessionPhaseAt(now)) : (state?.market.phase ?? "CLOSED");
   const active = phase === "OPEN" || phase === "PRE_OPEN";
-  const poll = useSharedPoll<CopyTicketView[]>(ticketsUrl(date, account), active ? REFRESH_IMPORTANT_MS : REFRESH_CLOSED_MS);
-  return { account, date, poll };
+  const agent = isAgentAccount(account, state);
+  const poll = useSharedPoll<CopyTicketView[]>(agent ? null : ticketsUrl(date, account), active ? REFRESH_IMPORTANT_MS : REFRESH_CLOSED_MS);
+  return { account, date, poll, agent };
 }

@@ -8,8 +8,10 @@
  *
  * It needs only the EngineProvider and the live index feed: it fetches the account's copy tickets
  * itself (/api/engine/copy?date=…&account=…), so it can sit on the Desk as well as on /copy. It also
- * raises the status-change alerts (chime, vibration, desktop notification).
+ * raises the status-change alerts (chime, vibration, desktop notification). The options agent's paper
+ * account has no copy tickets (the engine refuses them): for it, the strip polls nothing and says so.
  */
+import Link from "next/link";
 import { Fragment, type CSSProperties, type ReactNode } from "react";
 import type { IndexId } from "@/engine/api-types";
 import { alpha, C, pnlColor } from "@/components/shared/colors";
@@ -182,6 +184,35 @@ export default function IndexActionStrip({ account, compact = false, headerExtra
   useActionAlerts(d.actions, d.account.id, d.settled);
   useMissedTradeAlerts(d.tickets.data, d.account.id, d.date, d.nowMs, d.settled);
 
+  const sectionStyle: CSSProperties = { display: "grid", gap: compact ? 10 : 14, minWidth: 0, padding: compact ? 12 : 16, borderRadius: 14, background: C.panel, border: `1px solid ${C.border}`, boxShadow: "var(--shadow-card)" };
+  const header = (
+    <div style={{ display: "flex", flexWrap: "wrap", justifyContent: "space-between", alignItems: "center", gap: "6px 12px" }}>
+      <div style={{ display: "flex", flexWrap: "wrap", alignItems: "baseline", gap: "2px 10px", minWidth: 0 }}>
+        <h2 style={{ margin: 0, fontSize: 16, fontWeight: 700, color: C.textStrong }}>What to do now</h2>
+        <span style={{ fontSize: 13, color: C.muted }}>
+          {d.date ? `${fmtDateKey(d.date)} · ` : ""}
+          {d.account.label}
+          {d.account.capitalRupees != null && !d.account.label.includes("₹") ? ` · ${wholeRupees(d.account.capitalRupees)}` : ""}
+        </span>
+      </div>
+      {headerExtra}
+    </div>
+  );
+
+  if (d.agent) {
+    return (
+      <section aria-label="What to do now" style={sectionStyle}>
+        {header}
+        <p role="note" style={{ margin: 0, fontSize: compact ? 14 : 15, lineHeight: 1.5, color: C.textSoft, overflowWrap: "anywhere" }}>
+          Nothing to copy here. {d.account.label} is a paper experiment run by a model, and its trades are never offered for copying.{" "}
+          <Link href="/agent" className="link-quiet" style={{ color: C.gold, fontWeight: 600, textDecoration: "none", whiteSpace: "nowrap" }}>
+            See its decisions →
+          </Link>
+        </p>
+      </section>
+    );
+  }
+
   const ticketsStale = d.ticketsAgeMs != null && d.ticketsAgeMs > TICKETS_STALE_MS;
   const engineDown = plainError(d.tickets.error) ?? (d.engineStatus === "offline" ? "Can't reach the trading engine right now." : null);
   const lastTickets = d.tickets.at != null ? hms(d.tickets.at) : null;
@@ -195,21 +226,8 @@ export default function IndexActionStrip({ account, compact = false, headerExtra
       : `Live index: ${liveSource}, updated ${d.live.ageMs != null ? `${shortAge(d.live.ageMs)} ago` : "—"}`;
 
   return (
-    <section
-      aria-label="What to do now"
-      style={{ display: "grid", gap: compact ? 10 : 14, minWidth: 0, padding: compact ? 12 : 16, borderRadius: 14, background: C.panel, border: `1px solid ${C.border}`, boxShadow: "var(--shadow-card)" }}
-    >
-      <div style={{ display: "flex", flexWrap: "wrap", justifyContent: "space-between", alignItems: "center", gap: "6px 12px" }}>
-        <div style={{ display: "flex", flexWrap: "wrap", alignItems: "baseline", gap: "2px 10px", minWidth: 0 }}>
-          <h2 style={{ margin: 0, fontSize: 16, fontWeight: 700, color: C.textStrong }}>What to do now</h2>
-          <span style={{ fontSize: 13, color: C.muted }}>
-            {d.date ? `${fmtDateKey(d.date)} · ` : ""}
-            {d.account.label}
-            {d.account.capitalRupees != null && !d.account.label.includes("₹") ? ` · ${wholeRupees(d.account.capitalRupees)}` : ""}
-          </span>
-        </div>
-        {headerExtra}
-      </div>
+    <section aria-label="What to do now" style={sectionStyle}>
+      {header}
 
       {engineDown && (
         <p role="alert" style={{ margin: 0, fontSize: 13.5, lineHeight: 1.45, color: C.orange, fontWeight: 600 }}>

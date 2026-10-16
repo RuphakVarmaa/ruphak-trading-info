@@ -56,11 +56,35 @@ function Row({ r, first }: { r: TradeRow; first: boolean }) {
   );
 }
 
-/** Today's paper trades for the account, one row each, linking to its ticket on the copy page. */
+/**
+ * Today's paper trades for the account, one row each, linking to its ticket on the copy page. The options agent's
+ * paper account has no copy tickets (the engine refuses them): for it, nothing is polled and a plain note links to /agent.
+ */
 export default function TodaysTrades({ account }: { account?: string }) {
-  const { account: accountId, poll } = useTodayTickets(account);
+  const { account: accountId, poll, agent } = useTodayTickets(account);
   const { state } = useEngineState();
   const now = useNow();
+  if (agent) {
+    const label = state?.account?.id === accountId ? state.account.label : "The agent's account";
+    return (
+      <Section
+        id="trades"
+        title="Today's trades"
+        sub="The options agent's paper experiment: its trades are listed on the Agent page, not here."
+        right={
+          <Link href="/agent" className="link-quiet" style={linkStyle}>
+            Its decisions and trades →
+          </Link>
+        }
+      >
+        <Panel>
+          <EmptyState style={{ padding: "22px 16px" }}>
+            {label} is a paper experiment run by a model, and its trades are never offered for copying, so there are no copy steps here. Each trade and the decision behind it is on the Agent page.
+          </EmptyState>
+        </Panel>
+      </Section>
+    );
+  }
   const list = poll.data;
   const rows = (list ?? []).map((t) => tradeRow(t, accountId));
   const error = plainError(poll.error);

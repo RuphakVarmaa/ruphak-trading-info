@@ -3,6 +3,7 @@
  * today's and all-time P&L, and one row per copy ticket. No React and no engine access, so they are
  * tested on their own (engineView.test.ts) and safe to import from the server page.
  */
+import { ACCOUNTS, parseAccountId } from "@/engine/accounts";
 import type { AccountView, CopyTicketView, EngineStateDTO, PnlResponse, PositionView, SessionPhase, TodayPlanView } from "@/engine/api-types";
 import { EXIT_WORDS } from "@/lib/copy/action";
 import { istParts } from "@/lib/ist";
@@ -25,6 +26,19 @@ export function accountHref(path: string, account: string | null | undefined, pa
   for (const [k, v] of Object.entries(params)) sp.set(k, v);
   const q = sp.toString();
   return q ? `${path}?${q}` : path;
+}
+
+/**
+ * True for an account of kind "agent" (the options agent's paper experiment), by the account registry or by the
+ * engine's own view of it. Its trades are never offered as copy tickets (the engine refuses /api/engine/copy for
+ * it), so the pages skip that poll and show a plain note instead.
+ */
+export function isAgentAccount(account: string | null | undefined, state: Pick<EngineStateDTO, "account" | "accounts"> | null = null): boolean {
+  if (!account) return false;
+  const id = parseAccountId(account);
+  if (id != null && ACCOUNTS[id].kind === "agent") return true;
+  const view = state?.account?.id === account ? state.account : state?.accounts?.find((a) => a.id === account);
+  return view?.kind === "agent";
 }
 
 /** The account's starting capital as the engine reports it; null when it does not (never a default). */

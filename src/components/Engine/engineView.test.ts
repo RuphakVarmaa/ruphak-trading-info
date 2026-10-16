@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import type { CopyTicketView, DailyPnlView, PnlResponse } from "@/engine/api-types";
 import { getMockEngine } from "@/lib/engine/mock";
-import { accountFromQuery, accountHref, capitalOf, isPractice, marketStatusText, noTradesText, pnlFigures, safetyChips, tradeRow, type SafetyInput } from "./engineView";
+import { accountFromQuery, accountHref, capitalOf, isAgentAccount, isPractice, marketStatusText, noTradesText, pnlFigures, safetyChips, tradeRow, type SafetyInput } from "./engineView";
 
 const mock = () => getMockEngine({ adminToken: null, fail: false });
 const at = (iso: string) => Date.parse(iso);
@@ -18,6 +18,20 @@ describe("accountFromQuery", () => {
     expect(accountFromQuery({ account: "Small10K" })).toBeUndefined();
     expect(accountFromQuery({ account: "a/../b" })).toBeUndefined();
     expect(accountFromQuery({ account: "x".repeat(33) })).toBeUndefined();
+  });
+});
+
+describe("isAgentAccount", () => {
+  it("is true for the agent's account (it has no copy tickets) and false for main and the followers", () => {
+    expect(isAgentAccount("agent")).toBe(true);
+    for (const id of ["main", "small10k", "small5k", "", null, undefined]) expect(isAgentAccount(id)).toBe(false);
+  });
+  it("also believes the engine's view of an account it does not know", () => {
+    const view = { id: "lab", label: "Lab", shortLabel: "Lab", paperOnly: true, capitalRupees: 1, kind: "agent" as const };
+    expect(isAgentAccount("lab")).toBe(false);
+    expect(isAgentAccount("lab", { account: view })).toBe(true);
+    expect(isAgentAccount("lab", { account: { ...view, id: "main", kind: undefined }, accounts: [view] })).toBe(true);
+    expect(isAgentAccount("small10k", { accounts: [view] })).toBe(false);
   });
 });
 

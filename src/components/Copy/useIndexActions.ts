@@ -12,6 +12,7 @@ import type { CopyTicketView, EngineStateDTO, IndexId, PositionView, SessionPhas
 import { useClientNow, useEngineState, useNow, type ConnectionStatus } from "@/hooks/useEngineState";
 import { useLiveIndices, type LiveIndicesState } from "@/hooks/useLiveIndices";
 import { deriveIndexAction, feedInput, type IndexAction } from "@/lib/copy/action";
+import { isAgentAccount } from "@/components/Engine/engineView";
 import { istDate, nextSessionOpen, sessionPhaseAt, toIstIso } from "@/lib/ist";
 import { latchSkip, readSeen, useAckedExits, useDocumentHidden, useSeenTickets, useSkipLatch, writeSeen } from "./clientStores";
 import { useSharedPoll, type PollState } from "./sharedPoll";
@@ -47,6 +48,11 @@ export interface CopyData {
   actions: Record<IndexId, IndexAction> | null;
   /** True once the trade list and the live feed have each answered (or failed) at least once. */
   settled: boolean;
+  /**
+   * The options agent's paper account: it has no copy tickets (the engine refuses them), so nothing is polled,
+   * `actions` stays null (no alerts) and the strip shows a plain note instead.
+   */
+  agent: boolean;
 }
 
 /** The market phase now: the clock decides, the engine's state adds today's holiday. */
@@ -56,9 +62,9 @@ function phaseAt(now: number, state: EngineStateDTO | null): SessionPhase {
   return sessionPhaseAt(now);
 }
 
-
+/** Today's copy tickets for the account; null (no poll) before the date is known and for the agent's account, which has none. */
 export function ticketsUrl(date: string | null, account: string): string | null {
-  if (!date) return null;
+  if (!date || isAgentAccount(account)) return null;
   return `/api/engine/copy?date=${date}${account !== "main" ? `&account=${encodeURIComponent(account)}` : ""}`;
 }
 
@@ -84,7 +90,8 @@ export function useIndexActions(accountProp?: string): CopyData {
   const date = now != null ? istDate(now) : (state?.market.nowIst.slice(0, 10) ?? null);
   const phase: SessionPhase = now != null ? phaseAt(now, state) : (state?.market.phase ?? "CLOSED");
   const active = phase === "OPEN" || phase === "PRE_OPEN";
-  const tickets = useSharedPoll<CopyTicketView[]>(ticketsUrl(date, accountId), active ? ACTIVE_POLL_MS : IDLE_POLL_MS, true);
+  const agent = isAgentAccount(accountId, state);
+  const tickets = useSharedPoll<CopyTicketView[]>(agent ? null : ticketsUrl(date, accountId), active ? ACTIVE_POLL_MS : IDLE_POLL_MS, true);
   const ticketsAgeMs = tickets.at != null && clientNow != null ? Math.max(0, clientNow - tickets.at) : null;
 
   const stateAccount = state?.account?.id === accountId ? state.account : (state?.accounts?.find((a) => a.id === accountId) ?? null);
@@ -104,7 +111,7 @@ export function useIndexActions(accountProp?: string): CopyData {
   const openQty = useMemo(() => new Map(Object.entries(seen?.openQty ?? {})), [seen]);
 
   const actions = useMemo(() => {
-    if (now == null) return null;
+    if (now == null || agent) return null;
     const out = {} as Record<IndexId, IndexAction>;
     for (const index of INDICES) {
       out[index] = deriveIndexAction({
@@ -126,7 +133,7 @@ export function useIndexActions(accountProp?: string): CopyData {
       });
     }
     return out;
-  }, [now, accountId, signals, tickets.data, tickets.error, ticketsAgeMs, positions, phase, nextOpenAt, holidayName, live, hidden, latched, openQty, acked]);
+  }, [now, agent, accountId, signals, tickets.data, tickets.error, ticketsAgeMs, positions, phase, nextOpenAt, holidayName, live, hidden, latched, openQty, acked]);
 
   // Remember the quantity each trade showed while open (first sighting wins).
   useEffect(() => {
@@ -150,5 +157,5 @@ export function useIndexActions(accountProp?: string): CopyData {
 
   const settled = now != null && (tickets.data != null || tickets.error != null) && (live.freshness !== "loading" || live.error != null);
 
-  return { account, date, nowMs: now, phase, tickets, ticketsAgeMs, signals: signals ?? null, live, hidden, engineStatus: status, actions, settled };
+  return { account, date, nowMs: now, phase, tickets, ticketsAgeMs, signals: signals ?? null, live, hidden, engineStatus: status, actions, settled, agent };
 }
