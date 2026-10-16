@@ -36,6 +36,12 @@ describe("mock advisor fixture", () => {
     }
     expect(r.ideas.some((i) => i.probAboveBreakeven != null)).toBe(true);
     if (r.today.action === "BUY") expect(r.ideas.some((i) => i.id === r.today.ideaId)).toBe(true);
+    // The month idea waits for its trigger, so demo mode shows the "Not a buy yet" warning; the others are a buy now.
+    for (const idea of r.ideas) {
+      if (idea.horizon === "MONTH") expect(idea.condition).toMatch(/^Only (if|once) (NIFTY|SENSEX) .*; otherwise skip it\.$/);
+      else expect(idea.condition).toBeNull();
+    }
+    expect(r.ideas.some((i) => i.condition)).toBe(true);
     for (const s of r.sources) expect(s.url.startsWith("/")).toBe(true);
   });
 

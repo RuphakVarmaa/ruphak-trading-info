@@ -1118,6 +1118,11 @@ export interface AdvisorIdea {
   probAboveBreakeven?: number | null;
   /** What the engine changed after the model answered, with the original value ("stop raised to ₹35.55 (was ₹38.40)"). */
   engineNotes?: string[];
+  /**
+   * What must be true before buying, in plain words ("Only if NIFTY closes above 23,250 today; otherwise skip it");
+   * null only when the idea is a buy now. Briefs stored before this field existed lack it.
+   */
+  condition?: string | null;
 }
 
 export interface AdvisorReport {

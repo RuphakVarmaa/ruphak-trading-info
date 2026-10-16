@@ -141,4 +141,17 @@ describe("the advice call", () => {
     expect(ADVICE_SYSTEM).toMatch(/at most 2× the entry for TODAY, 3× for WEEK and 4× for MONTH/);
     expect(AdviceSchema.parse(SAMPLE_ADVICE)).toEqual(SAMPLE_ADVICE);
   });
+
+  it("asks for each idea's entry condition in its own field, null only for a buy now", () => {
+    const idea = { candidateId: "NIFTY-2026-10-27-23300-CE", horizon: "WEEK" as const, entryLow: 128, entryHigh: 138, stop: 90, target: 200, exitBy: "2026-10-26T14:30", why: ["Covering above 23,150."], wrongIf: "NIFTY closes below 23,050.", confidence: "LOW" as const };
+    const conditional = { ...SAMPLE_ADVICE, ideas: [{ ...idea, condition: "Only if NIFTY closes above 23,152 today and opens above it on Monday; otherwise skip it." }] };
+    expect(AdviceSchema.parse(conditional)).toEqual(conditional);
+    const buyNow = { ...SAMPLE_ADVICE, ideas: [{ ...idea, condition: null }] };
+    expect(AdviceSchema.parse(buyNow)).toEqual(buyNow);
+    // The field is required (nullable), so the model always answers it.
+    expect(AdviceSchema.safeParse({ ...SAMPLE_ADVICE, ideas: [idea] }).success).toBe(false);
+    expect(ADVICE_SYSTEM).toMatch(/exact entry condition in `condition`/);
+    expect(ADVICE_SYSTEM).toMatch(/When today's action is WAIT or AVOID every idea must have a condition/);
+    expect(ADVICE_SYSTEM).toMatch(/null only for an idea to buy now on a BUY day/);
+  });
 });

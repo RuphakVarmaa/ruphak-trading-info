@@ -1,6 +1,6 @@
 /**
  * Pure text helpers for the Advisor page: plain contract names, days to expiry, the one-line order,
- * "written 3 min ago", the rate-limit line, factor order and the past-brief check. No React, so the
+ * whether an idea is a buy now, "written 3 min ago", the rate-limit line, factor order and the past-brief check. No React, so the
  * wording is unit-tested (advisorText.test.ts).
  */
 import type {
@@ -10,6 +10,7 @@ import type {
   AdvisorHorizon,
   AdvisorIdea,
   AdvisorLean,
+  AdvisorReport,
   AdvisorView,
   IndexId,
   OptionType,
@@ -129,6 +130,17 @@ export function ideaLine(idea: AdvisorIdea): string {
     `target ${premium(idea.target)}`,
     `max loss ${rupees(idea.maxLossPerLot * lots)} at the stop`,
   ].join(" · ");
+}
+
+/**
+ * Whether an idea card may read as a buy now. `condition` is the "Not a buy yet" text: the idea's own entry
+ * condition, or, for a brief stored before ideas carried one, the WAIT or AVOID answer (the condition then sits
+ * in the reasons); null for an idea to buy now. `lead` opens the buy-zone line.
+ */
+export function ideaGate(idea: Pick<AdvisorIdea, "condition">, action: AdvisorReport["today"]["action"]): { condition: string | null; lead: string } {
+  const own = idea.condition?.trim();
+  const condition = own ? own : action === "WAIT" || action === "AVOID" ? `Today's answer is ${action}: do not buy today; read the condition in the reasons below.` : null;
+  return { condition, lead: condition ? "Only if that happens: buy between" : "Buy between" };
 }
 
 /** What "in the money at expiry" means for this contract: "NIFTY above 23,200, so the option is worth something". */

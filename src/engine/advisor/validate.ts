@@ -3,8 +3,9 @@
  * candidate list and re-priced against its live ask (the pipeline re-reads those chains after the model
  * answers); ideas that name an unknown contract, a buy zone far from the ask, or a stop/target the engine
  * cannot accept are dropped. Small problems are fixed, and each fix is kept on the idea (engineNotes) with the
- * model's original value. Today's BUY only stands when its idea survived. Outlook ranges are checked against
- * the index level and the option-implied range. The cost of the brief comes from token usage.
+ * model's original value. Today's BUY only stands when its idea survived; on a day that is not a BUY, an idea
+ * without an entry condition gets a plain one, so it never reads as a buy now. Outlook ranges are checked
+ * against the index level and the option-implied range. The cost of the brief comes from token usage.
  */
 import type { AdvisorConfidence, AdvisorFactor, AdvisorFactorKey, AdvisorHorizon, AdvisorIdea, AdvisorOutlook, AdvisorReport, AdvisorReportSummary, IndexId } from "../api-types";
 import { computeCharges } from "../broker/charges";
@@ -104,6 +105,8 @@ export interface IdeaInput {
   why: string[];
   wrongIf: string;
   confidence: AdvisorConfidence;
+  /** What must be true before buying; null for a buy now. */
+  condition: string | null;
 }
 
 /**
@@ -207,6 +210,7 @@ export function validateIdea(raw: IdeaInput, c: AdvisorCandidate | undefined, op
     probItm: c.delta == null ? null : r2(Math.min(1, Math.abs(c.delta))),
     why: texts(raw.why, 6),
     wrongIf: text(raw.wrongIf, 300) || "The index moves against the idea and the stop is hit.",
+    condition: text(raw.condition, 400) || null,
     confidence: raw.confidence,
     probAboveBreakeven: beyond == null ? null : r2(beyond),
     engineNotes: [...notes],
@@ -367,6 +371,11 @@ function zeroHeroOf(advice: AdviceOut, ctx: AdvisorContext): AdvisorReport["zero
   return { applicable: true, expiry, summary: `${summary}${odds}` };
 }
 
+/** The entry condition the engine gives an idea on a WAIT or AVOID day when the brief gave none. */
+export function defaultCondition(action: AdvisorReport["today"]["action"]): string {
+  return `Today's answer is ${action}: do not buy today. This idea is only for later, once its trigger is met and the engine's plan allows entries.`;
+}
+
 export interface BuildReportInput {
   id: string;
   nowMs: number;
@@ -422,6 +431,16 @@ export function buildReport(i: BuildReportInput): BuildReportResult {
         ? "WAIT: the suggested trade did not pass the engine's live-price checks, so there is no trade today."
         : "WAIT: the brief named no contract to buy, so there is no trade today.";
       notes.push(`today: BUY changed to WAIT (${wanted ? `idea ${wanted} not valid` : "no idea named"})`);
+    }
+  }
+  // Only a BUY day has ideas to buy now: on WAIT or AVOID (also one changed from BUY above) every idea needs its condition.
+  if (action !== "BUY") {
+    for (const x of ideas) {
+      if (x.condition) continue;
+      x.condition = defaultCondition(action);
+      const note = `condition added: today's answer is ${action} and the brief gave this idea no entry condition`;
+      x.engineNotes = [...(x.engineNotes ?? []), note];
+      notes.push(`${x.contract.label}: ${note}`);
     }
   }
 

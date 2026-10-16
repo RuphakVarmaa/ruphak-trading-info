@@ -4,7 +4,7 @@ import { HONESTY_LINE } from "./knowledge";
 import type { ResearchResult } from "./research";
 import type { AdvisorCandidate, AdvisorContext } from "./types";
 import { ZERO_USAGE } from "./types";
-import { MAX_TARGET_MULT, buildReport, costUsd, deltaAtStrike, exitByFor, parseIstDateTime, roundTripCharges, summarize, validateIdea, type IdeaInput } from "./validate";
+import { MAX_TARGET_MULT, buildReport, costUsd, defaultCondition, deltaAtStrike, exitByFor, parseIstDateTime, roundTripCharges, summarize, validateIdea, type IdeaInput } from "./validate";
 
 const ist = (s: string) => Date.parse(`${s}+05:30`);
 const NOW = ist("2026-10-16T11:00:00");
@@ -49,6 +49,7 @@ const idea = (p: Partial<IdeaInput> = {}): IdeaInput => ({
   why: ["Calls are being covered above 23,100."],
   wrongIf: "NIFTY closes a 5-minute candle below 23,050.",
   confidence: "LOW",
+  condition: null,
   ...p,
 });
 
@@ -79,6 +80,20 @@ describe("one idea against its real contract", () => {
     expect(x.engineNotes).toEqual([]);
     // No other strikes to read the odds at the break-even from.
     expect(x.probAboveBreakeven).toBeNull();
+    // A buy now: no entry condition.
+    expect(x.condition).toBeNull();
+  });
+
+  it("carries the entry condition through, trimmed and clipped", () => {
+    const r = validateIdea(idea({ horizon: "WEEK", condition: "  Only if NIFTY closes above 23,250 today\n and opens above it on Monday; otherwise skip it.  " }), cand(), opts);
+    if (!r.ok) throw new Error(r.reason);
+    expect(r.idea.condition).toBe("Only if NIFTY closes above 23,250 today and opens above it on Monday; otherwise skip it.");
+    const long = validateIdea(idea({ condition: "x".repeat(900) }), cand(), opts);
+    if (!long.ok) throw new Error(long.reason);
+    expect(long.idea.condition).toHaveLength(400);
+    const blank = validateIdea(idea({ condition: "   " }), cand(), opts);
+    if (!blank.ok) throw new Error(blank.reason);
+    expect(blank.idea.condition).toBeNull();
   });
 
   it("drops a hallucinated contract id", () => {
@@ -280,6 +295,37 @@ describe("the whole report", () => {
     expect(wait.today).toEqual({ action: "AVOID", summary: "Stay out.", ideaId: null });
     expect(wait.headline).toBe("Wait for a cleaner setup; premiums are fair.");
     expect(build(advice()).report.headline).toBe("Wait for a cleaner setup; premiums are fair.");
+  });
+
+  it("gives every idea on a WAIT or AVOID day an entry condition, keeping the brief's own and noting the engine's", () => {
+    const own = "Only if NIFTY closes above 23,152 today and opens above it on Monday; otherwise skip it.";
+    const { report, notes } = build(
+      advice({
+        today: { action: "AVOID", summary: "Stay out today.", candidateId: null },
+        ideas: [idea(), idea({ candidateId: "NIFTY-2026-10-20-23100-PE", horizon: "WEEK", entryLow: 88, entryHigh: 92, stop: 60, target: 140, exitBy: "2026-10-19T14:00", condition: own })],
+      }),
+    );
+    expect(report.today.action).toBe("AVOID");
+    const [plain, conditional] = report.ideas;
+    expect(plain.condition).toBe("Today's answer is AVOID: do not buy today. This idea is only for later, once its trigger is met and the engine's plan allows entries.");
+    expect(plain.condition).toBe(defaultCondition("AVOID"));
+    expect(plain.engineNotes).toEqual(["condition added: today's answer is AVOID and the brief gave this idea no entry condition"]);
+    expect(notes).toContain("NIFTY 20-OCT-2026 23200 CE: condition added: today's answer is AVOID and the brief gave this idea no entry condition");
+    expect(conditional.condition).toBe(own);
+    expect(conditional.engineNotes).toEqual([]);
+    // A BUY whose idea failed the checks becomes WAIT: the ideas left are not a buy now either.
+    const changed = build(advice({ today: { action: "BUY", summary: "Buy it.", candidateId: "NIFTY-2026-10-20-99999-CE" } })).report;
+    expect(changed.today.action).toBe("WAIT");
+    expect(changed.ideas.every((x) => x.condition === defaultCondition("WAIT"))).toBe(true);
+    expect(changed.ideas[0].engineNotes).toContain("condition added: today's answer is WAIT and the brief gave this idea no entry condition");
+  });
+
+  it("leaves a buy-now idea on a BUY day without a condition", () => {
+    const { report, notes } = build(advice());
+    expect(report.today).toMatchObject({ action: "BUY", ideaId: "adv-1-1" });
+    expect(report.ideas.map((x) => x.condition)).toEqual([null, null]);
+    expect(report.ideas[0].engineNotes).toEqual([]);
+    expect(notes.some((n) => n.includes("condition added"))).toBe(false);
   });
 
   it("orders factors, fills missing ones with no data, and forces FII/DII and global cues to no data when the research failed", () => {

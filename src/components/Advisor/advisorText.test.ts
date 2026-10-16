@@ -10,6 +10,7 @@ import {
   engineNotesWords,
   exitByWords,
   groupIdeas,
+  ideaGate,
   ideaLine,
   isOldDayTrade,
   itmWords,
@@ -84,6 +85,20 @@ describe("dates and contracts", () => {
     expect(ideaLine(idea())).toBe("BUY NIFTY 23200 CE 23-Oct · 1 lot · buy between ₹140–145.50 · stop ₹100 · target ₹210 · max loss ₹2,852 at the stop");
     expect(ideaLine(idea({ lots: 2 }))).toContain("2 lots");
     expect(ideaLine(idea({ lots: 2 }))).toContain("max loss ₹5,705 at the stop");
+  });
+
+  it("never words a conditional idea, or any idea on a WAIT or AVOID day, as a buy now", () => {
+    const cond = "Only if NIFTY closes above 23,152 today and opens above it on Monday; otherwise skip it.";
+    expect(ideaGate(idea({ condition: `  ${cond} ` }), "AVOID")).toEqual({ condition: cond, lead: "Only if that happens: buy between" });
+    // Today's pick can still carry a condition of its own.
+    expect(ideaGate(idea({ condition: cond }), "BUY")).toEqual({ condition: cond, lead: "Only if that happens: buy between" });
+    // Briefs stored before ideas carried a condition: the day's answer stands in for it.
+    expect(ideaGate(idea(), "AVOID")).toEqual({ condition: "Today's answer is AVOID: do not buy today; read the condition in the reasons below.", lead: "Only if that happens: buy between" });
+    expect(ideaGate(idea({ condition: null }), "WAIT").condition).toBe("Today's answer is WAIT: do not buy today; read the condition in the reasons below.");
+    expect(ideaGate(idea({ condition: "  " }), "WAIT").lead).toBe("Only if that happens: buy between");
+    // A buy now on a BUY day keeps the plain line.
+    expect(ideaGate(idea({ condition: null }), "BUY")).toEqual({ condition: null, lead: "Buy between" });
+    expect(ideaGate(idea(), "BUY")).toEqual({ condition: null, lead: "Buy between" });
   });
 
   it("explains in the money and which side of the break-even is profit", () => {

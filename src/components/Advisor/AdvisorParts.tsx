@@ -21,6 +21,7 @@ import {
   groupIdeas,
   HORIZON_WORDS,
   HORIZONS,
+  ideaGate,
   ideaLine,
   itmWords,
   LEAN_META,
@@ -97,6 +98,18 @@ function Fact({ label, value, note, color = C.textStrong }: { label: string; val
   );
 }
 
+/** The warning at the top of an idea that is not a buy now: what must happen first. */
+function NotYet({ condition }: { condition: string }) {
+  return (
+    <div role="note" style={{ display: "grid", gap: 4, background: alpha(C.orange, 0.1), border: `2px solid ${alpha(C.orange, 0.6)}`, borderRadius: 10, padding: "12px 14px", ...body, fontSize: 16, color: C.textStrong, overflowWrap: "anywhere" }}>
+      <b style={{ fontSize: 17, color: C.orange }}>
+        <span aria-hidden>⚠ </span>Not a buy yet
+      </b>
+      <span>{condition}</span>
+    </div>
+  );
+}
+
 // ---------------------------------------------------------------------------
 // 2. Today
 // ---------------------------------------------------------------------------
@@ -105,6 +118,8 @@ export function TodayCard({ report, nowMs }: { report: AdvisorReport; nowMs: num
   const { action, summary, ideaId } = report.today;
   const meta = ACTION_META[action];
   const idea = action === "BUY" && ideaId ? (report.ideas.find((i) => i.id === ideaId) ?? null) : null;
+  // Today's pick can still name a condition of its own: the order then waits for it.
+  const pickCondition = idea ? ideaGate(idea, action).condition : null;
   // A brief from an earlier IST day must not read as today's call: muted, labelled with its day, no copy button.
   const oldDay = oldBriefDay(report.createdAt, nowMs);
   const color = oldDay ? C.muted : meta.color;
@@ -141,7 +156,8 @@ export function TodayCard({ report, nowMs }: { report: AdvisorReport; nowMs: num
       <p style={{ margin: 0, ...body, fontSize: 17 }}>{summary}</p>
       {idea && (
         <div style={{ display: "grid", gap: 12, background: alpha(oldDay ? C.muted : C.green, 0.06), border: `1px solid ${alpha(oldDay ? C.muted : C.green, 0.3)}`, borderRadius: 12, padding: "14px 14px" }}>
-          <div style={{ ...microLabel, color: C.muted }}>{oldDay ? `The order it gave on ${oldDay} (out of date)` : "The order, in one line"}</div>
+          {pickCondition && <NotYet condition={pickCondition} />}
+          <div style={{ ...microLabel, color: C.muted }}>{oldDay ? `The order it gave on ${oldDay} (out of date)` : pickCondition ? "The order, only if that happens" : "The order, in one line"}</div>
           <div className="tnum" style={{ fontSize: 17, fontWeight: 650, lineHeight: 1.5, color: oldDay ? C.muted : C.textStrong, overflowWrap: "anywhere" }}>
             {ideaLine(idea)}
           </div>
@@ -229,12 +245,15 @@ export function OutlookSection({ report }: { report: AdvisorReport }) {
 
 export function IdeaCard({
   idea,
+  action,
   isPick,
   nowMs,
   fallbackNow,
   oldDay = null,
 }: {
   idea: AdvisorIdea;
+  /** The brief's answer for its day: on WAIT or AVOID no idea is a buy now, also in briefs without a condition field. */
+  action: AdvisorReport["today"]["action"];
   isPick: boolean;
   nowMs: number | null;
   fallbackNow: number;
@@ -247,8 +266,10 @@ export function IdeaCard({
   const profitChance = chanceWords(idea.probAboveBreakeven ?? null);
   const side = profitSide(c.optionType);
   const adjusted = engineNotesWords(idea.engineNotes);
+  const gate = ideaGate(idea, action);
   return (
     <Panel id={`idea-${idea.id}`} style={{ padding: "18px 16px", display: "grid", gap: 14, border: isPick ? `2px solid ${alpha(oldDay ? C.muted : C.green, 0.45)}` : undefined }}>
+      {gate.condition && <NotYet condition={gate.condition} />}
       <div style={{ display: "grid", gap: 8 }}>
         <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
           {isPick && (oldDay ? <Pill color={C.muted}>Pick for {oldDay}</Pill> : <Pill color={C.green} solid>Today&apos;s pick</Pill>)}
@@ -257,7 +278,8 @@ export function IdeaCard({
         </div>
         <h4 style={{ margin: 0, fontSize: 19, fontWeight: 700, lineHeight: 1.35, color: C.textStrong, overflowWrap: "anywhere" }}>{plainContract(c, nowMs ?? fallbackNow)}</h4>
         <div className="tnum" style={{ ...body, fontSize: 17, color: C.textStrong }}>
-          Buy between <b>{premium(idea.entry.low)}</b> and <b>{premium(idea.entry.high)}</b> <span style={{ color: C.muted }}>(price when written {premium(idea.entry.ask)})</span>
+          <span style={gate.condition ? { color: C.orange, fontWeight: 650 } : undefined}>{gate.lead}</span> <b>{premium(idea.entry.low)}</b> and <b>{premium(idea.entry.high)}</b>{" "}
+          <span style={{ color: C.muted }}>(price when written {premium(idea.entry.ask)})</span>
         </div>
       </div>
       <div style={{ display: "flex", flexWrap: "wrap", gap: 8 }}>
@@ -347,7 +369,7 @@ export function IdeasSection({ report, nowMs }: { report: AdvisorReport; nowMs: 
         <div key={g.horizon} style={{ display: "grid", gap: 12 }}>
           <h3 style={h3}>{oldDay && g.horizon === "TODAY" ? `Day trades for ${oldDay} (that day only)` : HORIZON_WORDS[g.horizon]}</h3>
           {g.ideas.map((idea) => (
-            <IdeaCard key={idea.id} idea={idea} isPick={report.today.action === "BUY" && report.today.ideaId === idea.id} nowMs={nowMs} fallbackNow={fallbackNow} oldDay={oldDay} />
+            <IdeaCard key={idea.id} idea={idea} action={report.today.action} isPick={report.today.action === "BUY" && report.today.ideaId === idea.id} nowMs={nowMs} fallbackNow={fallbackNow} oldDay={oldDay} />
           ))}
         </div>
       ))}

@@ -197,6 +197,8 @@ function buildIdea(args: {
   wrongIf: string;
   confidence: AdvisorConfidence;
   asOf: string;
+  /** What must happen before buying; omitted for a buy now. */
+  condition?: string;
 }): AdvisorIdea | null {
   const { chain } = args.read;
   const s = side(chain, args.strike, args.type);
@@ -229,6 +231,7 @@ function buildIdea(args: {
     why: args.why,
     wrongIf: args.wrongIf,
     confidence: args.confidence,
+    condition: args.condition ?? null,
   };
 }
 
@@ -473,6 +476,8 @@ export function buildMockAdvisorReport(m: MockAdvisorMarket, createdAtMs: number
     if (p.month) {
       const step = p.month.chain.rows.length > 1 ? Math.abs(p.month.chain.rows[1].strike - p.month.chain.rows[0].strike) : 50;
       const itm = type === "CE" ? p.month.chain.atmStrike - step : p.month.chain.atmStrike + step;
+      // A conditional idea, so demo mode shows the "Not a buy yet" warning: it waits for the index to clear its OI wall.
+      const wall = type === "CE" ? p.month.callWall : p.month.putWall;
       const idea = buildIdea({
         horizon: "MONTH",
         read: p.month,
@@ -487,6 +492,10 @@ export function buildMockAdvisorReport(m: MockAdvisorMarket, createdAtMs: number
         wrongIf: wrongIf(p.month),
         confidence: "LOW",
         asOf: createdAt,
+        condition:
+          wall != null
+            ? `Only if ${index} closes a day ${type === "CE" ? "above" : "below"} ${fmt0(wall)} (where the biggest ${type === "CE" ? "call" : "put"} OI sits) first; otherwise skip it.`
+            : `Only once ${index} has closed two days in a row ${type === "CE" ? "higher" : "lower"}; otherwise skip it.`,
       });
       if (idea) ideas.push(idea);
     }
