@@ -77,6 +77,7 @@ import {
 import { copyTicketView } from "@/engine/copy/copyTicket";
 import type { Position, TradePlan } from "@/engine/types";
 import { buildMockChain, weeklyExpiries } from "./mockChain";
+import { loadMockAdvisorMarket, mockAdvisorFor } from "./mockAdvisor";
 import { mockSetups } from "./mockSetups";
 import { mockOptionFlow, mockRecommendation, type MockFlowInput } from "./mockFlow";
 import { simulateBacktest } from "./mockBacktest";
@@ -876,14 +877,17 @@ export class MockEngineApi implements EngineApi {
     const book = this.book(account);
     return clone(book.positions.filter((p) => istDate(p.openedAt) === date).map((p) => this.copyTicket(book, p, now)));
   }
-  /** Placeholder until the mock advisor fixture lands. */
+  /** A demo brief worked out from the mock's own chains, signals, quotes and calendar (mockAdvisor.ts); no AI call. */
   async getAdvisor(): Promise<AdvisorView> {
-    return { status: "idle", lastError: "The advisor is not built yet.", runningSince: null, nextAllowedAt: null, runsToday: 0, maxRunsPerDay: 0, latest: null, history: [] };
+    this.read();
+    return clone(await mockAdvisorFor(this).view(() => loadMockAdvisorMarket(this)));
   }
 
-  async runAdvisor(_reason: string): Promise<AdvisorView> {
-    void _reason;
-    return this.getAdvisor();
+  /** Queues a demo analysis (it finishes about 9 s later) unless one is running or the rate limit says wait. */
+  async runAdvisor(reason: string): Promise<AdvisorView> {
+    this.read();
+    void reason;
+    return clone(await mockAdvisorFor(this).run(() => loadMockAdvisorMarket(this)));
   }
 
 
