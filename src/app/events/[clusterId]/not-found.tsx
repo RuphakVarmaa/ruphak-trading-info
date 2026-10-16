@@ -11,8 +11,8 @@ export default function EventNotFound() {
           This event cluster does not exist
         </h1>
         <p style={{ margin: 0, fontSize: 15, color: C.muted, lineHeight: 1.6 }}>It may have been merged into another story or pruned after 30 days.</p>
-        <Link href="/#news" style={{ color: C.gold, textDecoration: "none", fontSize: 14, fontWeight: 600 }}>
-          ← Back to the desk
+        <Link href="/geo#news" style={{ color: C.gold, textDecoration: "none", fontSize: 14, fontWeight: 600 }}>
+          ← Back to Geo intel stories
         </Link>
       </div>
     </div>
