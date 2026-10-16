@@ -108,6 +108,8 @@ export interface IdeaInput {
   confidence: AdvisorConfidence;
   /** What must be true before buying; null for a buy now. */
   condition: string | null;
+  /** The strongest specific argument against the idea; null when nothing specific argues against it. */
+  bearCase: string | null;
 }
 
 /**
@@ -213,6 +215,7 @@ export function validateIdea(raw: IdeaInput, c: AdvisorCandidate | undefined, op
     wrongIf: text(raw.wrongIf, 300) || "The index moves against the idea and the stop is hit.",
     // The brief's condition field, else a condition its first reason states; a placeholder ("None") is none.
     condition: text(ideaCondition({ condition: raw.condition, why: raw.why }), 400) || null,
+    bearCase: text(raw.bearCase, 300) || null,
     confidence: raw.confidence,
     probAboveBreakeven: beyond == null ? null : r2(beyond),
     engineNotes: [...notes],

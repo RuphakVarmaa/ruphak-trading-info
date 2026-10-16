@@ -143,7 +143,7 @@ describe("the advice call", () => {
   });
 
   it("asks for each idea's entry condition in its own field, null only for a buy now", () => {
-    const idea = { candidateId: "NIFTY-2026-10-27-23300-CE", horizon: "WEEK" as const, entryLow: 128, entryHigh: 138, stop: 90, target: 200, exitBy: "2026-10-26T14:30", why: ["Covering above 23,150."], wrongIf: "NIFTY closes below 23,050.", confidence: "LOW" as const };
+    const idea = { candidateId: "NIFTY-2026-10-27-23300-CE", horizon: "WEEK" as const, entryLow: 128, entryHigh: 138, stop: 90, target: 200, exitBy: "2026-10-26T14:30", why: ["Covering above 23,150."], wrongIf: "NIFTY closes below 23,050.", confidence: "LOW" as const, bearCase: null };
     const conditional = { ...SAMPLE_ADVICE, ideas: [{ ...idea, condition: "Only if NIFTY closes above 23,152 today and opens above it on Monday; otherwise skip it." }] };
     expect(AdviceSchema.parse(conditional)).toEqual(conditional);
     const buyNow = { ...SAMPLE_ADVICE, ideas: [{ ...idea, condition: null }] };
@@ -153,5 +153,16 @@ describe("the advice call", () => {
     expect(ADVICE_SYSTEM).toMatch(/exact entry condition in `condition`/);
     expect(ADVICE_SYSTEM).toMatch(/When today's action is WAIT or AVOID every idea must have a condition/);
     expect(ADVICE_SYSTEM).toMatch(/null only for an idea to buy now on a BUY day/);
+  });
+
+  it("asks for each idea's bear case in its own field, null only when nothing specific argues against it", () => {
+    const idea = { candidateId: "NIFTY-2026-10-27-23300-CE", horizon: "WEEK" as const, entryLow: 128, entryHigh: 138, stop: 90, target: 200, exitBy: "2026-10-26T14:30", why: ["Covering above 23,150."], wrongIf: "NIFTY closes below 23,050.", confidence: "LOW" as const, condition: null };
+    const argued = { ...SAMPLE_ADVICE, ideas: [{ ...idea, bearCase: "Call writers keep adding at 23,300, so the move may stall below it." }] };
+    expect(AdviceSchema.parse(argued)).toEqual(argued);
+    const none = { ...SAMPLE_ADVICE, ideas: [{ ...idea, bearCase: null }] };
+    expect(AdviceSchema.parse(none)).toEqual(none);
+    // Required (nullable): the model always answers it.
+    expect(AdviceSchema.safeParse({ ...SAMPLE_ADVICE, ideas: [idea] }).success).toBe(false);
+    expect(ADVICE_SYSTEM).toMatch(/Give each idea's bear case \(bearCase\): the strongest specific argument against it\./);
   });
 });

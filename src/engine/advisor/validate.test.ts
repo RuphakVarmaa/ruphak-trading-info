@@ -50,6 +50,7 @@ const idea = (p: Partial<IdeaInput> = {}): IdeaInput => ({
   wrongIf: "NIFTY closes a 5-minute candle below 23,050.",
   confidence: "LOW",
   condition: null,
+  bearCase: null,
   ...p,
 });
 
@@ -94,6 +95,20 @@ describe("one idea against its real contract", () => {
     const blank = validateIdea(idea({ condition: "   " }), cand(), opts);
     if (!blank.ok) throw new Error(blank.reason);
     expect(blank.idea.condition).toBeNull();
+  });
+
+  it("carries the bear case through, trimmed and clipped to 300 characters, and keeps a missing one null", () => {
+    const r = validateIdea(idea({ bearCase: "  Call writers keep adding at 23,300;\n the move may stall below it.  " }), cand(), opts);
+    if (!r.ok) throw new Error(r.reason);
+    expect(r.idea.bearCase).toBe("Call writers keep adding at 23,300; the move may stall below it.");
+    const long = validateIdea(idea({ bearCase: "b".repeat(900) }), cand(), opts);
+    if (!long.ok) throw new Error(long.reason);
+    expect(long.idea.bearCase).toHaveLength(300);
+    for (const none of [null, "", "   "]) {
+      const x = validateIdea(idea({ bearCase: none }), cand(), opts);
+      if (!x.ok) throw new Error(x.reason);
+      expect(x.idea.bearCase).toBeNull();
+    }
   });
 
   it("treats a placeholder condition as none and falls back to a condition stated as the first reason", () => {

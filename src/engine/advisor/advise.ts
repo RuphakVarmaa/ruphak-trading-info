@@ -68,6 +68,7 @@ export const AdviceSchema = z.object({
       wrongIf: z.string(),
       confidence: Confidence,
       condition: z.string().nullable().describe("What must be true before buying, in plain words: the exact entry condition ('Only if NIFTY closes above 23,250 today; otherwise skip it'). Null only for an idea to buy now on a BUY day."),
+      bearCase: z.string().nullable().describe("The strongest case against this idea, one or two sentences; null only when nothing specific argues against it."),
     }),
   ),
   zeroHero: z.object({ applicable: z.boolean(), summary: z.string() }),
@@ -94,6 +95,7 @@ export const ADVICE_SYSTEM = [
   "- Pick ideas ONLY by candidate id from `candidates`. Never invent a contract, a strike or an expiry. zeroHero candidates are never ideas.",
   "- For each idea give the buy zone (entryLow–entryHigh), stop and target as option premium prices in rupees, the exit-by time (IST), why, what would prove it wrong (wrongIf), and what must be true before buying (condition).",
   "- Put the exact entry condition in `condition`, in plain words (for example 'Only if NIFTY closes above 23,250 today and opens above it on Monday; otherwise skip it'), not only in `why`. When today's action is WAIT or AVOID every idea must have a condition, and so must a WEEK or MONTH idea with an entry trigger. condition is null only for an idea to buy now on a BUY day.",
+  "- Give each idea's bear case (bearCase): the strongest specific argument against it.",
   `- Keep the buy zone near the live ask, the stop 10–60% below the entry, and the target at least 1.2× the risk and at most ${MAX_TARGET_MULT.TODAY}× the entry for TODAY, ${MAX_TARGET_MULT.WEEK}× for WEEK and ${MAX_TARGET_MULT.MONTH}× for MONTH (the engine lowers a higher target). Prefer contracts that fit the capital (fitsCapital).`,
   "- At most 6 ideas across TODAY, WEEK and MONTH. Fewer is fine. Zero ideas is fine.",
   "- When today is WAIT or AVOID, still consider WEEK and MONTH: if a contract offers a sensible risk/reward once a clear condition is met (for example 'only if NIFTY closes above 23,250' or 'after the event'), give at most one such conditional idea per horizon with LOW confidence, the condition in `condition` (`why` may repeat it briefly), and the condition's failure in `wrongIf`. Skip the horizon when nothing is sensible.",
@@ -125,8 +127,8 @@ export interface AdviceResult {
   error: string | null;
 }
 
-/** Models that accept server-side refusal fallbacks with `fallbacks: "default"`. */
-const FALLBACK_MODELS = new Set(["claude-fable-5-1", "claude-opus-5-5", "claude-opus-5", "claude-sonnet-5-5"]);
+/** Models that accept server-side refusal fallbacks with `fallbacks: "default"` (the options agent's deep calls use the same set). */
+export const FALLBACK_MODELS: ReadonlySet<string> = new Set(["claude-fable-5-1", "claude-opus-5-5", "claude-opus-5", "claude-sonnet-5-5"]);
 
 export interface AdviceOptions {
   model: string;
