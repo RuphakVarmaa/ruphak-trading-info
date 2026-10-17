@@ -1,6 +1,8 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { MINUTE_MS, istAt, istIso } from "../clock";
 import { FlowMonitor, type ChainRow, type ChainSnapshot, type SideQuote } from "../flow/flowMonitor";
+import { FLOW_STATS } from "../flow/flowStats";
+import type { OptionFlowView } from "../api-types";
 import type { FlowStatsFile } from "../flow/flowStatsTypes";
 import type { IndexId } from "../types";
 import { FlowAsOfCache, flowViewAsOf } from "./flowAsOf";
@@ -120,5 +122,82 @@ describe("flowViewAsOf", () => {
     // The ATM row: call flat at 100, put at 100 − 14 = 86 (bid 85.9, ask 86.1). The sample at 10:14:01.5 is stamped
     // to the second (asOf), so its age at 10:15 reads 59 s, never less than the true 58.5 s.
     expect(o).toMatchObject({ k: 22_500, cm: 100, cs: 0.2, pm: 86, ps: 0.23, iv: 12, ivx: 0, oa: 59 });
+  });
+});
+
+describe("FlowAsOfCache (O2: incremental)", () => {
+  const SESSION = "2026-10-19";
+  const wave = (m: number, k: number, ce: boolean): SideQuote => ({
+    ltp: 100 + Math.sin(m / 7 + k) * 5,
+    volume: 1000 * m + ((m * 7919 + k) % 13) * 400,
+    oi: 100_000 + 500 * m * (ce ? 1 : -1) + k * 100 + ((m * k) % 17) * 300,
+    bid: 99,
+    ask: 101,
+    iv: 12 + (m % 5) / 10,
+    delta: ce ? 0.5 : -0.5,
+  });
+  /** A whole session of minute samples (09:15 to 15:29) on 7 strikes (ATM ±3), for one index. */
+  const session = (index: IndexId = "NIFTY", day = SESSION): ChainSnapshot[] =>
+    Array.from({ length: 375 }, (_, m) => ({
+      t: istAt(day, "09:15") + 1_500 + m * MINUTE_MS,
+      index,
+      expiry: "2026-10-20",
+      lotSize: 65,
+      spot: 25_000 + 3 * Math.sin(m / 9) * 20,
+      rows: Array.from({ length: 7 }, (_, k) => ({ strike: 24_850 + 50 * k, ce: wave(m, k, true), pe: wave(m, k, false) })),
+    }));
+
+  it("equals flowViewAsOf at every bar close of a session and ingests each sample once (flowasof-incremental)", () => {
+    const samples = [...session("NIFTY"), ...session("SENSEX")];
+    const closes = Array.from({ length: 75 }, (_, i) => istAt(SESSION, "09:20") + i * 5 * MINUTE_MS);
+    const cache = new FlowAsOfCache({ stats: FLOW_STATS });
+    const got: (OptionFlowView | null)[] = [];
+    const ingest = vi.spyOn(FlowMonitor.prototype, "ingest");
+    try {
+      for (const close of closes) {
+        for (const index of ["NIFTY", "SENSEX"] as const) {
+          const v = cache.viewAt(samples, index, close, 1);
+          if (index === "NIFTY") got.push(structuredClone(v));
+        }
+      }
+      // 375 samples per index, each ingested once; a fresh replay at every close would ingest about 28,000.
+      expect(ingest).toHaveBeenCalledTimes(2 * 375);
+    } finally {
+      ingest.mockRestore();
+    }
+    closes.forEach((close, i) => expect(got[i]).toEqual(flowViewAsOf(samples, "NIFTY", close, { stats: FLOW_STATS, dte: 1 })));
+  }, 60_000);
+
+  it("equals flowViewAsOf for out-of-order calls, after a late, dropped or replaced sample, and across a date change", () => {
+    const stats = EMPTY_STATS;
+    const all = session("NIFTY");
+    const cache = new FlowAsOfCache({ stats });
+    const check = (snaps: readonly ChainSnapshot[], at: number, index: IndexId = "NIFTY") =>
+      expect(cache.viewAt(snaps, index, at, 2)).toEqual(flowViewAsOf(snaps, index, at, { stats, dte: 2 }));
+    const at = (hhmm: string, day = SESSION) => istAt(day, hhmm);
+
+    // Forward, then back to an earlier close, then forward again.
+    for (const hhmm of ["10:00", "10:30", "10:05", "11:00", "11:00"]) check(all, at(hhmm));
+    // A late sample: the 10:40 minute arrives after the 11:00 call.
+    const gap = all.filter((s) => s.t !== at("10:40") + 1_500);
+    const g = new FlowAsOfCache({ stats });
+    expect(g.viewAt(gap, "NIFTY", at("11:00"), 2)).toEqual(flowViewAsOf(gap, "NIFTY", at("11:00"), { stats, dte: 2 }));
+    expect(g.viewAt(all, "NIFTY", at("11:05"), 2)).toEqual(flowViewAsOf(all, "NIFTY", at("11:05"), { stats, dte: 2 }));
+    expect(g.viewAt(all, "NIFTY", at("11:05"), 2)).not.toEqual(flowViewAsOf(gap, "NIFTY", at("11:05"), { stats, dte: 2 }));
+    // A dropped sample (the feed trimmed its oldest), and a replaced one (same count, different data).
+    check(all.slice(1), at("11:10"));
+    const bump = (s: ChainSnapshot): ChainSnapshot => ({ ...s, spot: s.spot + 40, rows: s.rows.map((r) => ({ ...r, ce: r.ce ? { ...r.ce, oi: (r.ce.oi ?? 0) * 2 } : r.ce })) });
+    // 10:59 is the 15-minute base of the 11:15 view, so its data shows in the answer.
+    const replaced = all.slice(1).map((s) => (s.t === at("10:59") + 1_500 ? bump(s) : s));
+    expect(flowViewAsOf(replaced, "NIFTY", at("11:15"), { stats, dte: 2 })).not.toEqual(flowViewAsOf(all.slice(1), "NIFTY", at("11:15"), { stats, dte: 2 }));
+    check(replaced, at("11:15"));
+    // Samples arrive in any order; another day's samples say nothing about this one.
+    check([...replaced].reverse(), at("11:20"));
+    const tomorrow = session("NIFTY", "2026-10-20");
+    check([...replaced, ...tomorrow], at("09:40", "2026-10-20"));
+    check([...replaced, ...tomorrow], at("11:25"));
+    // No sample of the index at or before asOf: null, as flowViewAsOf.
+    expect(cache.viewAt(all, "SENSEX", at("11:30"), 2)).toBeNull();
+    expect(cache.viewAt(all, "NIFTY", at("09:15"), 2)).toBeNull();
   });
 });
