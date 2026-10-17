@@ -307,7 +307,7 @@ export interface AgentStore {
   putInstruction(i: InstructionRecord): Promise<void>;
   activeInstruction(): Promise<InstructionRecord | null>;
   /** The stored text of one guidance version, active or not; null when it was never stored. */
-  instruction?(version: string): Promise<InstructionRecord | null>;
+  instruction(version: string): Promise<InstructionRecord | null>;
   setActiveInstruction(version: string): Promise<void>;
   /** Inserts or replaces a job by id (also how a job is marked RUNNING). */
   putJob(j: AgentJob): Promise<void>;

@@ -178,17 +178,24 @@ export function aboutCalls(n: number): string {
   return `about ${k} call${k === 1 ? "" : "s"}`;
 }
 
-/** "1 lot", "2 lots", or "0 lots: one lot would risk more than that" (the quarter-Kelly cap blocked the trade). */
-function lotWords(lots: number): string {
-  return lots === 0 ? "0 lots: one lot would risk more than that" : `${lots} lot${lots === 1 ? "" : "s"}`;
+/**
+ * "1 lot", "2 lots", or 0 lots and why, from the decision's gate lines: the quarter-Kelly cap blocked one lot
+ * (kelly_cap failed), or a check before the size blocked the entry (no market features from main's tick, or the
+ * engine's own entry checks), so no lot was sized. Without the lines, just "0 lots".
+ */
+function lotWords(lots: number, lines: readonly Pick<AgentGateLineView, "gate" | "passed">[] | undefined): string {
+  if (lots > 0) return `${lots} lot${lots === 1 ? "" : "s"}`;
+  if (!lines) return "0 lots";
+  return lines.some((l) => l.gate === "kelly_cap" && l.passed === false) ? "0 lots: one lot would risk more than that" : "0 lots: the entry was blocked before it was sized";
 }
 
 /**
  * Sizing in words: a headline, the size it allows (only when the risk is above zero) and the working. Nothing here
  * claims an edge: above zero means confident past calls cleared break-even in-sample, which proves nothing about the
- * sessions ahead. `n` is the number of graded calls behind p (0: none of this kind yet; absent: unknown).
+ * sessions ahead. `n` is the number of graded calls behind p (0: none of this kind yet; absent: unknown). `lines`,
+ * the decision's gate, says why a size above zero bought 0 lots.
  */
-export function sizingWords(s: AgentSizingView): { headline: string; size: string | null; detail: string } {
+export function sizingWords(s: AgentSizingView, lines?: readonly Pick<AgentGateLineView, "gate" | "passed">[]): { headline: string; size: string | null; detail: string } {
   const p = prob(s.p);
   const b = s.b.toFixed(2);
   const kelly = fmtSigned(s.kelly, 2);
@@ -203,7 +210,8 @@ export function sizingWords(s: AgentSizingView): { headline: string; size: strin
         ? "Size zero: no graded calls of this kind yet"
         : `Size zero: confident past calls have not cleared break-even${n === null ? "" : ` (measured on ${aboutCalls(n)})`}`,
       size: null,
-      detail: `Sizing uses p = ${p} (${from}; never the model's own confidence) and b = ${b} (what a win pays against what a loss costs). Kelly = p − (1 − p) / b = ${kelly}. It must be above zero, which needs p above ${prob(breakEvenP(s.b))}.`,
+      // The engine never sizes a call with no graded call of its kind behind p, whatever Kelly gives.
+      detail: `Sizing uses p = ${p} (${from}; never the model's own confidence) and b = ${b} (what a win pays against what a loss costs). Kelly = p − (1 − p) / b = ${kelly}. ${none ? "With no graded call of this kind behind p, no trade is sized, whatever Kelly gives." : `It must be above zero, which needs p above ${prob(breakEvenP(s.b))}.`}`,
     };
   }
   const quarter = s.kelly * AGENT_LIMITS.kellyFraction * 100;
@@ -211,8 +219,8 @@ export function sizingWords(s: AgentSizingView): { headline: string; size: strin
   const measured = n !== null && n > 0 ? `measured on ${aboutCalls(n)}, ` : "";
   return {
     headline: `Small size allowed: confident past calls moved enough to pay often enough to clear break-even (${measured}in-sample; not proof of an edge)`,
-    size: `Risk ${s.riskPct.toFixed(2)}% of equity → ${lotWords(s.lots)}`,
-    detail: `Kelly = p − (1 − p) / b = ${kelly} from p = ${p} and b = ${b}. A quarter of it is ${quarter.toFixed(2)}% of equity${capped ? `, capped at ${AGENT_LIMITS.maxRiskPctPerTrade}% a trade` : ""}: ${lotWords(s.lots)}.`,
+    size: `Risk ${s.riskPct.toFixed(2)}% of equity → ${lotWords(s.lots, lines)}`,
+    detail: `Kelly = p − (1 − p) / b = ${kelly} from p = ${p} and b = ${b}. A quarter of it is ${quarter.toFixed(2)}% of equity${capped ? `, capped at ${AGENT_LIMITS.maxRiskPctPerTrade}% a trade` : ""}: ${lotWords(s.lots, lines)}.`,
   };
 }
 

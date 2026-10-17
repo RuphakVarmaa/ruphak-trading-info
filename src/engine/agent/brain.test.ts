@@ -739,8 +739,10 @@ describe("AgentBrain: the nightly review, the replay and the approval gate", () 
     const before = (await h.store.activeInstruction())!.version;
 
     h.clock.set(istAt("2026-10-21", "11:00"));
-    expect(await h.brain.decideCandidate(cand.id, "approve", "owner")).toEqual({ ok: false, message: "approve after 15:30 so one session is judged by one text" });
-    expect(await h.brain.revertToBuiltin("owner")).toEqual({ ok: false, message: "revert after 15:30 so one session is judged by one text" });
+    // The same window the AgentDO and the Agent page name: approving at 15:31 would still be refused.
+    const when = "before 09:15 IST, or after today's review and replay finish (about 16:20–16:45 IST), so one session is judged by one text";
+    expect(await h.brain.decideCandidate(cand.id, "approve", "owner")).toEqual({ ok: false, message: `approve ${when}` });
+    expect(await h.brain.revertToBuiltin("owner")).toEqual({ ok: false, message: `revert ${when}` });
 
     h.clock.set(istAt("2026-10-21", "16:00"));
     const res = await h.brain.decideCandidate(cand.id, "approve", "owner");

@@ -5,8 +5,8 @@
  * call between ticks. Each bar is submitted on the tick that first sees it complete and its decisions are taken and
  * executed through the code gate on the next one. Shadow mode records SHADOW_ENTRY and buys nothing; paper mode buys
  * on the agent's own book (a seeded calibration history makes quarter Kelly size a trade); the 15% drawdown halt
- * engages the kill switch, flattens at market and stops every later entry; main's book and kv stay exactly as they
- * are without the agent.
+ * engages the kill switch, flattens at market and stops every later entry; the operator's pause stops the entries of
+ * a batch already running; main's book and kv stay exactly as they are without the agent.
  */
 import { describe, expect, it } from "vitest";
 import { ACCOUNTS, accountConfig } from "../../../../src/engine/accounts";
@@ -135,6 +135,8 @@ interface AgentOptions {
   script?: (req: ReflexRequest) => ReflexDecision[];
   /** Offer the runner main's own market data source, as TE once wired it. */
   offerMainMarket?: boolean;
+  /** Runs before each option quote the runner asks for (a contract being priced mid-batch), with the runner and the time. */
+  onQuote?: (runner: AgentRunner, now: number) => Promise<void>;
 }
 
 async function makeAgent(main: ReplayDeps, mode: AgentMode, o: AgentOptions = {}): Promise<Agent> {
@@ -170,6 +172,18 @@ async function makeAgent(main: ReplayDeps, mode: AgentMode, o: AgentOptions = {}
   const repo = accountRepository(main.repo, "agent", agentCfg, now);
   const kept = new Map<string, unknown>();
   const alerts: string[] = [];
+  const live = liveLabelled(new SyntheticOptionQuotes(main.calendar, agentCfg));
+  let built: AgentRunner | null = null;
+  const onQuote = o.onQuote;
+  const quotes: OptionQuoteSource = onQuote
+    ? {
+        kind: live.kind,
+        quote: async (c, ctx) => {
+          if (built) await onQuote(built, now());
+          return live.quote(c, ctx);
+        },
+      }
+    : live;
   const options: AgentRunnerOptions = {
     account: { spec: ACCOUNTS.agent, cfg: agentCfg, repo },
     mainRepo: main.repo,
@@ -182,7 +196,7 @@ async function makeAgent(main: ReplayDeps, mode: AgentMode, o: AgentOptions = {}
     },
     agentDo,
     feed: { getOptionFlowAsOf: flowAsOf },
-    quotes: liveLabelled(new SyntheticOptionQuotes(main.calendar, agentCfg)),
+    quotes,
     instruments: main.instruments,
     marketContext: main.marketContext,
     alerts: {
@@ -199,6 +213,7 @@ async function makeAgent(main: ReplayDeps, mode: AgentMode, o: AgentOptions = {}
   };
   // TE once handed the runner main's own market source under `market`; the runner must ignore one if it is offered.
   const runner = new AgentRunner(o.offerMainMarket ? ({ ...options, market: main.market } as AgentRunnerOptions) : options);
+  built = runner;
   return { store, brain, reflex, agentDo, runner, repo, alerts, hot: () => kept.get(HOT_KEY) as AgentHot, eod: null };
 }
 
@@ -466,7 +481,36 @@ describe("the options agent end to end on a replayed day (runner, in-process Age
     const call = (await run.agent!.store.decisions(DAY)).find((d) => d.index === "SENSEX" && at(d.barCloseMs) === "12:00" && d.direction === "LONG");
     expect(call).toBeDefined();
     expect(call!.execution!.action).toBe("NO_ENTRY");
+    // Blocked by the features gate: the engine never falls back to a market read of its own.
+    expect(call!.execution!.gate.lines).toContainEqual({ gate: "features", passed: false, detail: "main's tick computed no market features for this index; the agent never fetches its own" });
+    expect(call!.sizing!.p).toBeGreaterThan(0.5);
     expect(run.marketReads.agent).toBe(0);
+    await expectMainUnchanged(run);
+  });
+
+  it("the operator's pause while a batch prices its entry: that entry and every later one never go out", async () => {
+    // /ops/agent-pause arrives while the planner prices the 12:00 call's contract, on the tick that executes it.
+    const pricingAt = istAt(DAY, "12:00") + TICKS_AFTER_CLOSE_MS[1];
+    let paused: { ok: boolean; message: string } | null = null;
+    const run = await replay({
+      mode: "paper",
+      agent: {
+        onQuote: async (runner, now) => {
+          if (paused === null && now === pricingAt) paused = await runner.setPaused(true, "ops");
+        },
+      },
+    });
+    const a = run.agent!;
+    expect(paused).toEqual({ ok: true, message: "agent paused: only its code exits run" });
+    expect(a.hot().paused).toBe(true);
+    const decisions = await a.store.decisions(DAY);
+    const noon = decisions.find((d) => scripted(d) && at(d.barCloseMs) === "12:00")!;
+    expect(noon.execution).toMatchObject({ t: pricingAt, action: "NO_ENTRY", detail: "paused: the operator paused the agent", positionId: null });
+    expect(noon.execution!.gate.lines).toContainEqual({ gate: "kill_switch", passed: false, detail: "the operator paused the agent" });
+    // Nothing was bought, and while paused no later candle went to the model.
+    expect(run.agentBook!.orders.filter((x) => x.reason === "ENTRY")).toEqual([]);
+    expect(a.agentDo.submits.filter((t) => t > noon.barCloseMs)).toEqual([]);
+    expect(a.alerts.filter((x) => x.includes("ENTRY"))).toEqual([]);
     await expectMainUnchanged(run);
   });
 });

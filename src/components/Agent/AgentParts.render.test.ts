@@ -1,10 +1,16 @@
 import { createElement, type ReactElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
-import type { AgentDecisionView, AgentRiskView, AgentView } from "@/engine/api-types";
+import type { AgentCandidateView, AgentDecisionView, AgentRiskView, AgentView } from "@/engine/api-types";
+import { AGENT_DEFAULTS } from "@/engine/agent/config";
+import { genericFinalist } from "@/engine/agent/finalists";
 import { BUILTIN_GUIDANCE } from "@/engine/agent/prompt";
+import { agentSample } from "@/engine/agent/storeContract";
+import type { DecisionRecord, GateLine, SizingTrace } from "@/engine/agent/types";
+import { buildAgentView } from "@/engine/agent/view";
+import { TradingCalendar } from "@/engine/calendar/calendar";
 import { MockAgent } from "@/lib/engine/mockAgent";
-import type { AgentCandidateCardView, AgentReplayView, AgentSizingView } from "@/lib/engine/types";
+import type { AgentReplayView, AgentSizingView } from "@/lib/engine/types";
 import { istAt } from "@/lib/ist";
 import AgentDesk, { POLL_ACTIVE_MS, POLL_IDLE_MS, pollEveryMs } from "./AgentDesk";
 import { CalibrationPanel, CostPanel, DemoChip, EscalationList, HonestyBanner, IndexDecisionCard, ReviewPanel, RiskPanel, StatusBar } from "./AgentParts";
@@ -17,7 +23,7 @@ const html = (el: ReactElement) => renderToStaticMarkup(el);
 const text = (markup: string) => markup.replace(/<[^>]+>/g, " ").replace(/&#x27;|&apos;/g, "'").replace(/&amp;/g, "&").replace(/\s+/g, " ");
 const noop = async () => ({ ok: true as const });
 const riskPanel = (risk: AgentRiskView, generatedAt = "2026-10-16T11:42:05+05:30") => html(createElement(RiskPanel, { risk, hasToken: true, onRearm: noop, generatedAt }));
-const candidateOf = (v: AgentView): AgentCandidateCardView => v.candidate!;
+const candidateOf = (v: AgentView): AgentCandidateView => v.candidate!;
 /** Nothing may say or imply that the agent has, found or measured an edge: once the allowed negations are gone, no "edge" is left. */
 const claimsEdge = (s: string) =>
   /\bedge\b/i.test(
@@ -109,7 +115,7 @@ describe("Agent parts render on the server", () => {
     d.outcome = { status: "HIT", ret30Pct: 0.21 };
     card.position = { side: "LONG", tradingSymbol: "NIFTY26O1922650CE", lots: 1, pnlPct: 4.2, finalistId: d.finalistId };
     view.risk = { ...view.risk, drawdownHalt: true, killSwitch: true, killReason: "max drawdown 15% reached: re-arm on the Agent page", drawdownPct: 15.18, codeRiskState: "REDUCE" };
-    const approved: AgentCandidateCardView = { ...candidateOf(view), status: "APPROVED", inUse: true, decidedAt: "2026-10-16T15:45:00+05:30", decidedBy: "dashboard" };
+    const approved: AgentCandidateView = { ...candidateOf(view), status: "APPROVED", inUse: true, decidedAt: "2026-10-16T15:45:00+05:30", decidedBy: "dashboard" };
     view.candidate = approved;
     view.cost = { ...view.cost, spentUsd: 0.42, reflexLatencyMs: { p50: 2400, p95: 5100 } };
     view.status = { ...view.status, paused: true, lastError: "reflex call timed out" };
@@ -266,9 +272,77 @@ describe("a decision shows its own candle and its real size (dashboard review M1
   });
 });
 
+describe("the engine's own view on the page (its candle, status and gate words; the page's parts)", () => {
+  const DAY = "2026-10-19";
+  const T = istAt(DAY, "15:05");
+  const s = agentSample;
+  const index = ["NIFTY", "SENSEX"] as const;
+  /** The bars stored after the last decision candle (15:05) are for grading only; each close is distinct. */
+  const bars = ["15:00", "15:05", "15:10", "15:15", "15:20", "15:25"].flatMap((hhmm, k) =>
+    index.map((i) => s.bar({ barCloseMs: istAt(DAY, hhmm), date: DAY, index: i, close: (i === "NIFTY" ? 25_100 : 82_100) + 5 * k, builtMs: istAt(DAY, hhmm) + 40_000 })),
+  );
+  const gate = (lines: GateLine[]) => ({ fired: false, lines, codeToxic: [], codeRisk: "SAFE" as const, effectiveRisk: "SAFE" as const });
+  const trace = (o: Partial<SizingTrace>): SizingTrace => ({ p: 0.458, b: 1, kelly: -0.084, quarterKelly: 0, riskPct: 0, lots: 0, riskRupees: 0, limitedBy: "", n: 0, ...o });
+  // What the engine's gate (agentCycle.ts tryEntry) records: a call of a kind with no graded history, and a call on an
+  // index main's tick computed no features for.
+  const noHistory: DecisionRecord = s.decision({
+    id: "n", date: DAY, barCloseMs: T, index: "NIFTY", finalistId: "gen:NIFTY", sizing: { p: 0.458, mode: "pooled", n: 0, mean: 0.5 },
+    execution: s.execution({
+      t: T + 150_000, action: "NO_ENTRY", detail: "no graded calls of this kind yet: no trade",
+      gate: gate([{ gate: "confidence", passed: true, detail: "0.85 is above 0.80" }, { gate: "kelly", passed: false, detail: "no graded calls of this kind yet" }]),
+      sizing: trace({ limitedBy: "no graded calls of this kind yet" }),
+    }),
+  });
+  const noFeatures: DecisionRecord = s.decision({
+    id: "x", date: DAY, barCloseMs: T, index: "SENSEX", finalistId: "gen:SENSEX", directionConfidence: 0.9, sizing: { p: 0.56, mode: "pooled", n: 120, mean: 0.6 },
+    execution: s.execution({
+      t: T + 150_000, action: "NO_ENTRY", detail: "no market features: main's tick computed no market features for this index; the agent never fetches its own",
+      gate: gate([
+        { gate: "kelly", passed: true, detail: "p 0.560, b 1.00: risk 0.30% of equity, measured on about 120 graded calls" },
+        { gate: "features", passed: false, detail: "main's tick computed no market features for this index; the agent never fetches its own" },
+      ]),
+      sizing: trace({ p: 0.56, kelly: 0.12, quarterKelly: 0.03, riskPct: 0.3, n: 120 }),
+    }),
+  });
+  const view = (nowMs: number): AgentView =>
+    buildAgentView({
+      date: DAY, nowMs, settings: { ...AGENT_DEFAULTS, mode: "shadow" }, enabled: true, paused: false,
+      account: { id: "agent", label: "Agent ₹5L", shortLabel: "Agent", paperOnly: true, capitalRupees: 500_000, kind: "agent" },
+      instruction: s.instruction(), bars,
+      batches: [s.batch(T, { date: DAY, finalists: index.map(genericFinalist), decisions: [noHistory, noFeatures] })],
+      decisions: [noHistory, noFeatures], escalations: [], risk: null, calibration: null, payoff: { b: 1, n: 0, measured: null }, trades: [],
+      review: null, reviewCostUsd: null, candidate: null, baseGuidance: BUILTIN_GUIDANCE, calls: [], calendar: new TradingCalendar(),
+    });
+
+  it("after the reflex window, heads each card with the 15:05 candle its decisions were made on and says it is not judging", () => {
+    for (const hhmm of ["15:26", "17:00"]) {
+      const v = view(istAt(DAY, hhmm));
+      expect(text(html(createElement(StatusBar, { view: v })))).toContain("Not judging now");
+      const nifty = text(html(createElement(IndexDecisionCard, { card: v.indices.find((c) => c.index === "NIFTY")!, view: v })));
+      expect(nifty).toContain("candle closing 15:05 IST · close 25,105.00");
+      expect(nifty).not.toContain("Decided on the");
+      expect(nifty).toContain("NIFTY, either side (generic call)");
+    }
+  });
+
+  it("words the engine's gate lines and sizing without claiming an edge: no graded calls yet, and no market features (S3, D6, D8)", () => {
+    const v = view(istAt(DAY, "15:26"));
+    const [nifty, sensex] = index.map((i) => text(html(createElement(IndexDecisionCard, { card: v.indices.find((c) => c.index === i)!, view: v }))));
+    expect(nifty).toContain("Size zero: no graded calls of this kind yet");
+    expect(sensex).toContain("Main's tick computed no market features for this index, so no entry");
+    expect(sensex).toContain("measured on about 120 calls, in-sample; not proof of an edge");
+    // The engine keeps the sizing but sized no lot: the quarter-Kelly cap is not the reason.
+    expect(sensex).toContain("Risk 0.30% of equity → 0 lots: the entry was blocked before it was sized");
+    expect(sensex).not.toContain("one lot would risk more than that");
+    const page = text(parts(v).map(html).join("\n"));
+    expect(page).not.toMatch(/measured edge/i);
+    expect(claimsEdge(page)).toBe(false);
+  });
+});
+
 describe("the nightly review and the candidate (dashboard review M5, L1, L3, L4)", () => {
   const view = demo();
-  const panel = (review: AgentView["review"], candidate: AgentCandidateCardView) =>
+  const panel = (review: AgentView["review"], candidate: AgentCandidateView) =>
     html(createElement(ReviewPanel, { review, candidate, generatedAt: view.generatedAt, hasToken: true, onDecide: noop }));
 
   it("shows a review waiting for the 16:40 retry as waiting, not failed", () => {
@@ -321,7 +395,7 @@ describe("the nightly review and the candidate (dashboard review M5, L1, L3, L4)
   it("an approved candidate diffs against the text it was written against, not against itself, and says whether it is still in use", () => {
     // flow.test.ts: after approval the text in use is the candidate's own, and the card used to compare it with itself.
     const c = candidateOf(view);
-    const approved: AgentCandidateCardView = { ...c, status: "APPROVED", currentGuidance: c.guidance, baseGuidance: BUILTIN_GUIDANCE, inUse: true, decidedAt: "2026-10-16T16:45:00+05:30", decidedBy: "owner" };
+    const approved: AgentCandidateView = { ...c, status: "APPROVED", currentGuidance: c.guidance, baseGuidance: BUILTIN_GUIDANCE, inUse: true, decidedAt: "2026-10-16T16:45:00+05:30", decidedBy: "owner" };
     const t = text(panel(view.review, approved));
     expect(t).not.toContain("The points are the same");
     expect(t).toContain("Added");

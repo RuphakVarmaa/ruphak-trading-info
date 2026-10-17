@@ -18,6 +18,7 @@
  */
 import { DurableObject } from "cloudflare:workers";
 import type { IndexId, OptionFlowView } from "../../../../src/engine/api-types";
+import { FlowAsOfCache } from "../../../../src/engine/agent/flowAsOf";
 import { defaultCalendar } from "../../../../src/engine/calendar/calendar";
 import { istDate } from "../../../../src/engine/clock";
 import { chainSnapshotFromTicks, inFlowSession } from "../../../../src/engine/flow/feedSnapshot";
@@ -26,7 +27,6 @@ import { PersistentFlowMonitor, type FlowStorage } from "../../../../src/engine/
 import type { FeedSnapshot } from "../../../../src/engine/market/upstoxFeed";
 import { freshTicks, redactFeedError } from "../../../../src/engine/market/upstoxFeed";
 import { UpstoxFeedClient, type FeedSocket, type FeedStatus } from "../../../../src/engine/market/upstoxFeedClient";
-import { FlowAsOfCache } from "../flowAsOfCache";
 import { jsonLogger } from "../runtime";
 
 const MIN_ALARM_MS = 250;
@@ -165,8 +165,8 @@ export class MarketFeedDO extends DurableObject<Env> {
 
   /**
    * The option flow as it read at `asOfMs`, from this session's minute samples taken at or before it (the options
-   * agent's snapshot at a candle close; the same answer as src/engine/agent/flowAsOf.ts, kept incrementally by
-   * workers/engine/src/flowAsOfCache.ts). Null before the first sample.
+   * agent's snapshot at a candle close; the same answer as flowViewAsOf, kept incrementally by FlowAsOfCache, both in
+   * src/engine/agent/flowAsOf.ts). Null before the first sample.
    */
   async getOptionFlowAsOf(index: IndexId, asOfMs: number): Promise<OptionFlowView | null> {
     if (index !== "NIFTY" && index !== "SENSEX") throw new Error("index must be NIFTY or SENSEX");

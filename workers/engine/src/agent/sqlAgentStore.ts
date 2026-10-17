@@ -102,7 +102,7 @@ const parse = <T>(text: string): T => JSON.parse(text) as T;
 const bodies = <T>(rows: { body: string }[]): T[] => rows.map((r) => parse<T>(r.body));
 
 /** True when code, not a model, set the decision's direction and confidence (a disagreement's NEUTRAL 0.5): never scored. */
-const codeMade = (d: DecisionRecord): boolean => "codeMade" in d && d.codeMade === true;
+const codeMade = (d: DecisionRecord): boolean => d.codeMade === true;
 /** An outcome's paid flag as a column: 1, 0, or null when there is no outcome or it has no flag. */
 const paidColumn = (d: DecisionRecord): number | null => (d.outcome?.paid === true ? 1 : d.outcome?.paid === false ? 0 : null);
 

@@ -1,6 +1,8 @@
 /**
- * The market feed's as-of option flow (flowAsOfCache.ts): the same view as flowViewAsOf for any order of calls, at
- * the cost of the samples since the previous call; and MarketFeedDO.getOptionFlowAsOf going through it.
+ * The market feed's as-of option flow: FlowAsOfCache (src/engine/agent/flowAsOf.ts) gives flowViewAsOf's view as the
+ * feed calls it, once per candle close and index while its samples arrive, at the cost of the samples since the
+ * previous call (the 15:25 read costs one view, not a replay of the day); and MarketFeedDO.getOptionFlowAsOf goes
+ * through it.
  */
 import { afterEach, describe, expect, it, vi } from "vitest";
 
@@ -13,14 +15,13 @@ vi.mock("cloudflare:workers", () => ({
   },
 }));
 
-import { flowViewAsOf } from "../../../src/engine/agent/flowAsOf";
-import { defaultCalendar } from "../../../src/engine/calendar/calendar";
-import { addDays, istAt, MINUTE_MS } from "../../../src/engine/clock";
-import { FlowMonitor, type ChainSnapshot, type SideQuote } from "../../../src/engine/flow/flowMonitor";
-import { FLOW_STATS } from "../../../src/engine/flow/flowStats";
-import type { IndexId } from "../../../src/engine/types";
-import { MarketFeedDO } from "./do/MarketFeedDO";
-import { FlowAsOfCache } from "./flowAsOfCache";
+import { FlowAsOfCache, flowViewAsOf } from "../../../../src/engine/agent/flowAsOf";
+import { defaultCalendar } from "../../../../src/engine/calendar/calendar";
+import { addDays, istAt, MINUTE_MS } from "../../../../src/engine/clock";
+import { FlowMonitor, type ChainSnapshot, type SideQuote } from "../../../../src/engine/flow/flowMonitor";
+import { FLOW_STATS } from "../../../../src/engine/flow/flowStats";
+import type { IndexId } from "../../../../src/engine/types";
+import { MarketFeedDO } from "./MarketFeedDO";
 
 const DAY = "2026-10-19";
 const q = (m: number, k: number, ce: boolean): SideQuote => ({
@@ -51,7 +52,7 @@ const fresh = (snaps: readonly ChainSnapshot[], index: IndexId, at: number, dte:
 
 afterEach(() => vi.restoreAllMocks());
 
-describe("FlowAsOfCache", () => {
+describe("FlowAsOfCache, as the market feed calls it", () => {
   it("equals flowViewAsOf at every bar close of a 375-sample session, with the samples arriving as the day goes", { timeout: 60_000 }, () => {
     // Five strikes keep the 75 reference replays quick; the cache's own work is the same whatever the count.
     const all = session(375, "NIFTY", DAY, 5);
@@ -135,5 +136,20 @@ describe("MarketFeedDO.getOptionFlowAsOf", () => {
       expect(got).toEqual(flowViewAsOf(monitor.snapshots("NIFTY"), "NIFTY", t, { stats: FLOW_STATS, dte }));
     }
     expect(viewAt).toHaveBeenCalledTimes(3);
+  });
+
+  it("stays incremental between candle closes: the live monitor's samples reach the cache as the same objects", async () => {
+    const { dO, monitor } = await feedDo();
+    const all = session(200);
+    // The feed samples a minute at a time while the agent reads at each candle close.
+    for (const s of all.filter((x) => x.t <= istAt(DAY, "11:00"))) monitor.ingest(s);
+    await dO.getOptionFlowAsOf("NIFTY", istAt(DAY, "11:00"));
+    const ingest = vi.spyOn(FlowMonitor.prototype, "ingest");
+    for (const s of all.filter((x) => x.t > istAt(DAY, "11:00") && x.t <= istAt(DAY, "11:05"))) monitor.ingest(s);
+    const live = ingest.mock.calls.length;
+    expect(live).toBe(5);
+    await dO.getOptionFlowAsOf("NIFTY", istAt(DAY, "11:05"));
+    // The cache ingested only the 5 samples since 11:00, not the 110 of the day so far (a rebuild).
+    expect(ingest.mock.calls.length - live).toBe(5);
   });
 });

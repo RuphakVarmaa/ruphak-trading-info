@@ -1,10 +1,11 @@
 import { describe, expect, it } from "vitest";
 import { SNAPSHOT_TOKEN_LIMIT } from "@/engine/agent/constants";
 import { BUILTIN_GUIDANCE, instructionVersion } from "@/engine/agent/prompt";
+import type { AgentCandidateView } from "@/engine/api-types";
 import { istAt } from "@/lib/ist";
 import { MockEngineApi } from "./mock";
 import { MockAgent, MOCK_AGENT_MODEL } from "./mockAgent";
-import type { AgentCandidateCardView, AgentSizingView } from "./types";
+import type { AgentSizingView } from "./types";
 
 /** Fri 16 Oct 2026 (a trading day): 11:42 is the mock engine's simulated start; 17:00 is after the close. */
 const DAY = "2026-10-16";
@@ -146,7 +147,7 @@ describe("MockAgent candidate and re-arm", () => {
     expect(v.candidate).toMatchObject({ id: "cand-2026-10-15", status: "PENDING", decidedAt: null, decidedBy: null });
     expect(v.candidate?.replay?.label).toBe("in-sample, not proof");
     expect(v.candidate?.guidance).not.toBe(v.candidate?.currentGuidance);
-    const c: AgentCandidateCardView = v.candidate!;
+    const c: AgentCandidateView = v.candidate!;
     expect(c.baseGuidance).toBe(BUILTIN_GUIDANCE);
     expect(c.inUse).toBe(false);
     // All three Brier scores are over the calls every run labelled; graded equals that common count.
@@ -178,7 +179,7 @@ describe("MockAgent candidate and re-arm", () => {
     expect(todays.id).toBe("cand-2026-10-16");
     expect(agent.decideCandidate(todays.id, "approve", "test").ok).toBe(true);
     const after = agent.view();
-    const c: AgentCandidateCardView = after.candidate!;
+    const c: AgentCandidateView = after.candidate!;
     // The approved card diffs against the text it was written against, never against itself.
     expect(c).toMatchObject({ status: "APPROVED", decidedBy: "test", inUse: true, baseGuidance: BUILTIN_GUIDANCE });
     expect(c.currentGuidance).toBe(c.guidance);
@@ -196,7 +197,7 @@ describe("MockAgent candidate and re-arm", () => {
     expect(agent.decideCandidate("cand-2026-10-15", "approve", "test").ok).toBe(true);
     // 16 Oct ran with the approved text, so its review proposes nothing new: the approved candidate stays the newest.
     now = at("17:00");
-    const c: AgentCandidateCardView = agent.view().candidate!;
+    const c: AgentCandidateView = agent.view().candidate!;
     expect(c).toMatchObject({ id: "cand-2026-10-15", status: "APPROVED", inUse: true });
     // Only the candidate the page shows can be decided.
     expect(agent.decideCandidate("cand-2026-10-16", "reject", "test")).toEqual({ ok: false, message: "No candidate with that id is waiting." });

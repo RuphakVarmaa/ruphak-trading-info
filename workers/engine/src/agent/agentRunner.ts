@@ -593,7 +593,7 @@ export class AgentRunner {
     if (ageMs > AGENT_POLICY.maxDecisionAgeMs) {
       return notExecuted(batch, risk, now, `stale: taken ${Math.round(ageMs / 1000)} s after the candle closed (limit ${AGENT_POLICY.maxDecisionAgeMs / MINUTE_MS} min)`);
     }
-    const ctx: ExecuteContext & { paused?: () => boolean } = {
+    const ctx: ExecuteContext = {
       mode: this.mode === "paper" ? "paper" : "shadow",
       nowMs: now,
       calendar: cal,

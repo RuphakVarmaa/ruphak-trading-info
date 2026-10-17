@@ -10,6 +10,7 @@
 import { useId, useState, type CSSProperties, type ReactNode } from "react";
 import type {
   AgentCalibrationView,
+  AgentCandidateView,
   AgentCostView,
   AgentDecisionView,
   AgentEscalationView,
@@ -22,7 +23,7 @@ import type {
 } from "@/engine/api-types";
 import { ACCOUNTS } from "@/engine/accounts";
 import { AGENT_POLICY, CALIBRATION, ESCALATION, OUTCOME } from "@/engine/agent/constants";
-import type { AgentCandidateCardView, AgentReplayView, AgentSizingView } from "@/lib/engine/types";
+import type { AgentReplayView, AgentSizingView } from "@/lib/engine/types";
 import { alpha, C, pnlColor } from "@/components/shared/colors";
 import { fmtDateKey, fmtInr, fmtNum, fmtPct } from "@/components/shared/format";
 import { SERIF } from "@/components/shared/theme";
@@ -378,7 +379,7 @@ function DecisionBlock({ d, finalist, mode, cardBarAt }: { d: AgentDecisionView;
   const color = d.direction === "LONG" ? C.green : d.direction === "SHORT" ? C.red : C.muted;
   const idea = finalist?.kind === "IDEA";
   const sized: AgentSizingView | null = d.sizing;
-  const sizing = sized ? sizingWords(sized) : null;
+  const sizing = sized ? sizingWords(sized, d.gate?.lines) : null;
   const decidedOn = decidedOnWords(d.barAt, cardBarAt);
   return (
     <div style={{ display: "grid", gap: 12, borderTop: `1px solid ${C.borderSoft}`, paddingTop: 14, minWidth: 0 }}>
@@ -861,7 +862,7 @@ function CandidateCard({
   hasToken,
   onDecide,
 }: {
-  c: AgentCandidateCardView;
+  c: AgentCandidateView;
   generatedAt: string;
   hasToken: boolean;
   onDecide: AdminAction<{ id: string; decision: "approve" | "reject" }>;
@@ -974,7 +975,7 @@ export function ReviewPanel({
   onDecide,
 }: {
   review: AgentReviewView | null;
-  candidate: AgentCandidateCardView | null;
+  candidate: AgentCandidateView | null;
   generatedAt: string;
   hasToken: boolean;
   onDecide: AdminAction<{ id: string; decision: "approve" | "reject" }>;

@@ -332,6 +332,29 @@ export function agentStoreContract(name: string, make: () => Promise<AgentStore>
       ]);
     });
 
+    it("never lists a code-made row (codeMade: not a forecast) among the graded calls, and keeps the row whole", async () => {
+      const st = await make();
+      await st.putDecisions([
+        s.decision({ id: "model", outcome: s.outcome({ status: "HIT", y: 1, paid: true }) }),
+        s.decision({ id: "code-dir", barCloseMs: T + 5 * MIN, codeMade: true, outcome: s.outcome({ status: "MISS", y: 0, paid: false }) }),
+        s.decision({ id: "neutral", barCloseMs: T + 10 * MIN, direction: "NEUTRAL", directionConfidence: 0.45, outcome: s.outcome({ status: "NEUTRAL", y: 1, paid: null }) }),
+        s.decision({ id: "code-neutral", barCloseMs: T + 15 * MIN, direction: "NEUTRAL", directionConfidence: 0.5, source: "ESCALATION", codeMade: true, outcome: s.outcome({ status: "NEUTRAL", y: 0, paid: null }) }),
+        // Stored ungraded and graded later, as the nightly review grades a day.
+        s.decision({ id: "code-late", barCloseMs: T + 20 * MIN, direction: "NEUTRAL", directionConfidence: 0.5, codeMade: true }),
+      ]);
+      await st.updateOutcomes([{ id: "code-late", outcome: s.outcome({ status: "NEUTRAL", y: 1, paid: null }) }]);
+      expect((await st.graded(D1)).map((g) => g.id)).toEqual(["model"]);
+      expect((await st.gradedNeutral(D1)).map((g) => g.id)).toEqual(["neutral"]);
+      // The rows themselves stay stored and listed, flag and all.
+      expect((await st.decisions(D2)).map((d) => [d.id, d.codeMade === true])).toEqual([
+        ["model", false],
+        ["code-dir", true],
+        ["neutral", false],
+        ["code-neutral", true],
+        ["code-late", true],
+      ]);
+    });
+
     it("upserts call records by id, so a call written before it runs and again after counts once", async () => {
       const st = await make();
       expect(await st.spentUsd(D2)).toBe(0);
@@ -434,6 +457,19 @@ export function agentStoreContract(name: string, make: () => Promise<AgentStore>
       expect((await st.activeInstruction())?.version).toBe("v-builtin");
       await expect(st.setActiveInstruction("unknown")).rejects.toThrow();
       expect((await st.activeInstruction())?.version).toBe("v-builtin");
+    });
+
+    it("returns the stored text of any guidance version, active or not, as a copy; null for one never stored", async () => {
+      const st = await make();
+      await st.putInstruction(s.instruction({ version: "v-builtin", guidance: "- built-in text", active: true }));
+      await st.putInstruction(s.instruction({ version: "v-cand", guidance: "- the candidate's text", source: "CANDIDATE", candidateId: "cand-1", createdMs: T, active: true }));
+      // The built-in text is retired and still readable: the review judges a session by the text it ran with.
+      expect(await st.instruction("v-builtin")).toEqual(s.instruction({ version: "v-builtin", guidance: "- built-in text", active: false }));
+      expect(await st.instruction("v-cand")).toEqual(s.instruction({ version: "v-cand", guidance: "- the candidate's text", source: "CANDIDATE", candidateId: "cand-1", createdMs: T, active: true }));
+      expect(await st.instruction("v-unknown")).toBeNull();
+      const got = (await st.instruction("v-cand"))!;
+      got.guidance = "changed";
+      expect((await st.instruction("v-cand"))?.guidance).toBe("- the candidate's text");
     });
 
     it("queues jobs: due ones oldest first, RUNNING ones out of the queue but still listed, deleted ones gone", async () => {

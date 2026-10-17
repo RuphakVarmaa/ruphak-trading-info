@@ -291,20 +291,8 @@ describe("SqlAgentStore", () => {
   });
 });
 
-describe("instruction(version)", () => {
-  it("returns any stored guidance text by its version, active or not, and null for one never stored", async () => {
-    const s = freshStore();
-    await s.putInstruction(instruction({ version: "core-2/builtin0", guidance: "- the built-in text" }));
-    await s.putInstruction(instruction({ version: "core-2/cand0001", guidance: "- a candidate's text", source: "CANDIDATE", candidateId: "cand-1", createdMs: T0 + 1, active: true }));
-    // The built-in text is retired, and still readable: the review judges a session by the text it ran with.
-    expect(await s.instruction("core-2/builtin0")).toMatchObject({ version: "core-2/builtin0", guidance: "- the built-in text", active: false });
-    expect(await s.instruction("core-2/cand0001")).toMatchObject({ guidance: "- a candidate's text", active: true, candidateId: "cand-1" });
-    expect(await s.instruction("core-2/never")).toBeNull();
-  });
-});
-
-/** A decision the code made (a disagreement's NEUTRAL 0.5): the flag the engine sets, written as a plain field. */
-const codeMade = (o: Partial<DecisionRecord>): DecisionRecord => ({ ...decision(o), codeMade: true }) as DecisionRecord;
+/** A decision the code made (a disagreement's NEUTRAL 0.5). */
+const codeMade = (o: Partial<DecisionRecord>): DecisionRecord => decision({ ...o, codeMade: true });
 
 describe("schema 2: the calibration reads use columns only", () => {
   afterEach(() => vi.restoreAllMocks());
@@ -374,18 +362,5 @@ describe("schema 2: the calibration reads use columns only", () => {
     expect(neutral).toEqual(expectedNeutral);
     expect(graded.length).toBeGreaterThan(10);
     expect(neutral.length).toBeGreaterThan(5);
-  });
-
-  it("never scores a decision the code made, in either read", async () => {
-    const s = freshStore();
-    await s.putDecisions([
-      decision({ id: "model", outcome: outcome({}) }),
-      codeMade({ id: "code-n", direction: "NEUTRAL", directionConfidence: 0.5, outcome: outcome({ status: "NEUTRAL", y: 1, paid: null }) }),
-      codeMade({ id: "code-d", outcome: outcome({}) }),
-    ]);
-    expect((await s.graded(D)).map((g) => g.id)).toEqual(["model"]);
-    expect(await s.gradedNeutral(D)).toEqual([]);
-    // The record itself is kept whole.
-    expect((await s.decisions(D)).find((d) => d.id === "code-n")).toMatchObject({ codeMade: true });
   });
 });

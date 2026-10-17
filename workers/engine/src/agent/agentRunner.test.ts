@@ -6,7 +6,7 @@
  */
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { ACCOUNTS, accountConfig } from "../../../../src/engine/accounts";
-import { agentPositionPass, bookAsOf, bookFrom, buildReflexInput, executeAgentBatch, initialBook, type ExecuteContext } from "../../../../src/engine/agent/agentCycle";
+import { agentPositionPass, bookAsOf, bookFrom, buildReflexInput, executeAgentBatch, initialBook } from "../../../../src/engine/agent/agentCycle";
 import { latestClosedBarMs } from "../../../../src/engine/agent/causal";
 import { AGENT_STEP } from "../../../../src/engine/agent/constants";
 import { drawdownBreached, riskSnapshotFrom } from "../../../../src/engine/agent/risk";
@@ -959,7 +959,7 @@ describe("the operator's pause and a running batch", () => {
     h.agentDo.batches = [batch()];
     const seen: (boolean | null)[] = [];
     vi.mocked(executeAgentBatch).mockImplementationOnce(async (_deps, b, x) => {
-      const paused = (x as ExecuteContext & { paused?: () => boolean }).paused;
+      const paused = x.paused;
       seen.push(paused ? paused() : null);
       // /ops/agent-pause arrives while the batch is pricing its entry.
       await h.runner.setPaused(true, "ops");

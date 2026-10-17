@@ -162,6 +162,12 @@ describe("sizing in words", () => {
     const w = sizingWords({ p: 0.458, b: 1, kelly: -0.08, riskPct: 0, lots: 0, n: 0 });
     expect(w.headline).toBe("Size zero: no graded calls of this kind yet");
     expect(w.detail).toMatch(/with no graded calls of this kind yet, only the cautious starting estimate/);
+    // Once the measured payoff passes 1.18 the prior alone clears Kelly; the engine still sizes nothing (C2), and the
+    // words never say Kelly is what stopped it.
+    const prior = sizingWords({ p: 0.458, b: 1.25, kelly: 0.024, riskPct: 0, lots: 0, n: 0 });
+    expect(prior.headline).toBe("Size zero: no graded calls of this kind yet");
+    expect(prior.detail).toContain("Kelly = p − (1 − p) / b = +0.02. With no graded call of this kind behind p, no trade is sized, whatever Kelly gives.");
+    expect(prior.detail).not.toContain("It must be above zero");
   });
 
   it("above zero allows a small size, says it is in-sample and not proof of an edge, then the risk and the lots", () => {
@@ -173,16 +179,29 @@ describe("sizing in words", () => {
     expect(capped.detail).toMatch(/A quarter of it is 3\.00% of equity, capped at 1% a trade: 1 lot\./);
     expect(claimsEdge(capped.headline)).toBe(false);
     expect(sizingWords({ p: 0.56, b: 1, kelly: 0.12, riskPct: 1, lots: 2 }).headline).toMatch(/break-even \(in-sample; not proof of an edge\)$/);
-    const small = sizingWords({ p: 0.505, b: 1, kelly: 0.01, riskPct: 0.25, lots: 0 });
+    const small = sizingWords({ p: 0.505, b: 1, kelly: 0.01, riskPct: 0.25, lots: 0 }, [line("kelly", true), line("plan", true), line("kelly_cap", false)]);
     expect(small.detail).toMatch(/0\.25% of equity: 0 lots: one lot would risk more than that/);
     expect(small.detail).not.toMatch(/capped/);
   });
 
   it("when the quarter-Kelly cap blocks the trade (0 lots), the size row says 0 lots and why, never 1 lot", () => {
     // The kelly_cap block of the dashboard review's probe (kellycap.test.ts): the engine now records 0 lots.
-    const w = sizingWords({ p: 0.53, b: 1, kelly: 0.06, riskPct: 0.15, lots: 0, n: 300 });
+    const w = sizingWords({ p: 0.53, b: 1, kelly: 0.06, riskPct: 0.15, lots: 0, n: 300 }, [line("kelly", true), line("plan", true), line("kelly_cap", false)]);
     expect(w.size).toBe("Risk 0.15% of equity → 0 lots: one lot would risk more than that");
     expect(w.size).not.toMatch(/→ 1 lot/);
+  });
+
+  it("blames the quarter-Kelly cap for 0 lots only when its check blocked: an entry stopped before it was sized says so", () => {
+    // The engine keeps the sizing when main's tick has no features for the index, or its own entry checks block the
+    // plan: no lot was ever sized, so the cap is not the reason.
+    const sized = { p: 0.56, b: 1, kelly: 0.12, riskPct: 0.3, lots: 0, n: 120 };
+    for (const blocker of ["features", "plan"]) {
+      const w = sizingWords(sized, [line("kelly", true), line(blocker, false)]);
+      expect(w.size).toBe("Risk 0.30% of equity → 0 lots: the entry was blocked before it was sized");
+      expect(w.detail).not.toMatch(/one lot would risk more/);
+    }
+    // Without the gate lines, no reason is given.
+    expect(sizingWords(sized).size).toBe("Risk 0.30% of equity → 0 lots");
   });
 
   it("rounds the overlap-weighted count, and says at least one call once any counts", () => {

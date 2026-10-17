@@ -5,7 +5,7 @@
  */
 import { ACCOUNTS, accountConfig, parseAccounts, type AccountId, type AccountSpec } from "../../../src/engine/accounts";
 import { parseAdvisorSettings, type AdvisorSettings } from "../../../src/engine/advisor/runState";
-import { parseAgentSettings } from "../../../src/engine/agent/config";
+import { parseAgentSettings, type IgnoredVar } from "../../../src/engine/agent/config";
 import type { AgentSettings } from "../../../src/engine/agent/types";
 import type { AccountView } from "../../../src/engine/api-types";
 import { TradingCalendar, defaultCalendar } from "../../../src/engine/calendar/calendar";
@@ -122,21 +122,16 @@ export function agentEnabled(env: Env): boolean {
   return enabledAccounts(env).includes("agent");
 }
 
-/** The AGENT_* vars as parseAgentSettings reads them. */
-type AgentVars = Parameters<typeof parseAgentSettings>[0];
-/** Called for each var the parser ignored (for example a model with no price row), with the default it used instead. */
-type OnIgnoredVar = (varName: string, value: string, reason: string) => void;
-
 /**
  * The options agent's mode, models and limits (Worker vars AGENT_*; defaults and bounds in src/engine/agent/config.ts).
- * With a logger, each var the parser ignored is logged as a warning (the value cut to 100 characters).
+ * With a logger, each var the parser ignored (for example a model with no price row) is logged as a warning, with
+ * the value cut to 100 characters and the reason, which names the value used instead.
  */
 export function agentSettings(env: Env, logger?: Pick<Logger, "warn">): AgentSettings {
-  const parse: (vars: AgentVars, onIgnored?: OnIgnoredVar) => AgentSettings = parseAgentSettings;
-  const onIgnored: OnIgnoredVar | undefined = logger
-    ? (varName, value, reason) => logger.warn("agent setting ignored: the default is used", { var: varName, value: value.slice(0, 100), reason })
+  const onIgnored: IgnoredVar | undefined = logger
+    ? (varName, value, reason) => logger.warn("agent setting not used as given", { var: varName, value: value.slice(0, 100), reason })
     : undefined;
-  return parse(
+  return parseAgentSettings(
     {
       AGENT_MODE: env.AGENT_MODE,
       AGENT_MODEL: env.AGENT_MODEL,

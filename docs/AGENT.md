@@ -20,7 +20,7 @@ Where each part runs:
 |---|---|---|
 | The runner | `workers/engine/src/agent/agentRunner.ts`, inside the trading DO's tick, after main's exits and exit polls | Runs the agent's code exits. Executes each new batch of decisions through the code gate, the planner and the risk layer. Builds each closed bar's snapshot and hands it to the AgentDO. TE stays the only writer of orders and positions. The runner never reads main's market data source (its request budget and cached prices are main's): the features of main's own tick are the agent's only market input, and an entry on an index without them is not taken. |
 | AgentDO | `workers/engine/src/do/AgentDO.ts`, with its own SQLite (`workers/engine/src/agent/sqlAgentStore.ts`) | Makes the model calls on its own alarm, never inside TE's tick. Keeps the bars, decisions, model calls and their cost, escalations, trades, risk, reviews, candidate guidance and job queue. It never places an order. |
-| MarketFeedDO | `getOptionFlowAsOf(index, asOfMs)` | The option flow as it read at the candle close, built from minute samples taken at or before it. It is kept incrementally (`workers/engine/src/flowAsOfCache.ts`), so a read late in the session costs about one view, not a replay of the day's samples. |
+| MarketFeedDO | `getOptionFlowAsOf(index, asOfMs)` | The option flow as it read at the candle close, built from minute samples taken at or before it. It is kept incrementally (`FlowAsOfCache` in `src/engine/agent/flowAsOf.ts`), so a read late in the session costs about one view, not a replay of the day's samples. |
 
 A candle that closes at T:
 

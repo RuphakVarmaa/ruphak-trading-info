@@ -36,7 +36,7 @@ import { fnv1aHex } from "@/engine/util/hash";
 import { addDays, isTradingDay, istAt, istDate, MINUTE_MS, nextWeeklyExpiry, prevTradingDay, sessionPhaseAt, toIstIso } from "@/lib/ist";
 import { isMockHoliday, mockTradingSymbol, STRIKE_STEP } from "./fixtures";
 import { hashString, mulberry32, round2 } from "./random";
-import type { AgentCandidateCardView, AgentReplayView, AgentSizingView } from "./types";
+import type { AgentReplayView, AgentSizingView } from "./types";
 
 export const MOCK_AGENT_MODEL = "demo (no model call)";
 
@@ -779,7 +779,7 @@ export class MockAgent {
       label: "in-sample, not proof",
       stopReason: null,
     };
-    const view: AgentCandidateCardView = {
+    const view: AgentCandidateView = {
       id,
       date,
       createdAt: toIstIso(istAt(date, CANDIDATE_AT)),

@@ -1,6 +1,8 @@
 import { readFileSync } from "node:fs";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { accountConfig, followerIds, type AccountId } from "../../../src/engine/accounts";
+import { AGENT_DEFAULTS } from "../../../src/engine/agent/config";
+import { MODEL_PRICES } from "../../../src/engine/agent/cost";
 import { GrowwDataClient } from "../../../src/engine/broker/groww";
 import { DEFAULT_CONFIG, withOverrides, type EngineConfig } from "../../../src/engine/config";
 import { UPSTOX_QUOTE_SOURCE, UpstoxQuotes } from "../../../src/engine/market/upstoxQuotes";
@@ -165,11 +167,35 @@ describe("accountViews", () => {
 
 // The defaults and bounds live in the engine package's parser (src/engine/agent/config.ts).
 describe("agentSettings (the AGENT_* vars)", () => {
-  it("defaults to off with a $3 cap and 8 escalations a day, and passes the model vars through", () => {
+  // Priced models from the price table other than the defaults (no model id is written out here).
+  const priced = Object.keys(MODEL_PRICES).filter((m) => m !== AGENT_DEFAULTS.reflexModel && m !== AGENT_DEFAULTS.escalationModel);
+
+  it("defaults to off with a $3 cap and 8 escalations a day, and passes the priced model vars through", () => {
     const s = agentSettings(env({}));
     expect(s).toMatchObject({ mode: "off", dailyUsdCap: 3, escalationsPerDay: 8 });
     for (const m of [s.reflexModel, s.escalationModel, s.reviewModel]) expect(m.length).toBeGreaterThan(0);
-    expect(agentSettings(env({ AGENT_MODEL: "reflex-x", AGENT_ESCALATION_MODEL: "deep-x", AGENT_REVIEW_MODEL: "deep-y" }))).toMatchObject({ reflexModel: "reflex-x", escalationModel: "deep-x", reviewModel: "deep-y" });
+    const [a, b, c] = priced;
+    expect(agentSettings(env({ AGENT_MODEL: a, AGENT_ESCALATION_MODEL: b, AGENT_REVIEW_MODEL: c }))).toMatchObject({ reflexModel: a, escalationModel: b, reviewModel: c });
+  });
+
+  it("uses the default for a model the price table cannot price, and logs each var it did not use as given (M4)", () => {
+    const warn = vi.fn();
+    const s = agentSettings(env({ AGENT_MODE: "shadow", AGENT_REVIEW_MODEL: "an-unpriced-model", AGENT_DAILY_USD_CAP: "25" }), { warn });
+    expect(s).toMatchObject({ mode: "shadow", reviewModel: AGENT_DEFAULTS.reviewModel, dailyUsdCap: 20 });
+    expect(warn.mock.calls).toEqual([
+      ["agent setting not used as given", { var: "AGENT_REVIEW_MODEL", value: "an-unpriced-model", reason: `no row in the agent's price table, so the daily cost cap could not hold; using ${AGENT_DEFAULTS.reviewModel}` }],
+      ["agent setting not used as given", { var: "AGENT_DAILY_USD_CAP", value: "25", reason: "outside 0..20; using 20" }],
+    ]);
+    // A long value is cut in the log line.
+    agentSettings(env({ AGENT_MODE: "x".repeat(300) }), { warn });
+    expect(warn.mock.calls[2][1]).toMatchObject({ var: "AGENT_MODE", value: "x".repeat(100) });
+  });
+
+  it("logs nothing when every var is used as given, and works without a logger", () => {
+    const warn = vi.fn();
+    expect(agentSettings(env({ AGENT_MODE: "paper", AGENT_REVIEW_MODEL: priced[0], AGENT_DAILY_USD_CAP: "3" }), { warn })).toMatchObject({ mode: "paper", reviewModel: priced[0] });
+    expect(warn).not.toHaveBeenCalled();
+    expect(agentSettings(env({ AGENT_MODE: "shadow", AGENT_REVIEW_MODEL: "an-unpriced-model" }))).toMatchObject({ mode: "shadow", reviewModel: AGENT_DEFAULTS.reviewModel });
   });
 
   it("accepts the three modes and turns anything else off; clamps the cap to 0..20 and escalations to 0..24", () => {

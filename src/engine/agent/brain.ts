@@ -727,7 +727,7 @@ export class AgentBrain {
     const version = top[0];
     let stored: InstructionRecord | null = null;
     try {
-      stored = (await store.instruction?.(version)) ?? null;
+      stored = await store.instruction(version);
     } catch (err) {
       this.d.logger.warn("agent: the session's guidance text could not be read", { version, error: errText(err) });
     }
@@ -995,7 +995,7 @@ export class AgentBrain {
    */
   private async approvalRefusal(now: number, verb: "approve" | "revert"): Promise<string | null> {
     const { store, calendar } = this.d;
-    if (this.inSession(now)) return `${verb} after 15:30 so one session is judged by one text`;
+    if (this.inSession(now)) return `${verb} before 09:15 IST, or ${APPROVAL_WINDOW_TEXT}, so one session is judged by one text`;
     const today = istDate(now);
     if (!calendar.isTradingDay(today) || now < calendar.closeMs(today)) return null;
     if ((await store.batches(today)).length === 0) return null;
