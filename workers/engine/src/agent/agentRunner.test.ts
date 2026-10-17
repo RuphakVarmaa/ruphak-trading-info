@@ -1191,3 +1191,118 @@ describe("Telegram's words for the model's orders", () => {
     ]);
   });
 });
+
+describe("AgentRunner.pollStep: the step but its decisions, inside main's exit-poll waits", () => {
+  const WAIT_END = T0 + 10_000;
+
+  it("runs the exits, the risk row, the book and the latest closed bar by the wait's end, and never takes decisions", async () => {
+    const h = setup();
+    await h.agentRepo.positions.save(position());
+    h.agentDo.batches = [batch()];
+    vi.mocked(latestClosedBarMs).mockReturnValue({ barCloseMs: BAR, complete: ["NIFTY", "SENSEX"] });
+    await h.runner.pollStep(report(), calendar, WAIT_END);
+    expect(agentPositionPass).toHaveBeenCalledTimes(1);
+    expect(h.agentDo.takes).toEqual([]);
+    expect(executeAgentBatch).not.toHaveBeenCalled();
+    expect(h.agentDo.records.map((r) => [r.decisions.length, r.risk.t])).toEqual([[0, T0]]);
+    expect(h.agentDo.submits.map((i) => i.barCloseMs)).toEqual([BAR]);
+    expect(h.hot()).toMatchObject({ lastSubmittedBarMs: BAR, lastExecutedBarMs: istMidnight(DAY) });
+    expect(h.hot().books.map((b) => b.t)).toEqual([T0]);
+
+    // The step after it takes the decisions; the bar is not submitted again.
+    h.clock.advance(20_000);
+    await h.runner.step(report({ t: T0 + 20_000 }), calendar, false, LATER + 20_000);
+    expect(h.agentDo.takes).toEqual([istMidnight(DAY)]);
+    expect(executeAgentBatch).toHaveBeenCalledTimes(1);
+    expect(h.agentDo.submits).toHaveLength(1);
+  });
+
+  it("halts at the drawdown limit within the wait: kill switch, flattened at market, latched, and the AgentDO told", async () => {
+    const h = setup({ hot: { date: DAY, peakEquity: 500_000 } });
+    await seedDrawdown(h.agentRepo);
+    await h.agentRepo.positions.save(position());
+    await h.runner.pollStep(report(), calendar, WAIT_END);
+    expect(await h.agentRepo.positions.get("pos-1")).toMatchObject({ status: "CLOSED", exitReason: "KILL_SWITCH" });
+    expect(await h.agentRepo.settings.get()).toMatchObject({ killSwitch: true, killReason: "max drawdown 15% reached: re-arm on the Agent page" });
+    expect(h.hot().ddHalt).toBe(true);
+    expect(await killRows(h.base)).toHaveLength(1);
+    expect(haltAlerts(h.alerts)).toHaveLength(1);
+    // The risk row carries the halt and the closed trade, so the Agent page shows them without waiting for a step.
+    const rec = h.agentDo.records.at(-1)!;
+    expect(rec.risk).toMatchObject({ ddHalt: true, killSwitch: true });
+    expect(rec.trades.map((t) => t.positionId)).toEqual(["pos-1"]);
+  });
+
+  it("while paused, and in mode off, still checks the drawdown and runs the exits, but submits no bar", async () => {
+    vi.mocked(latestClosedBarMs).mockReturnValue({ barCloseMs: BAR, complete: ["NIFTY", "SENSEX"] });
+    for (const h of [setup({ hot: { date: DAY, peakEquity: 500_000, paused: true } }), setup({ settings: { mode: "off" }, hot: { date: DAY, peakEquity: 500_000 } })]) {
+      await seedDrawdown(h.agentRepo);
+      await h.agentRepo.positions.save(position());
+      await h.runner.pollStep(report(), calendar, WAIT_END);
+      expect(h.hot().ddHalt).toBe(true);
+      expect(await h.agentRepo.positions.get("pos-1")).toMatchObject({ status: "CLOSED", exitReason: "KILL_SWITCH" });
+      expect(h.agentDo.submits).toEqual([]);
+      expect(h.agentDo.takes).toEqual([]);
+    }
+  });
+
+  it("once a kill pre-empts it, starts nothing after the part it is in; the next wait does the rest", async () => {
+    vi.mocked(latestClosedBarMs).mockReturnValue({ barCloseMs: BAR, complete: ["NIFTY", "SENSEX"] });
+    // Pre-empted during its code exits: no drawdown check, no risk row, no book, no bar.
+    const h = setup({ hot: { date: DAY, peakEquity: 500_000 } });
+    await seedDrawdown(h.agentRepo);
+    await h.agentRepo.positions.save(position());
+    await h.runner.pollStep(report(), calendar, WAIT_END, () => true);
+    expect(agentPositionPass).toHaveBeenCalledTimes(1);
+    expect(h.hot().ddHalt ?? false).toBe(false);
+    expect((await h.agentRepo.settings.get()).killSwitch).toBe(false);
+    expect((await h.agentRepo.positions.get("pos-1"))?.status).toBe("OPEN");
+    expect(h.agentDo.records).toEqual([]);
+    expect(h.agentDo.submits).toEqual([]);
+    h.clock.advance(10_000);
+    await h.runner.pollStep(report(), calendar, WAIT_END + 10_000);
+    expect(h.hot().ddHalt).toBe(true);
+    expect(await h.agentRepo.positions.get("pos-1")).toMatchObject({ status: "CLOSED", exitReason: "KILL_SWITCH" });
+    expect(h.agentDo.submits.map((i) => i.barCloseMs)).toEqual([BAR]);
+
+    // Pre-empted during its drawdown check (at the halt's alert): the halt finishes and latches; nothing comes after it.
+    const mid = setup({ hot: { date: DAY, peakEquity: 500_000 } });
+    await seedDrawdown(mid.agentRepo);
+    await mid.agentRepo.positions.save(position());
+    await mid.runner.pollStep(report(), calendar, WAIT_END, () => mid.alerts.length > 0);
+    expect(mid.hot().ddHalt).toBe(true);
+    expect(await mid.agentRepo.positions.get("pos-1")).toMatchObject({ status: "CLOSED", exitReason: "KILL_SWITCH" });
+    expect(mid.agentDo.records).toEqual([]);
+    expect(mid.agentDo.submits).toEqual([]);
+  });
+
+  it("is bounded by the wait's end: a bar needs 2.5 s of it, and after it nothing more starts", async () => {
+    vi.mocked(latestClosedBarMs).mockReturnValue({ barCloseMs: BAR, complete: ["NIFTY", "SENSEX"] });
+    const short = setup();
+    await short.runner.pollStep(report(), calendar, T0 + 2_400);
+    // The risk row fits (2 s); the bar does not, so it stays unsent for the step or the next wait.
+    expect(short.agentDo.records).toHaveLength(1);
+    expect(short.agentDo.submits).toEqual([]);
+    expect(short.hot().lastSubmittedBarMs).toBe(istMidnight(DAY));
+
+    const over = setup({ hot: { date: DAY, peakEquity: 500_000 } });
+    await seedDrawdown(over.agentRepo);
+    await over.agentRepo.positions.save(position());
+    await over.runner.pollStep(report(), calendar, T0 - 1);
+    expect(agentPositionPass).toHaveBeenCalled();
+    expect(over.hot().ddHalt ?? false).toBe(false);
+    expect(over.agentDo.records).toEqual([]);
+    expect(over.agentDo.submits).toEqual([]);
+  });
+
+  it("before the open runs only the code exits", async () => {
+    const h = setup();
+    await h.agentRepo.positions.save(position());
+    vi.mocked(latestClosedBarMs).mockReturnValue({ barCloseMs: BAR, complete: ["NIFTY", "SENSEX"] });
+    await h.runner.pollStep(report({ phase: "PRE_OPEN" }), calendar, WAIT_END);
+    expect(agentPositionPass).toHaveBeenCalledTimes(1);
+    expect(h.agentDo.takes).toEqual([]);
+    expect(h.agentDo.records).toEqual([]);
+    expect(h.agentDo.submits).toEqual([]);
+  });
+});

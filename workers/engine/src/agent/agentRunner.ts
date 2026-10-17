@@ -18,6 +18,11 @@
  * paused nothing else does. Every remote call checks the deadline first and has its own timeout, so a slow or silent
  * Durable Object costs the agent's step, never main's tick.
  *
+ * pollStep() runs the same sequence without step 5 inside main's 10 s exit-poll waits (while main is positioned), each
+ * part only while the wait has time. A bar the step had no budget left to submit, or a drawdown halt in a tick whose
+ * step TE skipped, therefore waits at most one wait; only the decisions wait for a step. A kill that squares off main
+ * stops it before its next part or remote call.
+ *
  * The runner never reads main's market data source: the features of main's own tick are the agent's only market
  * input, so the agent can never spend main's request budget or move main's cached prices.
  *
@@ -119,7 +124,7 @@ export interface AgentHot {
   ddHalt: boolean;
   /** /ops/agent-pause: only the code exits (and the checks behind them) run. It stays until resumed. */
   paused: boolean;
-  /** Per day: the books recorded at each step, oldest first (at most AGENT_STEP.bookRing). */
+  /** Per day: the books recorded at each step and exit-poll wait, oldest first (at most AGENT_STEP.bookRing). */
   books: AgentBookState[];
   /** The latest risk snapshot (its book is the fallback when the ring has nothing at or before a bar close). */
   lastRisk: AgentRiskSnapshot | null;
@@ -141,6 +146,19 @@ export interface AgentHot {
   lastRecordMs: number;
   /** The IST date of the last cost-cap alert (one a day). */
   costCapAlertDate: string | null;
+}
+
+/** How long a piece of the agent's work may run: its deadline and, in TE's exit-poll waits, a kill that stops it. */
+interface Budget {
+  deadlineMs: number;
+  /** True once a kill squaring off main pre-empts the work: it then starts nothing more. */
+  stopped?: () => boolean;
+}
+
+/** One pass of the per-tick sequence: TE's step, or the agent's part of one of TE's exit-poll waits. */
+interface Pass extends Budget {
+  kind: "step" | "wait";
+  degraded: boolean;
 }
 
 export const HOT_KEY = "agent:hot";
@@ -364,8 +382,9 @@ export class AgentRunner {
     if (this.hot) await this.o.storage.put(HOT_KEY, this.hot);
   }
 
-  private has(deadlineMs: number, needMs: number): boolean {
-    return deadlineMs - this.now() >= needMs;
+  /** True while `b` has `needMs` left and no kill has stopped it. */
+  private has(b: Budget, needMs: number): boolean {
+    return !b.stopped?.() && b.deadlineMs - this.now() >= needMs;
   }
 
   /**
@@ -458,43 +477,70 @@ export class AgentRunner {
     }
   }
 
-  /** TE's exit polls: the agent's code exits only. Never throws; skipped while another agent step runs. */
+  /**
+   * TE's exit-poll waits while a kill squares off main: the agent's code exits only. Never throws; skipped while another
+   * agent step runs.
+   */
   async exitsOnly(cal: TradingCalendar): Promise<void> {
     await this.exclusive("exits", () => this.codeExits(this.deps(cal)));
   }
 
   /** The whole per-tick sequence (see the module comment). Never throws; `deadlineMs` bounds its remote calls. */
   async step(report: CycleReport, cal: TradingCalendar, degraded: boolean, deadlineMs: number): Promise<void> {
-    await this.exclusive("step", async () => {
-      const now = this.now();
-      const hot = await this.loadHot(now);
-      if (report.phase !== "OPEN") {
-        await this.saveHot();
-        return;
-      }
-      const deps = this.deps(cal);
-      const prevRisk = hot.lastRisk;
-      const main = await this.coupleKill(now);
-      this.rememberTags();
-      await this.codeExits(deps);
-      const checked = await this.riskCheck(deps, main, now);
-      let risk = checked.risk;
-      const active = this.mode !== "off" && !hot.paused;
-      let rec: ExecutionRecord | null = null;
-      if (active) {
-        rec = await this.executeLatest(deps, report, cal, degraded, risk, deadlineMs);
-        if (rec) risk = rec.risk;
-      }
-      // Paused or off too: the risk (at most once a minute) and any closed trade still reach the AgentDO, so the
-      // Agent page never shows an old halt or kill switch.
-      await this.report(rec, risk, deadlineMs);
-      await this.recordBook(risk);
+    await this.exclusive("step", () => this.pass(report, cal, { kind: "step", degraded, deadlineMs }));
+  }
+
+  /**
+   * The agent's part of one of TE's exit-poll waits (main's own 10 s waits while main is positioned): the step without
+   * its decisions, so whatever a step left undone for lack of budget, or a step TE skipped, is done within one wait.
+   * That is the kill coupling, the code exits, the drawdown check and its halt, the risk row, the book, and the latest
+   * closed bar while it is unsent and fresh. Each part starts, and each remote call is sent, only before `deadlineMs`
+   * (the wait's end) and while `stopped()` is false (a kill squaring off main). Before the open only the code exits run.
+   * Never throws; skipped while another agent step runs.
+   */
+  async pollStep(report: CycleReport, cal: TradingCalendar, deadlineMs: number, stopped: () => boolean = () => false): Promise<void> {
+    await this.exclusive("poll", () => this.pass(report, cal, { kind: "wait", degraded: false, deadlineMs, stopped }));
+  }
+
+  /**
+   * One pass of the per-tick sequence. A step runs all of it and always runs steps 1-4. A wait leaves out the decisions,
+   * and starts each part after the code exits only while it has time and no kill has stopped it.
+   */
+  private async pass(report: CycleReport, cal: TradingCalendar, p: Pass): Promise<void> {
+    const now = this.now();
+    const hot = await this.loadHot(now);
+    const deps = this.deps(cal);
+    const wait = p.kind === "wait";
+    if (report.phase !== "OPEN") {
+      // Before the open a step only loads the day's state; a wait runs the code exits, as at any time.
+      if (wait) await this.codeExits(deps);
       await this.saveHot();
-      if (active) {
-        await this.submit(report, cal, prevRisk, checked.startEquity, deadlineMs);
-        await this.saveHot();
-      }
-    });
+      return;
+    }
+    const more = () => !wait || this.has(p, 0);
+    const prevRisk = hot.lastRisk;
+    const main = await this.coupleKill(now);
+    this.rememberTags();
+    await this.codeExits(deps);
+    if (!more()) return;
+    const checked = await this.riskCheck(deps, main, now);
+    let risk = checked.risk;
+    const active = this.mode !== "off" && !hot.paused;
+    let rec: ExecutionRecord | null = null;
+    if (active && !wait) {
+      rec = await this.executeLatest(deps, report, cal, p.degraded, risk, p);
+      if (rec) risk = rec.risk;
+    }
+    if (!more()) return;
+    // Paused or off too: the risk (at most once a minute) and any closed trade still reach the AgentDO, so the
+    // Agent page never shows an old halt or kill switch.
+    await this.report(rec, risk, p);
+    await this.recordBook(risk);
+    await this.saveHot();
+    if (active && more()) {
+      await this.submit(report, cal, prevRisk, checked.startEquity, p);
+      await this.saveHot();
+    }
   }
 
   /** Step 2: main's kill switch engages the agent's; resetting main leaves the agent's alone. Returns main's settings. */
@@ -571,9 +617,9 @@ export class AgentRunner {
   }
 
   /** Step 5: takes the newest batch the AgentDO has after the last one executed, and executes it while it is fresh. */
-  private async executeLatest(deps: EngineDeps, report: CycleReport, cal: TradingCalendar, degraded: boolean, risk: AgentRiskSnapshot, deadlineMs: number): Promise<ExecutionRecord | null> {
+  private async executeLatest(deps: EngineDeps, report: CycleReport, cal: TradingCalendar, degraded: boolean, risk: AgentRiskSnapshot, b: Budget): Promise<ExecutionRecord | null> {
     const hot = this.hot!;
-    if (!this.has(deadlineMs, AGENT_RPC_MS.takeDecisions)) return null;
+    if (!this.has(b, AGENT_RPC_MS.takeDecisions)) return null;
     const got = await within(() => this.o.agentDo.takeDecisions(hot.lastExecutedBarMs), AGENT_RPC_MS.takeDecisions);
     if ("error" in got) {
       this.o.logger.warn("agent decisions not taken", { error: got.error });
@@ -607,7 +653,7 @@ export class AgentRunner {
       ddHalt: hot.ddHalt,
       positions: hot.positions,
       trades: await this.todayTrades(now),
-      timeLeftMs: () => deadlineMs - this.now(),
+      timeLeftMs: () => b.deadlineMs - this.now(),
       // The operator's pause, read with the kill switches before each order: a pause stops the rest of a running batch.
       paused: () => this.hot?.paused === true,
     };
@@ -649,7 +695,7 @@ export class AgentRunner {
   }
 
   /** Step 6: the execution record, the trades not yet acknowledged and the risk; the risk alone at most once a minute. */
-  private async report(rec: ExecutionRecord | null, risk: AgentRiskSnapshot, deadlineMs: number): Promise<void> {
+  private async report(rec: ExecutionRecord | null, risk: AgentRiskSnapshot, b: Budget): Promise<void> {
     const hot = this.hot!;
     const now = this.now();
     this.collectTrades(await this.todayTrades(now));
@@ -657,7 +703,7 @@ export class AgentRunner {
     const record: ExecutionRecord = rec
       ? { ...rec, trades: mergeTrades(rec.trades, hot.unsentTrades) }
       : { barCloseMs: hot.lastExecutedBarMs, t: now, decisions: [], exits: [], trades: [...hot.unsentTrades], risk };
-    await this.deliver(record, deadlineMs);
+    await this.deliver(record, b);
   }
 
   /** Adds closed trades the AgentDO has not acknowledged to unsentTrades (a newer copy replaces an older one). */
@@ -672,16 +718,16 @@ export class AgentRunner {
   }
 
   /** Sends the outbox (oldest first), then `record`; whatever the AgentDO does not acknowledge waits for the next step. */
-  private async deliver(record: ExecutionRecord, deadlineMs: number): Promise<boolean> {
+  private async deliver(record: ExecutionRecord, b: Budget): Promise<boolean> {
     const hot = this.hot!;
     while (hot.outbox.length > 0) {
-      if (!this.has(deadlineMs, AGENT_RPC_MS.recordExecution) || !(await this.send(hot.outbox[0]))) {
+      if (!this.has(b, AGENT_RPC_MS.recordExecution) || !(await this.send(hot.outbox[0]))) {
         this.queue(record);
         return false;
       }
       hot.outbox.shift();
     }
-    if (this.has(deadlineMs, AGENT_RPC_MS.recordExecution) && (await this.send(record))) return true;
+    if (this.has(b, AGENT_RPC_MS.recordExecution) && (await this.send(record))) return true;
     this.queue(record);
     return false;
   }
@@ -734,7 +780,7 @@ export class AgentRunner {
    * for grading only. A bar not submitted within AGENT_POLICY.maxDecisionAgeMs is skipped; a failed submission is
    * retried on the next tick while the bar is fresh (the AgentDO accepts each bar once).
    */
-  private async submit(report: CycleReport, cal: TradingCalendar, prevRisk: AgentRiskSnapshot | null, startEquity: number, deadlineMs: number): Promise<void> {
+  private async submit(report: CycleReport, cal: TradingCalendar, prevRisk: AgentRiskSnapshot | null, startEquity: number, b: Budget): Promise<void> {
     const hot = this.hot!;
     const snap = report.snapshot;
     if (!snap) return;
@@ -754,8 +800,8 @@ export class AgentRunner {
     if (bar.complete.length === 0 || (!allComplete && now < t + AGENT_POLICY.incompleteBarWaitMs)) return;
     // Only the submission is reserved; the flow read gets what is left, up to its own timeout. A flow that does not
     // come in time only drops that index's option block (and the gate then blocks its entries), never the bar.
-    if (!this.has(deadlineMs, AGENT_RPC_MS.submitBar + 500)) return;
-    const flowMs = Math.min(AGENT_RPC_MS.flowAsOf, deadlineMs - this.now() - AGENT_RPC_MS.submitBar - 300);
+    if (!this.has(b, AGENT_RPC_MS.submitBar + 500)) return;
+    const flowMs = Math.min(AGENT_RPC_MS.flowAsOf, b.deadlineMs - this.now() - AGENT_RPC_MS.submitBar - 300);
     const flows = await this.flowsAt(bar.complete, t, flowMs);
     const events = await this.o.mainRepo.events.active(t - cfg.events.staleAfterHours * HOUR_MS);
     const fallback = initialBook(prevRisk && prevRisk.t <= t ? prevRisk : null, startEquity, istMidnight(istDate(t)));
@@ -772,7 +818,7 @@ export class AgentRunner {
       book: bookAsOf(hot.books, t, fallback),
       nowMs: now,
     });
-    if (!this.has(deadlineMs, AGENT_RPC_MS.submitBar)) return;
+    if (!this.has(b, AGENT_RPC_MS.submitBar)) return;
     const res = await within(() => this.o.agentDo.submitBar(input), AGENT_RPC_MS.submitBar);
     if ("error" in res) {
       this.o.logger.warn("agent bar not submitted (retried while fresh)", { bar: hhmm(t), error: res.error });
@@ -843,7 +889,7 @@ export class AgentRunner {
       const today = await this.todayTrades(now);
       this.collectTrades(today);
       const trades = mergeTrades(today, hot.unsentTrades);
-      const delivered = await this.deliver({ barCloseMs: this.o.calendar.closeMs(hot.date), t: now, decisions: [], exits: [], trades, risk }, now + 2 * AGENT_RPC_MS.recordExecution * (hot.outbox.length + 1));
+      const delivered = await this.deliver({ barCloseMs: this.o.calendar.closeMs(hot.date), t: now, decisions: [], exits: [], trades, risk }, { deadlineMs: now + 2 * AGENT_RPC_MS.recordExecution * (hot.outbox.length + 1) });
       await this.saveHot();
       const l = await repo.ledger.get(hot.date, "PAPER");
       const net = l ? l.realized + l.unrealized - l.charges : 0;

@@ -8,7 +8,9 @@
  * workers/engine/src/agent/agentRunner.ts): main's work and its timing never wait for it. The budget
  * ends before main's next alarm is due, and a kill that squares off ends TE's wait for a running agent
  * step and skips the agent in its own ticks, so main is flat (and the relay panic sent) before the
- * agent's kill switch and exits come.
+ * agent's kill switch and exits come. Inside main's 10 s waits between exit polls the agent also does
+ * all of its step but the decisions, by the wait's end, so a step cut short or skipped is made up
+ * within one wait; a kill stops that work too.
  * Off hours it refreshes a market snapshot hourly and sleeps until 09:00 IST.
  * After a tick (never inside it) the read-only quote recorder may take a snapshot of option quotes (the
  * Groww Trade API, or Upstox's free read-only token) for the 09:15 straddle study
@@ -95,7 +97,10 @@ const PAPER_QUOTE_PAUSE_MS = 30_000;
 const RECORDED_INDICES = ["NIFTY", "SENSEX"] as const;
 /** The agent's step ends at least this long before main's next alarm is due (its budget never delays main's next tick). */
 const AGENT_STEP_ALARM_MARGIN_MS = 1_500;
-/** An agent step with less time than this is skipped: its exits already ran in main's exit polls, or run next tick. */
+/**
+ * An agent step with less time than this is skipped. While main is positioned, its exit-poll waits do all of the step
+ * but the decisions (AgentRunner.pollStep); otherwise that work waits for the next step with time for it.
+ */
 const AGENT_STEP_MIN_MS = 1_000;
 /** The end of day waits this long for the AgentDO to queue the review; the POSTMARKET cron asks again. */
 const AGENT_REVIEW_SCHEDULE_MS = 5_000;
@@ -634,7 +639,7 @@ export class TradingEngineDO extends DurableObject<Env> {
     counts = await this.openCounts();
     for (const wait of EXIT_POLLS_MS) {
       if (books().length === 0 && (await followersOpen()) === 0) break;
-      await this.pollWait(wait, cal);
+      await this.pollWait(wait, cal, report);
       for (const book of books()) await this.positionCycle(book, report);
       for (const f of this.followers) await this.followerPositions(f, report, cal);
       counts = await this.openCounts();
@@ -649,19 +654,43 @@ export class TradingEngineDO extends DurableObject<Env> {
     return now + (degraded ? DEGRADED_LOOP_MS : LOOP_MS);
   }
 
-  /** Main's wait between exit polls. The agent's code exits run during it and can never make it longer or fail it. */
-  private async pollWait(ms: number, cal: TradingCalendar): Promise<void> {
+  /**
+   * Main's wait between exit polls; the agent's work during it can never make it longer or fail it. Unless a kill is
+   * squaring off, the agent catches up there on its whole step but the decisions (AgentRunner.pollStep): its kill
+   * coupling, code exits and drawdown halt, its risk row and book, and the latest closed bar while it is unsent and
+   * fresh, each started only before the wait ends. A kill's square-off stops that work before its next part
+   * (agentPreempt, agentHold); while one runs, a wait starts only the agent's code exits.
+   */
+  private async pollWait(ms: number, cal: TradingCalendar, report: CycleReport): Promise<void> {
+    const endMs = Date.now() + ms;
     const pause = new Promise<void>((resolve) => setTimeout(resolve, ms));
     const runner = this.agent;
-    await Promise.all([pause, runner ? Promise.race([runner.exitsOnly(cal).catch(() => {}), pause]) : pause]);
+    if (!runner) {
+      await pause;
+      return;
+    }
+    const held = this.agentHold > 0;
+    let preempted = false;
+    const preempt = () => {
+      preempted = true;
+    };
+    if (!held) this.agentPreempt = preempt;
+    const stopped = () => preempted || this.agentHold > 0;
+    // Started inside an async function, so even a synchronous throw only ends the agent's part.
+    const work = (async () => (held ? runner.exitsOnly(cal) : runner.pollStep(report, cal, endMs, stopped)))();
+    try {
+      await Promise.all([pause, Promise.race([work.catch(() => {}), pause])]);
+    } finally {
+      if (this.agentPreempt === preempt) this.agentPreempt = null;
+    }
   }
 
   /**
    * The options agent's step (agentRunner.ts) under its own budget: agentStepBudgetMs, and never past
-   * AGENT_STEP_ALARM_MARGIN_MS before main's next alarm (a step with less than AGENT_STEP_MIN_MS is skipped). TE
-   * waits at most that long, and the runner checks the same deadline before each remote call. A kill's square-off
-   * ends the wait at once (agentPreempt) and starts no step while it runs (agentHold). It never throws and never
-   * counts toward DEGRADED.
+   * AGENT_STEP_ALARM_MARGIN_MS before main's next alarm (a step with less than AGENT_STEP_MIN_MS is skipped; main's
+   * exit-poll waits make up all of it but the decisions). TE waits at most that long, and the runner checks the same
+   * deadline before each remote call. A kill's square-off ends the wait at once (agentPreempt) and starts no step
+   * while it runs (agentHold). It never throws and never counts toward DEGRADED.
    */
   private async agentStep(report: CycleReport, cal: TradingCalendar, degraded: boolean, tickStartMs: number): Promise<void> {
     if (!this.agentEnabled || this.agentHold > 0) return;

@@ -18,7 +18,7 @@ Where each part runs:
 
 | Part | Where | What it does |
 |---|---|---|
-| The runner | `workers/engine/src/agent/agentRunner.ts`, inside the trading DO's tick, after main's exits and exit polls | Runs the agent's code exits. Executes each new batch of decisions through the code gate, the planner and the risk layer. Builds each closed bar's snapshot and hands it to the AgentDO. TE stays the only writer of orders and positions. The runner never reads main's market data source (its request budget and cached prices are main's): the features of main's own tick are the agent's only market input, and an entry on an index without them is not taken. |
+| The runner | `workers/engine/src/agent/agentRunner.ts`, inside the trading DO's tick: after main's exits and exit polls, and inside main's 10 s waits between exit polls | Runs the agent's code exits. Executes each new batch of decisions through the code gate, the planner and the risk layer. Builds each closed bar's snapshot and hands it to the AgentDO. TE stays the only writer of orders and positions. The runner never reads main's market data source (its request budget and cached prices are main's): the features of main's own tick are the agent's only market input, and an entry on an index without them is not taken. |
 | AgentDO | `workers/engine/src/do/AgentDO.ts`, with its own SQLite (`workers/engine/src/agent/sqlAgentStore.ts`) | Makes the model calls on its own alarm, never inside TE's tick. Keeps the bars, decisions, model calls and their cost, escalations, trades, risk, reviews, candidate guidance and job queue. It never places an order. |
 | MarketFeedDO | `getOptionFlowAsOf(index, asOfMs)` | The option flow as it read at the candle close, built from minute samples taken at or before it. It is kept incrementally (`FlowAsOfCache` in `src/engine/agent/flowAsOf.ts`), so a read late in the session costs about one view, not a replay of the day's samples. |
 
@@ -33,7 +33,8 @@ Each snapshot carries the agent's book as of the candle close, open P&L included
 
 ### The time and request budgets
 
-- **Time.** The agent's step runs last in the tick. It gets `clamp(tick start + 27 s − now, 4 s, 12 s)`, and never runs past 1.5 s before main's next alarm: with less than 1 s left the step is skipped (when main is positioned the agent's exits already ran in main's exit polls; otherwise they run next tick). Every remote call checks that deadline first and has its own timeout: submitting a bar 2 s, taking decisions 1.5 s, recording an execution 2 s. The bar's submission is reserved first, and the option-flow read gets what is left, up to 1.5 s; a flow that does not come in time only drops that index's option block, never the bar. A slow or silent Durable Object therefore costs the agent's step, never main's tick or main's next alarm. The agent's exits in main's exit polls run during main's wait and can never lengthen it.
+- **Time.** The agent's step runs last in the tick. It gets `clamp(tick start + 27 s − now, 4 s, 12 s)`, and never runs past 1.5 s before main's next alarm: with less than 1 s left the step is skipped. Every remote call checks that deadline first and has its own timeout: submitting a bar 2 s, taking decisions 1.5 s, recording an execution 2 s. The bar's submission is reserved first, and the option-flow read gets what is left, up to 1.5 s; a flow that does not come in time only drops that index's option block, never the bar. A slow or silent Durable Object therefore costs the agent's step, never main's tick or main's next alarm.
+- **Main's exit-poll waits.** While main is positioned, its tick waits 10 s twice between exit polls. In each wait the agent does all of its step but the decisions: the kill coupling, the code exits, the drawdown check and its halt, the risk row, the book, and the latest closed bar while it is unsent and fresh. Each part starts, and each remote call is sent, only before the wait ends, and the wait never gets longer. When main's own work leaves the step too little time (from about 26 s of a 30 s tick), or the step is skipped, a bar is still submitted in its window and a drawdown halt waits at most one wait. Only the decisions wait for a step with time for them. When main holds nothing there are no waits, and only the step does this work.
 - **Quotes.** The runner has its own Upstox quote instance:
   - at most 4 requests a minute;
   - a 30 s pause after an error;
@@ -67,7 +68,7 @@ The agent uses the existing `ANTHROPIC_API_KEY` secret. Without it every batch f
 
 | Limit | Value |
 |---|---|
-| Drawdown from peak equity | 15%: kill switch on, positions closed at market, and no entries until the operator re-arms. The halt acts first and is recorded last: if a write fails part way, the next step does all of it again. While it holds, every step checks that the kill switch is still on. |
+| Drawdown from peak equity | 15%: kill switch on, positions closed at market, and no entries until the operator re-arms. The halt acts first and is recorded last: if a write fails part way, the next step or exit-poll wait does all of it again. While it holds, every step and wait checks that the kill switch is still on. |
 | Daily loss | 3% of equity |
 | Weekly loss | 6% |
 | Open positions | 2 in total, 1 per index |
@@ -92,8 +93,8 @@ The agent uses the existing `ANTHROPIC_API_KEY` secret. Without it every batch f
 
 **Kill switches.**
 
-- Main's kill switch engages the agent's at once (the agent's own step also checks main's switch, as a backstop). Resetting main does not reset the agent's.
-- Telegram `/kill` covers every account. Main goes first: its switch is set, then each follower's, each on its own. One tick then squares off main and the followers, and the relay panic goes out for any LIVE position. TE stops waiting for an agent step in progress, and no agent step runs in that tick. Only then is the agent's switch set and its own exits run. A kill of main alone that squares off keeps the same order.
+- Main's kill switch engages the agent's at once (the agent's own step and its work in main's exit-poll waits also check main's switch, as a backstop). Resetting main does not reset the agent's.
+- Telegram `/kill` covers every account. Main goes first: its switch is set, then each follower's, each on its own. One tick then squares off main and the followers, and the relay panic goes out for any LIVE position. Meanwhile the agent gives way: TE stops waiting for an agent step in progress, no agent step runs in that tick, the agent's work in a wait stops before its next part, and the waits run only the agent's code exits. Only after the panic is the agent's switch set and its own exits run. A kill of main alone that squares off keeps the same order.
 - The agent's own switch is on the dashboard's kill route (`account: "agent"`).
 - A plain reset is refused while the drawdown halt holds. Use **Re-arm** on the Agent page. After a halt it also restarts the peak equity at the current equity; when only the kill switch was on, the drawdown is still measured from the old peak. The Agent page shows the result at once, also in the evening.
 
