@@ -1,14 +1,22 @@
 "use client";
 
 import type { CSSProperties } from "react";
+import type { AgentView } from "@/engine/api-types";
 import AgentAccountNotice from "@/components/Agent/AgentAccountNotice";
+import { useSharedPoll } from "@/components/Copy/sharedPoll";
 import AccountSwitcher from "@/components/Live/AccountSwitcher";
 import { alpha, C, phaseColor } from "@/components/shared/colors";
 import { fallbackNextOpen, fallbackPhase } from "@/components/shared/market";
 import { Dot } from "@/components/shared/ui";
 import { useEngineState, useNow } from "@/hooks/useEngineState";
+import { REFRESH_CLOSED_MS } from "@/lib/refresh";
 import { isPractice, marketStatusText, safetyChips, type ChipTone, type SafetyChip } from "./engineView";
 import { useTodayTickets } from "./useTodayTickets";
+
+/** The agent's own view, read only while the page shows its account (its buying chip follows the agent's state). */
+const AGENT_VIEW_URL = "/api/engine/agent";
+/** The agent judges one candle every 5 minutes, so its state is read once a minute in the session. */
+const AGENT_CHIP_POLL_MS = 60_000;
 
 const TONE: Record<ChipTone, string> = { ok: C.green, info: C.blue, warn: C.orange, bad: C.red, mock: C.purple, muted: C.muted3 };
 
@@ -96,9 +104,11 @@ export function MarketStatus() {
 export default function SafetyStrip({ account }: { account?: string }) {
   const { state, source, status, plan } = useEngineState();
   const now = useNow();
-  const { poll } = useTodayTickets(account);
+  const { poll, agent } = useTodayTickets(account);
   const practiceToday = (poll.data ?? []).filter(isPractice).length;
-  const chips = safetyChips({ state, source, status, plan, practiceToday, nowMs: now });
+  const marketActive = state?.market.phase === "OPEN" || state?.market.phase === "PRE_OPEN";
+  const agentView = useSharedPoll<AgentView>(agent ? AGENT_VIEW_URL : null, marketActive ? AGENT_CHIP_POLL_MS : REFRESH_CLOSED_MS);
+  const chips = safetyChips({ state, source, status, plan, practiceToday, nowMs: now, agent: agent ? { view: agentView.data } : null });
   return (
     <div
       role="group"

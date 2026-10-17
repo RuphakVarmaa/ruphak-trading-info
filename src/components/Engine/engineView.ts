@@ -4,7 +4,7 @@
  * tested on their own (engineView.test.ts) and safe to import from the server page.
  */
 import { ACCOUNTS, parseAccountId } from "@/engine/accounts";
-import type { AccountView, CopyTicketView, EngineStateDTO, PnlResponse, PositionView, SessionPhase, TodayPlanView } from "@/engine/api-types";
+import type { AccountView, AgentView, CopyTicketView, EngineStateDTO, PnlResponse, PositionView, SessionPhase, TodayPlanView } from "@/engine/api-types";
 import { EXIT_WORDS } from "@/lib/copy/action";
 import { istParts } from "@/lib/ist";
 import { fmtAge, fmtDuration, fmtInr, fmtIstDay, fmtIstHm } from "@/components/shared/format";
@@ -89,7 +89,17 @@ export interface SafetyInput {
   practiceToday: number;
   /** Now on the engine's clock (null during server render and hydration). */
   nowMs: number | null;
+  /**
+   * The options agent's own view while the page shows its account (its view is null until it loads); absent for
+   * every other account. Its buying follows the agent's state, never main's measured-edge check.
+   */
+  agent?: { view: AgentChipView | null } | null;
 }
+
+/** The parts of the agent's view its buying chip reads. */
+export type AgentChipView = Pick<AgentView, "mode" | "enabled" | "status" | "cost"> & {
+  risk: Pick<AgentView["risk"], "drawdownHalt" | "killSwitch" | "mainKillSwitch" | "dayLossPct" | "dailyLossCapPct" | "codeRiskState">;
+};
 
 const chip = (key: SafetyChip["key"], tone: ChipTone, label: string, detail: string | null = null, extra: Partial<Pick<SafetyChip, "title" | "href">> = {}): SafetyChip => ({
   key,
@@ -151,6 +161,28 @@ function buyingChip(plan: SafetyInput["plan"], practiceToday: number): SafetyChi
   return chip("buying", "ok", "Buying on", `each entry still needs every check${practice}`, { href: "#why" });
 }
 
+/**
+ * The options agent's buying chip: what allows or stops its new entries now, from its own view. The agent skips main's
+ * measured-edge check, so that check never appears here; its entries need a model's call that passes every code check
+ * and sizing above zero, in paper mode.
+ */
+export function agentBuyingChip(v: AgentChipView | null): SafetyChip {
+  const agentPage = { href: "/agent" };
+  const riskPanel = { href: "/agent#risk" };
+  if (!v) return chip("buying", "muted", "Agent", "its state is loading", agentPage);
+  if (!v.enabled || v.mode === "off") return chip("buying", "muted", "Agent off", "no candle judged, no order", agentPage);
+  if (v.status.paused) return chip("buying", "warn", "Agent paused", "only its exits run", agentPage);
+  if (v.mode === "shadow") return chip("buying", "info", "Shadow mode", "the model judges candles; no orders", agentPage);
+  if (v.risk.drawdownHalt) return chip("buying", "bad", "New buys stopped", "drawdown halt: re-arm on the Agent page", riskPanel);
+  if (v.risk.killSwitch) return chip("buying", "warn", "New buys stopped", "the agent's kill switch is on", riskPanel);
+  if (v.risk.mainKillSwitch) return chip("buying", "warn", "New buys stopped", "main's kill switch is on", riskPanel);
+  if (v.risk.dayLossPct != null && v.risk.dayLossPct >= v.risk.dailyLossCapPct) return chip("buying", "warn", "New buys stopped", "today's loss cap is reached", riskPanel);
+  if (v.cost.capReached || v.status.state === "COST_CAP") return chip("buying", "warn", "New buys stopped", "today's model cost cap is reached", { href: "/agent#cost" });
+  if (v.status.state === "ERROR") return chip("buying", "warn", "No new buys now", "the last candle could not be judged", agentPage);
+  if (v.risk.codeRiskState !== "SAFE") return chip("buying", "warn", "No new buys now", "the code's risk state is not Safe", riskPanel);
+  return chip("buying", "ok", "Agent buying on", "each entry needs every code check and sizing above zero", agentPage);
+}
+
 /** The safety strip, most important first: demo data (when on), mode, kill switch, engine heartbeat, buying. */
 export function safetyChips(input: SafetyInput): SafetyChip[] {
   const out: SafetyChip[] = [];
@@ -161,7 +193,7 @@ export function safetyChips(input: SafetyInput): SafetyChip[] {
   out.push(s ? modeChip(s) : chip("mode", "muted", "Mode", "no data"));
   out.push(s ? killChip(s) : chip("kill", "muted", "Kill switch", "no data"));
   out.push(engineChip(input));
-  out.push(buyingChip(input.plan, input.practiceToday));
+  out.push(input.agent ? agentBuyingChip(input.agent.view) : buyingChip(input.plan, input.practiceToday));
   return out;
 }
 

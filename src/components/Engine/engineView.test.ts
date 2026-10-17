@@ -144,6 +144,31 @@ describe("safetyChips", () => {
     ]);
     expect(find(empty, "buying").detail).toBe("no data");
   });
+
+  it("on the agent's account shows the agent's own buying state, never main's measured-edge check (dashboard review L6)", async () => {
+    const input = await base();
+    const api = mock();
+    const agentState = await api.getState("agent");
+    const view = await api.getAgent();
+    const shadow = find(safetyChips({ ...input, state: agentState, agent: { view } }), "buying");
+    // The demo agent runs in shadow mode, as the real one starts.
+    expect(shadow).toMatchObject({ tone: "info", label: "Shadow mode", detail: "the model judges candles; no orders", href: "/agent" });
+    for (const c of safetyChips({ ...input, state: agentState, agent: { view } })) expect(`${c.label} ${c.detail ?? ""} ${c.title ?? ""}`).not.toMatch(/edge/i);
+    const paper = { ...view, mode: "paper" as const };
+    expect(find(safetyChips({ ...input, agent: { view: paper } }), "buying")).toMatchObject({ tone: "ok", label: "Agent buying on" });
+    expect(find(safetyChips({ ...input, agent: { view: { ...paper, risk: { ...paper.risk, drawdownHalt: true, killSwitch: true } } } }), "buying")).toMatchObject({
+      tone: "bad",
+      label: "New buys stopped",
+      href: "/agent#risk",
+    });
+    expect(find(safetyChips({ ...input, agent: { view: { ...paper, risk: { ...paper.risk, mainKillSwitch: true } } } }), "buying").detail).toBe("main's kill switch is on");
+    expect(find(safetyChips({ ...input, agent: { view: { ...paper, risk: { ...paper.risk, dayLossPct: 3.1 } } } }), "buying").detail).toBe("today's loss cap is reached");
+    expect(find(safetyChips({ ...input, agent: { view: { ...paper, risk: { ...paper.risk, codeRiskState: "NEAR_LIMIT" } } } }), "buying")).toMatchObject({ label: "No new buys now" });
+    expect(find(safetyChips({ ...input, agent: { view: { ...paper, cost: { ...paper.cost, capReached: true } } } }), "buying").detail).toBe("today's model cost cap is reached");
+    expect(find(safetyChips({ ...input, agent: { view: { ...paper, status: { ...paper.status, paused: true } } } }), "buying").label).toBe("Agent paused");
+    expect(find(safetyChips({ ...input, agent: { view: { ...paper, mode: "off" } } }), "buying").label).toBe("Agent off");
+    expect(find(safetyChips({ ...input, agent: { view: null } }), "buying")).toMatchObject({ tone: "muted", label: "Agent" });
+  });
 });
 
 describe("pnlFigures", () => {

@@ -2,10 +2,12 @@
  * The mock engine's options agent: a demo AgentView worked out in code from the mock clock, with no model call,
  * so the Agent page can be seen in mock mode. It shows what the real agent shows on a session like the mock's:
  * one decision per finalist on the latest closed 5-minute candle (a generic finalist per index and one
- * Advisor-style idea on NIFTY), the code's gate in words, sizing at zero because nothing measured says the calls
- * pay, one escalation to the deep model, the risk panel, calibration with buckets, the previous session's review
- * and a pending candidate. Approve and reject follow the engine's rules (approval only outside the session);
- * re-arm clears a drawdown halt. Every model-written text says it is demo data.
+ * Advisor-style idea on NIFTY), the code's gate in words, sizing at zero because confident past calls have not
+ * cleared break-even (the engine's own Kelly line), one escalation to the deep model, the risk panel, calibration
+ * with buckets, the previous session's review and a pending candidate. Approve and reject follow the engine's rules
+ * (approval before 09:15 or once the day's review and replay have finished); re-arm clears a drawdown halt and
+ * restarts the peak, or clears the kill switch alone and keeps it, and is refused while main's kill switch is on.
+ * Every model-written text says it is demo data.
  */
 import type {
   AccountView,
@@ -34,6 +36,7 @@ import { fnv1aHex } from "@/engine/util/hash";
 import { addDays, isTradingDay, istAt, istDate, MINUTE_MS, nextWeeklyExpiry, prevTradingDay, sessionPhaseAt, toIstIso } from "@/lib/ist";
 import { isMockHoliday, mockTradingSymbol, STRIKE_STEP } from "./fixtures";
 import { hashString, mulberry32, round2 } from "./random";
+import type { AgentCandidateCardView, AgentReplayView, AgentSizingView } from "./types";
 
 export const MOCK_AGENT_MODEL = "demo (no model call)";
 
@@ -42,8 +45,11 @@ const BAR_MS = 5 * MINUTE_MS;
 /** A candle's decisions appear this long after its close, and the engine acts on them a little later (the real agent: about 1–2 minutes). */
 const JUDGED_AFTER_MS = 90_000;
 const ACTED_AFTER_MS = 120_000;
-/** Bars are stored until the close for grading; the model judges only those closing in the reflex window. */
-const LAST_STORED_BAR = "15:30";
+/**
+ * Bars are stored until the 15:25 close for grading (the 15:30 close comes from the end-of-day archive); the model
+ * judges only those closing in the reflex window.
+ */
+const LAST_STORED_BAR = "15:25";
 /** The demo brief (the Advisor's 09:25 auto-run) and the nightly review's times. */
 const BRIEF_AT = "09:26:30";
 const REVIEW_AT = "16:23";
@@ -54,6 +60,8 @@ const SHOWCASE_BAR = "11:40";
 /** The demo's equity: flat at the account's capital (no trades), or 15.18% under its peak when it starts halted. */
 const HALTED_EQUITY = 424_100;
 const MINUS = "−";
+/** When approval opens again after a session (the engine's own words). */
+const APPROVAL_WINDOW_TEXT = "after today's review and replay finish (about 16:20–16:45 IST)";
 
 /** The index levels the demo path is anchored on (the mock's fixture levels by default). */
 export interface MockAgentLevels {
@@ -313,8 +321,9 @@ function snapshotFields(s: IndexSnapshot): AgentSnapshotFieldView[] {
 // Finalists and the demo decisions
 // ---------------------------------------------------------------------------
 
+/** The generic finalist, labelled as the engine labels it: the model may call either side; it is not a buy instruction. */
 function genericFinalist(index: IndexId): AgentFinalistView {
-  return { id: `gen:${index}`, kind: "GENERIC", index, label: `${index}: the best call or put right now`, side: null, contract: null, condition: null, wrongIf: null, bearCase: null, briefId: null };
+  return { id: `gen:${index}`, kind: "GENERIC", index, label: `${index}, either side (generic call)`, side: null, contract: null, condition: null, wrongIf: null, bearCase: null, briefId: null };
 }
 
 function demoIdea(date: string, levels: MockAgentLevels): AgentFinalistView {
@@ -398,7 +407,7 @@ function demoDecisions(date: string, T: number, finalists: readonly AgentFinalis
       else if (scene === "escalation") out.push(d({ regime: "TRENDING", direction: "LONG", directionConfidence: 0.78, setupQuality: 2, reason: `Demo: NIFTY is ${MOVE_WORDS(s)}, but the hourly return is small.` }));
       else if (scene === "fire") out.push(d({ regime: "TRENDING", direction: lean("NIFTY"), directionConfidence: conf(0.81, 0.89), setupQuality: rand() < 0.5 ? 2 : 3, reason: `Demo: NIFTY is ${MOVE_WORDS(s)}; the short and hourly returns agree.` }));
       else if (scene === "confidence") out.push(d({ regime: "TRENDING", direction: lean("NIFTY"), directionConfidence: conf(0.66, 0.79), setupQuality: 2, reason: `Demo: NIFTY is ${MOVE_WORDS(s)}, but the returns disagree across 5, 15 and 60 minutes.` }));
-      else out.push(d({ regime: "MEAN_REVERTING", direction: "NEUTRAL", directionConfidence: conf(0.5, 0.55), setupQuality: 1, reason: "Demo: price is back near VWAP and the call spread is wide; no side has the edge." }));
+      else out.push(d({ regime: "MEAN_REVERTING", direction: "NEUTRAL", directionConfidence: conf(0.5, 0.55), setupQuality: 1, reason: "Demo: price is back near VWAP and the call spread is wide; neither side is favoured." }));
       continue;
     }
     if (scene === "showcase") out.push({ finalistId: f.id, index: f.index, source: "ESCALATION", ...ESCALATED });
@@ -428,9 +437,25 @@ const SHORT_NAME: Record<string, string> = {
   toxic_code: "option data or spread",
   risk_state: "risk state",
   entry_mode: "entries stopped",
+  kelly: "size zero",
 };
 
-function demoGate(d: DemoDecision, f: AgentFinalistView, s: IndexSnapshot, ctx: { lagMs: number; codeRisk: AgentRiskLevel; halted: boolean }): { fired: boolean; summary: string; lines: AgentGateLineView[] } {
+/** Why new entries are off, as the engine's entry_mode line lists it: the drawdown halt and either kill switch. */
+function entriesOff(ctx: { halted: boolean; killSwitch: boolean; killReason: string | null; mainKillSwitch: boolean }): string[] {
+  const off: string[] = [];
+  if (ctx.halted) off.push(`the ${AGENT_LIMITS.maxDrawdownPct}% drawdown halt is on`);
+  // A halt also sets the agent's kill switch; it is named once, as the halt.
+  if (ctx.killSwitch && !ctx.halted) off.push(`the agent's kill switch is on${ctx.killReason ? ` (${ctx.killReason})` : ""}`);
+  if (ctx.mainKillSwitch) off.push("main's kill switch is on");
+  return off;
+}
+
+function demoGate(
+  d: DemoDecision,
+  f: AgentFinalistView,
+  s: IndexSnapshot,
+  ctx: { lagMs: number; codeRisk: AgentRiskLevel; halted: boolean; killSwitch: boolean; killReason: string | null; mainKillSwitch: boolean },
+): { fired: boolean; summary: string; lines: AgentGateLineView[] } {
   const p = AGENT_POLICY;
   const side = d.direction === "NEUTRAL" ? null : d.direction;
   const spread = side == null || !s.o ? null : side === "LONG" ? s.o.cs : s.o.ps;
@@ -438,6 +463,7 @@ function demoGate(d: DemoDecision, f: AgentFinalistView, s: IndexSnapshot, ctx: 
   const effective = RISK_RANK[d.riskState] >= RISK_RANK[ctx.codeRisk] ? d.riskState : ctx.codeRisk;
   const word = (r: AgentRiskLevel) => (r === "SAFE" ? "safe" : r === "NEAR_LIMIT" ? "near a limit" : "reduce");
   const ideaSide = f.side === "LONG" ? "Up" : "Down";
+  const off = entriesOff(ctx);
   const lines: AgentGateLineView[] = [
     { gate: "fresh", passed: ctx.lagMs <= p.maxDecisionAgeMs, words: `Acted on ${Math.round(ctx.lagMs / 1000)} s after the candle closed (limit ${p.maxDecisionAgeMs / MINUTE_MS} min)` },
     { gate: "batch_ok", passed: true, words: "The model's answer was complete and passed every format check" },
@@ -459,8 +485,13 @@ function demoGate(d: DemoDecision, f: AgentFinalistView, s: IndexSnapshot, ctx: 
         : `Option data ${s.o.oa} s old (max ${p.maxOptionAgeSec} s)${spread == null ? "" : `; ${side === "LONG" ? "call" : "put"} spread ${spread.toFixed(2)}% (max ${p.maxSnapshotSpreadPct}%)`}`,
     },
     { gate: "risk_state", passed: effective === "SAFE", words: `Risk ${word(d.riskState)} by the model, ${word(ctx.codeRisk)} by the code (needs safe)` },
-    { gate: "entry_mode", passed: !ctx.halted, words: ctx.halted ? `Entries stopped: the ${AGENT_LIMITS.maxDrawdownPct}% drawdown halt is on` : "Entries allowed: no halt" },
+    { gate: "entry_mode", passed: off.length === 0, words: off.length ? `Entries stopped: ${off.join("; ")}` : "Entries allowed: no halt and no kill switch" },
   ];
+  return gateOf(lines);
+}
+
+/** The verdict over the lines: it fires only when none blocks. */
+function gateOf(lines: AgentGateLineView[]): { fired: boolean; summary: string; lines: AgentGateLineView[] } {
   const blocked = lines.filter((l) => l.passed === false);
   return { fired: blocked.length === 0, summary: blocked.length ? `Blocked: ${blocked.map((l) => SHORT_NAME[l.gate] ?? l.gate).join(", ")}` : "All checks passed", lines };
 }
@@ -502,24 +533,48 @@ export class MockAgent {
     this.peak = AGENT_LIMITS.capitalRupees;
   }
 
-  /** Clears the drawdown halt; the peak restarts at the current equity. The engine also clears the account's kill switch. */
-  rearm(actor: string): void {
+  /**
+   * As the engine's re-arm: refused while main's kill switch is on (it would engage the agent's again); after a drawdown
+   * halt it clears the halt and the peak restarts at the current equity; with only the kill switch on, the peak stays.
+   * The caller clears the account's kill switch.
+   */
+  rearm(actor: string, mainKillSwitch = false): { ok: boolean; message: string } {
     void actor;
+    if (mainKillSwitch) return { ok: false, message: "Agent: main's kill switch is on and would engage the agent's again; reset main first" };
+    const wasHalted = this.halted;
     this.halted = false;
-    this.peak = this.equity;
+    if (wasHalted) this.peak = this.equity;
+    return wasHalted
+      ? { ok: true, message: `Agent re-armed: kill switch off; peak equity restarts at ₹${this.equity.toFixed(0)}` }
+      : { ok: true, message: `Agent re-armed: kill switch off; drawdown still measured from ₹${this.peak.toFixed(0)}` };
   }
 
-  /** Approve or reject the pending candidate, with the engine's rules: pending only, and approval only outside the session. */
+  /**
+   * Approve or reject the newest candidate, with the engine's rules: pending only; approval refused during the session,
+   * and from the close until that day's review and replay have finished (the demo writes its candidate at 16:31), so
+   * the review and the replay judge the text the session ran with. Reject is allowed at any time.
+   */
   decideCandidate(id: string, decision: "approve" | "reject", actor: string): { ok: boolean; message: string } {
     const now = this.now();
-    const current = this.candidateDate(now);
-    if (id !== candidateId(current)) return { ok: false, message: "No candidate with that id is waiting." };
+    // Only the candidate the page shows can be decided.
+    if (id !== this.latestCandidate(now).id) return { ok: false, message: "No candidate with that id is waiting." };
     const done = this.decided.get(id);
     if (done) return { ok: false, message: `Only a pending candidate can be decided; this one was ${done.status.toLowerCase()}.` };
-    if (decision === "approve" && sessionPhaseAt(now, isMockHoliday) === "OPEN") return { ok: false, message: "Approve after 15:30 IST, so that one session is judged by one text." };
+    const refusal = decision === "approve" ? this.approvalRefusal(now) : null;
+    if (refusal) return { ok: false, message: refusal };
     this.decided.set(id, { status: decision === "approve" ? "APPROVED" : "REJECTED", at: now, by: actor });
     if (decision === "approve") this.active = { guidance: DEMO_CANDIDATE_GUIDANCE, version: versionOf(DEMO_CANDIDATE_GUIDANCE) };
     return { ok: true, message: decision === "approve" ? "Approved: the new text is used from the next candle." : "Rejected: the current text stays." };
+  }
+
+  /** The engine's approval window (AgentDO in the session, the brain from the close until the review and replay finish). */
+  private approvalRefusal(now: number): string | null {
+    const phase = sessionPhaseAt(now, isMockHoliday);
+    if (phase === "OPEN") return `approve before 09:15 IST, or ${APPROVAL_WINDOW_TEXT}, so one session is judged by one text`;
+    const today = istDate(now);
+    const ran = this.enabled && this.mode !== "off" && isTradingDay(today, isMockHoliday);
+    if (ran && now >= istAt(today, "15:30") && now < istAt(today, CANDIDATE_AT)) return `approve ${APPROVAL_WINDOW_TEXT}; if no review runs today, approve before 09:15 tomorrow`;
+    return null;
   }
 
   /** The view for an IST date (default: the mock's today), as of the mock clock. */
@@ -541,9 +596,10 @@ export class MockAgent {
     const phase = sessionPhaseAt(asOf, isMockHoliday);
     const firstBar = istAt(day, AGENT_POLICY.reflexFirstBarIst);
     const lastBar = istAt(day, AGENT_POLICY.reflexLastBarIst);
+    // As the engine: no candle is judged once the last one (15:05) is too old to act on, so the agent is closed from 15:09.
     const state: AgentView["status"]["state"] = !on
       ? "OFF"
-      : !sessionDay || day !== today || (phase !== "OPEN" && phase !== "PRE_OPEN") || asOf > lastBar + ACTED_AFTER_MS
+      : !sessionDay || day !== today || (phase !== "OPEN" && phase !== "PRE_OPEN") || asOf > lastBar + AGENT_POLICY.maxDecisionAgeMs
         ? "CLOSED"
         : asOf < firstBar + JUDGED_AFTER_MS
           ? "WAITING"
@@ -564,7 +620,7 @@ export class MockAgent {
       risk,
       calibration: this.calibration(reviewDate),
       review: review(reviewDate),
-      candidate: this.candidate(this.candidateDate(now)),
+      candidate: this.latestCandidate(now),
       cost: cost(day, judged, escalations, asOf),
     };
   }
@@ -620,18 +676,32 @@ export class MockAgent {
       outcome: { status: "PENDING", ret30Pct: null },
     };
     if (!acted) return base;
-    const gate = demoGate(d, f, s, { lagMs: ACTED_AFTER_MS, codeRisk: risk.codeRiskState, halted: risk.drawdownHalt });
+    const gate = demoGate(d, f, s, {
+      lagMs: ACTED_AFTER_MS,
+      codeRisk: risk.codeRiskState,
+      halted: risk.drawdownHalt,
+      killSwitch: risk.killSwitch,
+      killReason: risk.killReason,
+      mainKillSwitch: risk.mainKillSwitch,
+    });
     if (!gate.fired) return { ...base, gate, action: "NO_ENTRY", actionDetail: gate.summary };
-    // Every check passed; Kelly is the next step, and with p under 0.50 at b = 1 it sizes nothing.
+    // Every check passed; Kelly is the next step, and with p under 0.50 at b = 1 it sizes nothing. The engine records
+    // that as a failed kelly line, so the gate did not fire.
     const p = DEMO_SIZING.p;
     const b = 1;
     const kelly = round2(p - (1 - p) / b);
+    const kellyLine: AgentGateLineView = {
+      gate: "kelly",
+      passed: false,
+      words: `Size zero: confident past calls have not cleared break-even yet (p ${p.toFixed(2)}, b ${b.toFixed(2)}, Kelly ${signed(kelly, 2)})`,
+    };
+    const sizing: AgentSizingView = { p, b, kelly, riskPct: 0, lots: 0, n: DEMO_SIZING.n };
     return {
       ...base,
-      gate,
+      gate: gateOf([...gate.lines, kellyLine]),
       action: "NO_ENTRY",
-      actionDetail: `Kelly ≤ 0: no measured edge yet (p=${p.toFixed(2)}, b=${b.toFixed(2)})`,
-      sizing: { p, b, kelly, riskPct: 0, lots: 0 },
+      actionDetail: `Kelly ≤ 0: past calls have not cleared break-even (p=${p.toFixed(2)}, b=${b.toFixed(2)})`,
+      sizing,
     };
   }
 
@@ -673,36 +743,62 @@ export class MockAgent {
     return isTradingDay(today, isMockHoliday) && now >= istAt(today, CANDIDATE_AT) ? today : prevTradingDay(today, isMockHoliday);
   }
 
+  /**
+   * The newest candidate, as the engine's view shows it. Once the demo's proposal is approved, the sessions after the
+   * approval run with it and the review has nothing new to propose, so the approved candidate stays the newest.
+   */
+  private latestCandidate(now: number): AgentCandidateView {
+    const date = this.candidateDate(now);
+    for (const [id, d] of this.decided) {
+      const approvedDate = d.status === "APPROVED" ? candidateDateOf(id) : null;
+      if (approvedDate !== null && approvedDate < date && d.at <= istAt(date, "09:15")) return this.candidate(approvedDate);
+    }
+    return this.candidate(date);
+  }
+
   private candidate(date: string): AgentCandidateView {
     const id = candidateId(date);
     const done = this.decided.get(id) ?? null;
     const rand = mulberry32(hashString(`agent-replay:${date}`));
     const current = 0.245 + 0.01 * rand();
-    return {
+    const status = done?.status ?? "PENDING";
+    const replay: AgentReplayView = {
+      bars: 75,
+      barsTotal: 75,
+      graded: 58,
+      gradedCandidate: 58,
+      gradedCurrent: 66,
+      gradedLive: 64,
+      gradedCommon: 58,
+      brierCandidate: Math.round((current - 0.006) * 10_000) / 10_000,
+      brierCurrentReplayed: Math.round(current * 10_000) / 10_000,
+      brierCurrentLive: Math.round((current + 0.007) * 10_000) / 10_000,
+      firesCandidate: 2,
+      firesCurrent: 5,
+      complete: true,
+      label: "in-sample, not proof",
+      stopReason: null,
+    };
+    const view: AgentCandidateCardView = {
       id,
       date,
       createdAt: toIstIso(istAt(date, CANDIDATE_AT)),
-      status: done?.status ?? "PENDING",
+      status,
       baseVersion: versionOf(BUILTIN_GUIDANCE),
       guidance: DEMO_CANDIDATE_GUIDANCE,
-      currentGuidance: BUILTIN_GUIDANCE,
+      currentGuidance: this.active.guidance,
+      // The demo's sessions ran on the built-in text until an approval, and the review proposes nothing after one
+      // (latestCandidate), so every candidate shown was written against the built-in text.
+      baseGuidance: BUILTIN_GUIDANCE,
+      inUse: status === "APPROVED" && versionOf(DEMO_CANDIDATE_GUIDANCE) === this.active.version,
       rationale:
         "Demo: the review found confident calls while the close was still inside the opening range, and on option data two to three minutes old. Both kinds were wrong more often than the rest, so the text asks for lower confidence there.",
       wouldBeWrongIf: "Demo: over the next five sessions the Brier score of calls above 0.80 does not improve, or the agent stops making calls above 0.80 at all.",
-      replay: {
-        bars: 75,
-        graded: 64,
-        brierCandidate: Math.round((current - 0.006) * 10_000) / 10_000,
-        brierCurrentReplayed: Math.round(current * 10_000) / 10_000,
-        brierCurrentLive: Math.round((current + 0.007) * 10_000) / 10_000,
-        firesCandidate: 2,
-        firesCurrent: 5,
-        complete: true,
-        label: "in-sample, not proof",
-      },
+      replay,
       decidedAt: done ? toIstIso(done.at) : null,
       decidedBy: done?.by ?? null,
     };
+    return view;
   }
 
   private calibration(reviewDate: string): AgentCalibrationView {
@@ -751,6 +847,8 @@ export class MockAgent {
 // ---------------------------------------------------------------------------
 
 const candidateId = (date: string) => `cand-${date}`;
+/** The date a demo candidate id carries, or null for another id. */
+const candidateDateOf = (id: string): string | null => /^cand-(\d{4}-\d{2}-\d{2})$/.exec(id)?.[1] ?? null;
 
 /** The latest bar closing in [09:20, lastIst] whose result is visible `lagMs` after its close; null before the first. */
 function latestBar(day: string, asOf: number, lagMs: number, lastIst: string): number | null {
@@ -803,7 +901,7 @@ function review(date: string): AgentReviewView {
     model: MOCK_AGENT_MODEL,
     costUsd: 0,
     summary:
-      "Demo review. The agent ran in shadow mode: it judged every candle from 09:20 to 15:05 on both indices and made no trade, because sizing had no measured edge to work with. Its confident calls were right about as often as always guessing the base rate, which is what the project's research would expect for option buyers.",
+      "Demo review. The agent ran in shadow mode: it judged every candle from 09:20 to 15:05 on both indices and made no trade, because sizing stayed at zero: confident past calls have not cleared break-even. Its confident calls were right about as often as always guessing the base rate, which is what the project's research would expect for option buyers.",
     fills: [],
     misses: [
       "Demo: SENSEX fell 0.4% between 13:05 and 13:35 while every call on it said no direction.",

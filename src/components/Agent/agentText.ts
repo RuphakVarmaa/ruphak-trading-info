@@ -18,24 +18,28 @@ import type {
   AgentRegime,
   AgentReviewView,
   AgentRiskLevel,
+  AgentRiskView,
   AgentView,
 } from "@/engine/api-types";
+import { ACCOUNTS } from "@/engine/accounts";
 import { AGENT_LIMITS, AGENT_POLICY, CALIBRATION, ESCALATION, SNAPSHOT_TOKEN_LIMIT } from "@/engine/agent/constants";
 import { modelName } from "@/components/Advisor/advisorText";
-import { fmtIstDay, fmtIstHm, fmtPct, fmtSigned } from "@/components/shared/format";
+import { fmtInr, fmtIstDay, fmtIstHm, fmtPct, fmtSigned } from "@/components/shared/format";
 import { istDate } from "@/lib/ist";
+import type { AgentReplayView, AgentSizingView } from "@/lib/engine/types";
 
 // ---------------------------------------------------------------------------
 // The model's call
 // ---------------------------------------------------------------------------
 
+/** The model's call is not an instruction: the code decides whether the agent buys anything. */
 export const DIRECTION_META: Record<AgentDirection, { glyph: string; word: string; trade: string }> = {
-  LONG: { glyph: "▲", word: "Up", trade: "buy a call (CE)" },
-  SHORT: { glyph: "▼", word: "Down", trade: "buy a put (PE)" },
+  LONG: { glyph: "▲", word: "Up", trade: "the agent would buy a call (CE)" },
+  SHORT: { glyph: "▼", word: "Down", trade: "the agent would buy a put (PE)" },
   NEUTRAL: { glyph: "▬", word: "No direction", trade: "no trade" },
 };
 
-/** "Up: buy a call (CE)", "Down: buy a put (PE)", "No direction: no trade". */
+/** "Up: the agent would buy a call (CE)", "Down: the agent would buy a put (PE)", "No direction: no trade". */
 export function directionWords(d: AgentDirection): string {
   const m = DIRECTION_META[d];
   return `${m.word}: ${m.trade}`;
@@ -166,25 +170,49 @@ export function breakEvenP(b: number): number {
 }
 
 /**
- * Sizing in words: a short headline and the working. Risk 0 reads "no measured edge yet"; otherwise the
- * quarter-Kelly risk, the 1% cap when it applied, and the lots.
+ * "about 21 calls": the count behind p is overlap-weighted, so it is rounded, and it reads at least 1 once any graded
+ * call counts.
  */
-export function sizingWords(s: NonNullable<AgentDecisionView["sizing"]>): { headline: string; detail: string } {
+export function aboutCalls(n: number): string {
+  const k = n > 0 ? Math.max(1, Math.round(n)) : 0;
+  return `about ${k} call${k === 1 ? "" : "s"}`;
+}
+
+/** "1 lot", "2 lots", or "0 lots: one lot would risk more than that" (the quarter-Kelly cap blocked the trade). */
+function lotWords(lots: number): string {
+  return lots === 0 ? "0 lots: one lot would risk more than that" : `${lots} lot${lots === 1 ? "" : "s"}`;
+}
+
+/**
+ * Sizing in words: a headline, the size it allows (only when the risk is above zero) and the working. Nothing here
+ * claims an edge: above zero means confident past calls cleared break-even in-sample, which proves nothing about the
+ * sessions ahead. `n` is the number of graded calls behind p (0: none of this kind yet; absent: unknown).
+ */
+export function sizingWords(s: AgentSizingView): { headline: string; size: string | null; detail: string } {
   const p = prob(s.p);
   const b = s.b.toFixed(2);
   const kelly = fmtSigned(s.kelly, 2);
+  const n = s.n ?? null;
+  const none = n !== null && n <= 0;
   if (s.riskPct <= 0) {
+    const from = none
+      ? "with no graded calls of this kind yet, only the cautious starting estimate"
+      : "a cautious estimate, from graded calls, of how often a move paid for an option";
     return {
-      headline: "No measured edge yet: no trade",
-      detail: `Sizing uses p = ${p} (a cautious estimate, from graded calls, of how often a move paid for an option; never the model's own confidence) and b = ${b} (what a win pays against what a loss costs). Kelly = p − (1 − p) / b = ${kelly}. It must be above zero, which needs p above ${prob(breakEvenP(s.b))}.`,
+      headline: none
+        ? "Size zero: no graded calls of this kind yet"
+        : `Size zero: confident past calls have not cleared break-even${n === null ? "" : ` (measured on ${aboutCalls(n)})`}`,
+      size: null,
+      detail: `Sizing uses p = ${p} (${from}; never the model's own confidence) and b = ${b} (what a win pays against what a loss costs). Kelly = p − (1 − p) / b = ${kelly}. It must be above zero, which needs p above ${prob(breakEvenP(s.b))}.`,
     };
   }
   const quarter = s.kelly * AGENT_LIMITS.kellyFraction * 100;
   const capped = quarter > AGENT_LIMITS.maxRiskPctPerTrade + 1e-9;
-  const lots = s.lots === 0 ? "0 lots: one lot would risk more than that" : `${s.lots} lot${s.lots === 1 ? "" : "s"}`;
+  const measured = n !== null && n > 0 ? `measured on ${aboutCalls(n)}, ` : "";
   return {
-    headline: `Risk ${s.riskPct.toFixed(2)}% of equity → ${s.lots} lot${s.lots === 1 ? "" : "s"}`,
-    detail: `Kelly = p − (1 − p) / b = ${kelly} from p = ${p} and b = ${b}. A quarter of it is ${quarter.toFixed(2)}% of equity${capped ? `, capped at ${AGENT_LIMITS.maxRiskPctPerTrade}% a trade` : ""}: ${lots}.`,
+    headline: `Small size allowed: confident past calls moved enough to pay often enough to clear break-even (${measured}in-sample; not proof of an edge)`,
+    size: `Risk ${s.riskPct.toFixed(2)}% of equity → ${lotWords(s.lots)}`,
+    detail: `Kelly = p − (1 − p) / b = ${kelly} from p = ${p} and b = ${b}. A quarter of it is ${quarter.toFixed(2)}% of equity${capped ? `, capped at ${AGENT_LIMITS.maxRiskPctPerTrade}% a trade` : ""}: ${lotWords(s.lots)}.`,
   };
 }
 
@@ -280,14 +308,29 @@ export function reviewStatusWords(s: AgentReviewView["status"]): string {
   }
 }
 
-export function candidateStatusWords(s: AgentCandidateView["status"]): string {
+/**
+ * A review's error as the page shows it: PENDING waits for its retry, SKIPPED ran no model call (both say why);
+ * only FAILED is an error. Null when there is nothing to say.
+ */
+export function reviewNotice(r: Pick<AgentReviewView, "status" | "error">): { tone: "error" | "warn" | "neutral"; words: string } | null {
+  if (!r.error) return null;
+  if (r.status === "PENDING") return { tone: "warn", words: `Waiting: ${r.error}` };
+  if (r.status === "SKIPPED") return { tone: "neutral", words: `Skipped: ${r.error}` };
+  return { tone: "error", words: `The review failed: ${r.error}` };
+}
+
+/**
+ * The candidate's status. An APPROVED candidate is "in use" only while its text is the active one (`inUse`; when the
+ * view does not say, an approval is taken as still in use).
+ */
+export function candidateStatusWords(s: AgentCandidateView["status"], inUse?: boolean): string {
   switch (s) {
     case "SCORING":
       return "Being replayed on the day's candles";
     case "PENDING":
       return "Waiting for your decision";
     case "APPROVED":
-      return "Approved: in use from the next candle";
+      return inUse === false ? "Approved earlier; no longer in use" : "Approved: in use";
     case "REJECTED":
       return "Rejected: the current text stays";
     case "SUPERSEDED":
@@ -295,6 +338,106 @@ export function candidateStatusWords(s: AgentCandidateView["status"]): string {
     case "FAILED":
       return "The replay failed";
   }
+}
+
+/** Fewer calls than this, labelled by every run, are too few for the replay's Brier scores to compare. */
+export const REPLAY_MIN_COMMON_CALLS = 10;
+
+/** "60 of the day's 75 candles were judged again with each text, on identical inputs." */
+export function replayCoverageWords(r: Pick<AgentReplayView, "bars" | "barsTotal">): string {
+  const total = r.barsTotal ?? r.bars;
+  return `${r.bars} of the day's ${total} candle${total === 1 ? "" : "s"} ${r.bars === 1 ? "was" : "were"} judged again with each text, on identical inputs.`;
+}
+
+/**
+ * What the replay's Brier scores are over. A replay that reports gradedCommon scored all three runs on the same calls;
+ * an older one scored each run on its own calls, and says so instead of claiming a like-for-like comparison.
+ */
+export function replayScoredWords(r: Pick<AgentReplayView, "graded" | "gradedCandidate" | "gradedCurrent" | "gradedLive" | "gradedCommon">): string {
+  if (r.gradedCommon == null)
+    return `Scored on ${r.graded} graded call${r.graded === 1 ? "" : "s"} of the proposed text; this older replay scored each run on its own calls, so the three scores are not over the same calls.`;
+  const common = r.gradedCommon;
+  const counts = `proposed ${r.gradedCandidate ?? r.graded}, current ${r.gradedCurrent ?? r.graded}, live ${r.gradedLive ?? r.graded}`;
+  const few = common < REPLAY_MIN_COMMON_CALLS ? ": too few to compare" : "";
+  return `Scored on ${common} call${common === 1 ? "" : "s"} that all three runs labelled (${counts})${few}.`;
+}
+
+/** Why an incomplete replay stopped, and what it covers; null for a complete one. */
+export function replayStopWords(r: Pick<AgentReplayView, "complete" | "stopReason" | "bars">): string | null {
+  if (r.complete) return null;
+  const covers = r.bars > 0 ? "so it covers only part of the day" : "so no candle was judged again";
+  switch (r.stopReason) {
+    case "cost_cap":
+      return `The replay stopped early at the cost cap, ${covers}.`;
+    case "interrupted":
+      return `The replay was interrupted (the agent restarted), ${covers}.`;
+    case "no_key":
+      return `The replay could not run (no API key), ${covers}.`;
+    default:
+      return `The replay stopped early, ${covers}.`;
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Risk headline and re-arm
+// ---------------------------------------------------------------------------
+
+/** The day loss and drawdown at which the code's risk state leaves Safe, so no new entries are made. */
+export const ENTRY_STOP = {
+  dayLossPct: AGENT_LIMITS.nearDayLossFrac * AGENT_LIMITS.dailyLossCapPct,
+  drawdownPct: AGENT_LIMITS.nearDrawdownPct,
+  /** Entries a day before the risk state leaves Safe (one short of the day's limit). */
+  entriesToday: (ACCOUNTS.agent.configPatch.sizing?.maxTradesPerDay ?? 6) - 1,
+} as const;
+
+/**
+ * The risk panel's headline: the first of the halt, the kill switch, the day's loss cap and a risk state that is not
+ * Safe, as the code blocks entries on each; "within every limit" only when none applies.
+ */
+export function riskHeadline(r: AgentRiskView): { tone: "stopped" | "blocked" | "ok"; words: string } {
+  if (r.drawdownHalt) return { tone: "stopped", words: `Halted: the account fell ${pct(r.drawdownPct ?? 0)} from its peak (the limit is ${r.maxDrawdownPct}%). No new entries until you re-arm.` };
+  if (r.killSwitch) return { tone: "stopped", words: `Kill switch on${r.killReason ? `: ${r.killReason}` : ""}. No new entries.` };
+  if (r.dayLossPct != null && r.dayLossPct >= r.dailyLossCapPct)
+    return {
+      tone: "stopped",
+      words: `Stopped for today: today's loss ${pct(r.dayLossPct)} reached the ${r.dailyLossCapPct}% cap; positions closed, no new entries until the next session.`,
+    };
+  if (r.codeRiskState !== "SAFE")
+    return {
+      tone: "blocked",
+      words: `No new entries now: the code's risk state is ${riskWords(r.codeRiskState)}; entries need Safe (day loss under ${ENTRY_STOP.dayLossPct}%, drawdown under ${ENTRY_STOP.drawdownPct}%, fewer than ${r.maxOpenPositions} positions open and fewer than ${ENTRY_STOP.entriesToday} entries today).`,
+    };
+  return { tone: "ok", words: "Within every limit: new entries are allowed when a decision passes every check." };
+}
+
+/**
+ * The re-arm button. During a drawdown halt it re-arms (the peak restarts); with only the kill switch on it clears
+ * the switch (the peak stays). While main's kill switch is on the engine refuses either, so the button is off.
+ */
+export function rearmWords(r: Pick<AgentRiskView, "drawdownHalt" | "killSwitch" | "mainKillSwitch" | "peakEquity">): {
+  label: string;
+  enabled: boolean;
+  note: string;
+  confirmLabel: string;
+  /** The peak restarts at today's equity: only after a halt. */
+  peakRestarts: boolean;
+} {
+  const halted = r.drawdownHalt;
+  const label = halted || !r.killSwitch ? "Re-arm the agent" : "Clear the kill switch";
+  const confirmLabel = halted || !r.killSwitch ? "Re-arm" : "Clear it";
+  if (!halted && !r.killSwitch) return { label, enabled: false, note: "Nothing to re-arm: no halt and the kill switch is off.", confirmLabel, peakRestarts: false };
+  if (r.mainKillSwitch) return { label, enabled: false, note: "Reset main's kill switch first: the engine refuses until then.", confirmLabel, peakRestarts: false };
+  if (halted) return { label, enabled: true, note: "Clears the halt and the agent's kill switch; the drawdown is then measured from today's equity (admin token needed).", confirmLabel, peakRestarts: true };
+  const peak = r.peakEquity == null ? "the same peak" : `its peak of ${fmtInr(r.peakEquity)}`;
+  return { label, enabled: true, note: `Clears the agent's kill switch; the drawdown is still measured from ${peak} (admin token needed).`, confirmLabel, peakRestarts: false };
+}
+
+/** "Decided on the 15:05 candle" when a decision's candle is not the one the card heads with; null when it is. */
+export function decidedOnWords(decisionBarAt: string, cardBarAt: string | null): string | null {
+  const d = Date.parse(decisionBarAt);
+  if (!Number.isFinite(d)) return null;
+  if (cardBarAt != null && Date.parse(cardBarAt) === d) return null;
+  return `Decided on the ${fmtIstHm(d)} candle`;
 }
 
 /** A guidance text as its points: a line opening with "-", "•" or "*" starts one; other lines continue the previous point. */

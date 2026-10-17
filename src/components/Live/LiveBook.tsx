@@ -40,12 +40,13 @@ function LossCapBar({ used, cap }: { used: number; cap: number }) {
 const { noEntryBeforeIst, noEntryAfterIst } = DEFAULT_CONFIG.gates;
 const { squareOffIst } = DEFAULT_CONFIG.exits;
 
-function emptyPositionsText(nowIst: string | null, phase: string | undefined, agent: boolean): string {
+/** The empty positions line. For the options agent it never claims an edge: sizing above zero is all an entry needs. */
+export function emptyPositionsText(nowIst: string | null, phase: string | undefined, agent: boolean): string {
   if (phase !== "OPEN" && phase !== "PRE_OPEN") return "No open positions. The market is closed.";
   const hm = nowIst ? fmtIstHm(nowIst) : null;
   if (hm && hm < noEntryBeforeIst) return `No open positions yet. The first entry can come at ${noEntryBeforeIst} IST.`;
   if (hm && hm > noEntryAfterIst) return `No open positions. No new entries after ${noEntryAfterIst} IST; anything open is closed by ${squareOffIst}.`;
-  if (agent) return "No open positions right now. The agent enters only when a model's call passes every code check and sizing finds a measured edge.";
+  if (agent) return "No open positions right now. The agent enters only when a model's call passes every code check and sizing from graded calls is above zero.";
   return "No open positions right now. The engine enters only when news or at least two signals agree.";
 }
 

@@ -333,7 +333,8 @@ function followerBook(seed: MockSeed, f: FollowerSpec): Book {
 /**
  * The options agent's own paper book ("Agent ₹5L"; a model judges each candle, code trades). It buys ATM
  * contracts (about ₹120 for a NIFTY lot of 65, ₹350 for a SENSEX lot of 20), but in the demo, as in its first
- * sessions, sizing has no measured edge to work with, so it holds nothing and has traded nothing.
+ * sessions, sizing stays at zero (confident past calls have not cleared break-even), so it holds nothing and has
+ * traded nothing.
  */
 function agentBook(seed: MockSeed): Book {
   const spec = ACCOUNTS.agent;
@@ -1180,11 +1181,15 @@ export class MockEngineApi implements EngineApi {
     return clone(this.agentView());
   }
 
-  /** Clears the agent's drawdown halt and its account's kill switch; its peak equity restarts at the current equity. */
+  /**
+   * As the engine: clears the agent's drawdown halt (its peak restarts at the current equity) or only its account's
+   * kill switch (the peak stays), and refuses while main's kill switch is on, which would engage the agent's again.
+   */
   async rearmAgent(token: string, actor: string): Promise<AgentView> {
     this.assertToken(token);
     this.advance();
-    this.agent.rearm(actor);
+    const res = this.agent.rearm(actor, this.main.killSwitch);
+    if (!res.ok) throw new Error(`CONFLICT: ${res.message}`);
     const book = this.books.get("agent");
     if (book) {
       book.killSwitch = false;

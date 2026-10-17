@@ -10,7 +10,6 @@
 import { useId, useState, type CSSProperties, type ReactNode } from "react";
 import type {
   AgentCalibrationView,
-  AgentCandidateView,
   AgentCostView,
   AgentDecisionView,
   AgentEscalationView,
@@ -23,6 +22,7 @@ import type {
 } from "@/engine/api-types";
 import { ACCOUNTS } from "@/engine/accounts";
 import { AGENT_POLICY, CALIBRATION, ESCALATION, OUTCOME } from "@/engine/agent/constants";
+import type { AgentCandidateCardView, AgentReplayView, AgentSizingView } from "@/lib/engine/types";
 import { alpha, C, pnlColor } from "@/components/shared/colors";
 import { fmtDateKey, fmtInr, fmtNum, fmtPct } from "@/components/shared/format";
 import { SERIF } from "@/components/shared/theme";
@@ -33,7 +33,9 @@ import {
   candidateStatusWords,
   COST_KIND_WORDS,
   dayTime,
+  decidedOnWords,
   DIRECTION_META,
+  ENTRY_STOP,
   escalationStatusWords,
   gateGroups,
   gateHeadline,
@@ -46,8 +48,14 @@ import {
   outcomeWords,
   pct,
   prob,
+  rearmWords,
   REGIME_WORDS,
+  replayCoverageWords,
+  replayScoredWords,
+  replayStopWords,
+  reviewNotice,
   reviewStatusWords,
+  riskHeadline,
   riskWords,
   sizingOutlook,
   sizingOutlookWords,
@@ -84,8 +92,8 @@ export function DemoChip() {
   );
 }
 
-export function Notice({ tone, children }: { tone: "error" | "warn" | "info"; children: ReactNode }) {
-  const color = tone === "error" ? C.red : tone === "warn" ? C.orange : C.blue;
+export function Notice({ tone, children }: { tone: "error" | "warn" | "info" | "neutral"; children: ReactNode }) {
+  const color = tone === "error" ? C.red : tone === "warn" ? C.orange : tone === "neutral" ? C.muted : C.blue;
   return (
     <div role={tone === "error" ? "alert" : "status"} style={{ background: alpha(color, 0.06), border: `1px solid ${alpha(color, 0.3)}`, borderRadius: 10, padding: "10px 12px", fontSize: 15, lineHeight: 1.5, color: C.textSoft, overflowWrap: "anywhere" }}>
       {children}
@@ -361,11 +369,17 @@ function GateList({ gate }: { gate: AgentDecisionView["gate"] }) {
   );
 }
 
-function DecisionBlock({ d, finalist, mode }: { d: AgentDecisionView; finalist: AgentFinalistView | null; mode: AgentView["mode"] }) {
+/**
+ * One decision. `cardBarAt` is the candle the card heads with: when the decision was made on another one (a later
+ * batch failed, or the shown candle is stored for grading only), the decision says which.
+ */
+function DecisionBlock({ d, finalist, mode, cardBarAt }: { d: AgentDecisionView; finalist: AgentFinalistView | null; mode: AgentView["mode"]; cardBarAt: string | null }) {
   const dir = DIRECTION_META[d.direction];
   const color = d.direction === "LONG" ? C.green : d.direction === "SHORT" ? C.red : C.muted;
   const idea = finalist?.kind === "IDEA";
-  const sizing = d.sizing ? sizingWords(d.sizing) : null;
+  const sized: AgentSizingView | null = d.sizing;
+  const sizing = sized ? sizingWords(sized) : null;
+  const decidedOn = decidedOnWords(d.barAt, cardBarAt);
   return (
     <div style={{ display: "grid", gap: 12, borderTop: `1px solid ${C.borderSoft}`, paddingTop: 14, minWidth: 0 }}>
       <div style={{ display: "flex", flexWrap: "wrap", alignItems: "center", gap: 6 }}>
@@ -373,6 +387,11 @@ function DecisionBlock({ d, finalist, mode }: { d: AgentDecisionView; finalist: 
         {d.source === "ESCALATION" && <Pill color={C.purple}>Deep model re-read</Pill>}
         <span style={{ fontSize: 15, fontWeight: 650, color: C.textStrong, overflowWrap: "anywhere" }}>{finalist?.label ?? d.finalistId}</span>
       </div>
+      {decidedOn && (
+        <div className="tnum" style={{ ...small, fontSize: 14, fontWeight: 600, color: C.orange }}>
+          {decidedOn}
+        </div>
+      )}
       {finalist && idea && <IdeaFacts f={finalist} />}
       <Row label={d.source === "ESCALATION" ? "The deep model says" : "The fast model says"}>
         <div style={{ display: "flex", flexWrap: "wrap", alignItems: "baseline", gap: "2px 10px" }}>
@@ -403,8 +422,13 @@ function DecisionBlock({ d, finalist, mode }: { d: AgentDecisionView; finalist: 
       </Row>
       <GateList gate={d.gate} />
       {sizing && (
-        <Row label="Size (Kelly, from measured results)">
-          <div style={{ fontSize: 15, fontWeight: 650, color: d.sizing && d.sizing.riskPct > 0 ? C.textStrong : C.orange }}>{sizing.headline}</div>
+        <Row label="Size (Kelly, from graded calls)">
+          <div style={{ fontSize: 15, fontWeight: 650, color: sizing.size ? C.textStrong : C.orange, overflowWrap: "anywhere" }}>{sizing.headline}</div>
+          {sizing.size && (
+            <div className="tnum" style={{ fontSize: 15, fontWeight: 650, color: d.sizing && d.sizing.lots > 0 ? C.textStrong : C.orange }}>
+              {sizing.size}
+            </div>
+          )}
           <div style={{ ...small }}>{sizing.detail}</div>
         </Row>
       )}
@@ -466,7 +490,7 @@ export function IndexDecisionCard({ card, view }: { card: AgentIndexCardView; vi
       {card.decisions.length === 0 ? (
         <p style={{ margin: 0, ...body, fontSize: 15 }}>{emptyCardWords(view)}</p>
       ) : (
-        card.decisions.map((d) => <DecisionBlock key={d.id} d={d} finalist={finalistOf(d.finalistId)} mode={view.mode} />)
+        card.decisions.map((d) => <DecisionBlock key={d.id} d={d} finalist={finalistOf(d.finalistId)} mode={view.mode} cardBarAt={card.barAt} />)
       )}
       {card.snapshot && (
         <Disclosure title="The numbers the model saw" note={snapshotNote(card)}>
@@ -535,28 +559,33 @@ export function EscalationList({ escalations, finalists, generatedAt }: { escala
 
 export function RiskPanel({ risk, hasToken, onRearm, generatedAt }: { risk: AgentRiskView; hasToken: boolean; onRearm: AdminAction; generatedAt: string }) {
   const dialog = useAdminDialog<"rearm">((_, token) => onRearm(undefined, token), hasToken);
-  // Re-arm only undoes a stop (it also restarts the peak), so it is offered only while the halt or the kill switch is on.
-  const stopped = risk.drawdownHalt || risk.killSwitch;
+  // The headline names the first thing that stops entries, in the order the code checks them; green only when none does.
+  const head = riskHeadline(risk);
+  // Re-arm undoes a halt (the peak restarts) or clears the kill switch alone (the peak stays); main's switch must be off.
+  const rearm = rearmWords(risk);
   const dd = risk.drawdownPct ?? 0;
   const dl = risk.dayLossPct ?? 0;
+  const headColor = head.tone === "stopped" ? C.red : head.tone === "blocked" ? C.orange : C.green;
   return (
     <Panel style={{ padding: 16, display: "grid", gap: 16 }}>
-      <div style={{ fontSize: 16, fontWeight: 650, color: stopped ? C.red : C.green }}>
-        <span aria-hidden>{stopped ? "✗ " : "✓ "}</span>
-        {risk.drawdownHalt
-          ? `Halted: the account fell ${pct(dd)} from its peak (the limit is ${risk.maxDrawdownPct}%). No new entries until you re-arm.`
-          : risk.killSwitch
-            ? `Kill switch on${risk.killReason ? `: ${risk.killReason}` : ""}. No new entries.`
-            : "Within every limit: new entries are allowed when a decision passes every check."}
+      <div style={{ fontSize: 16, fontWeight: 650, color: headColor, overflowWrap: "anywhere" }}>
+        <span aria-hidden>{head.tone === "ok" ? "✓ " : "✗ "}</span>
+        {head.words}
       </div>
       <Meter
         label="Drawdown from the peak"
         used={dd}
         cap={risk.maxDrawdownPct}
         value={`${pct(risk.drawdownPct)} of ${risk.maxDrawdownPct}%`}
-        note={`At ${risk.maxDrawdownPct}% the code closes everything and stops new entries until re-armed.`}
+        note={`New entries stop from ${ENTRY_STOP.drawdownPct}% (the code's risk state leaves Safe). At ${risk.maxDrawdownPct}% the code closes everything and stops new entries until re-armed.`}
       />
-      <Meter label="Today's loss" used={dl} cap={risk.dailyLossCapPct} value={`${pct(risk.dayLossPct)} of ${risk.dailyLossCapPct}%`} note={`At ${risk.dailyLossCapPct}% of equity the code stops new entries for the day.`} />
+      <Meter
+        label="Today's loss"
+        used={dl}
+        cap={risk.dailyLossCapPct}
+        value={`${pct(risk.dayLossPct)} of ${risk.dailyLossCapPct}%`}
+        note={`New entries stop from ${ENTRY_STOP.dayLossPct}% of equity (the code's risk state leaves Safe). At ${risk.dailyLossCapPct}% the code closes positions and stops new entries for the day.`}
+      />
       <div style={{ display: "flex", flexWrap: "wrap", gap: 8 }}>
         <Fact label="Equity" value={risk.equity == null ? "—" : fmtInr(risk.equity)} note={risk.peakEquity == null ? undefined : `peak ${fmtInr(risk.peakEquity)}`} />
         <Fact label="Open positions" value={`${risk.openPositions} of ${risk.maxOpenPositions}`} note={`at most 1 per index, ${risk.maxLotsPerPosition} lots each`} />
@@ -576,28 +605,33 @@ export function RiskPanel({ risk, hasToken, onRearm, generatedAt }: { risk: Agen
         marker="•"
       />
       <div style={{ display: "flex", flexWrap: "wrap", alignItems: "center", gap: "8px 14px" }}>
-        <Btn variant={stopped ? "danger" : "outline"} size="md" onClick={() => dialog.show("rearm")} disabled={!stopped}>
-          Re-arm the agent
+        <Btn variant={rearm.enabled ? "danger" : "outline"} size="md" onClick={() => dialog.show("rearm")} disabled={!rearm.enabled}>
+          {rearm.label}
         </Btn>
-        <span style={{ ...small }}>{stopped ? "Clears the halt and the agent's kill switch (admin token needed)." : "Nothing to re-arm: no halt and the kill switch is off."}</span>
+        <span style={{ ...small }}>{rearm.note}</span>
       </div>
       {risk.asOf && <div style={{ ...small, fontSize: 12.5 }}>As of {dayTime(risk.asOf, generatedAt)}.</div>}
       {dialog.open && (
         <ConfirmDialog
-          title="Re-arm the agent"
+          title={rearm.label}
           tone="danger"
-          confirmLabel="Re-arm"
+          confirmLabel={rearm.confirmLabel}
           busy={dialog.busy}
           error={dialog.error}
           onCancel={dialog.close}
           onConfirm={() => void dialog.confirm()}
           extra={dialog.extra}
         >
-          <p style={{ margin: 0 }}>
-            This clears the drawdown halt and the agent&apos;s kill switch. Its peak equity restarts at today&apos;s equity{risk.equity == null ? "" : ` (${fmtInr(risk.equity)})`}, so the next{" "}
-            {risk.maxDrawdownPct}% is measured from here.
-          </p>
-          {risk.mainKillSwitch && <p style={{ margin: 0, color: C.red }}>Main&apos;s kill switch is on: the engine switches the agent&apos;s on again at its next tick until main is reset.</p>}
+          {rearm.peakRestarts ? (
+            <p style={{ margin: 0 }}>
+              This clears the drawdown halt and the agent&apos;s kill switch. Its peak equity restarts at today&apos;s equity{risk.equity == null ? "" : ` (${fmtInr(risk.equity)})`}, so the next{" "}
+              {risk.maxDrawdownPct}% is measured from here.
+            </p>
+          ) : (
+            <p style={{ margin: 0 }}>
+              This clears the agent&apos;s kill switch. The drawdown is still measured from the same peak{risk.peakEquity == null ? "" : ` (${fmtInr(risk.peakEquity)})`}.
+            </p>
+          )}
           <p style={{ margin: 0, color: C.textDim }}>Every other limit still applies. This is the paper account only; nothing here touches real money.</p>
         </ConfirmDialog>
       )}
@@ -728,6 +762,8 @@ function ReviewList({ title, items, empty }: { title: string; items: string[]; e
 }
 
 function ReviewCard({ review, generatedAt }: { review: AgentReviewView; generatedAt: string }) {
+  // A review waiting for its retry, or skipped with no model call, says so in a calm tone; only a failure is an error.
+  const notice = reviewNotice(review);
   return (
     <Panel style={{ padding: 16, display: "grid", gap: 14 }}>
       <div style={{ display: "flex", flexWrap: "wrap", alignItems: "baseline", gap: "4px 12px" }}>
@@ -739,7 +775,7 @@ function ReviewCard({ review, generatedAt }: { review: AgentReviewView; generate
           {review.costUsd != null ? ` · cost ${usd(review.costUsd)}` : ""}
         </span>
       </div>
-      {review.error && <Notice tone="error">The review failed: {review.error}</Notice>}
+      {notice && <Notice tone={notice.tone}>{notice.words}</Notice>}
       {review.summary && <p style={{ margin: 0, ...body, overflowWrap: "anywhere" }}>{review.summary}</p>}
       <ReviewList title="Trades" items={review.fills} empty="No trades that day." />
       <ReviewList title="Missed moves and false alarms" items={review.misses} empty="None noted." />
@@ -771,12 +807,17 @@ function GuidanceList({ title, points, background, border }: { title: string; po
   );
 }
 
-function ReplayBox({ replay }: { replay: NonNullable<AgentCandidateView["replay"]> }) {
+/**
+ * The replay's scores. All three Brier scores are over the calls every run labelled, so a text that answers "no
+ * direction" more often cannot look better by leaving out the hard calls; the counts behind each run are shown too.
+ */
+function ReplayBox({ replay }: { replay: AgentReplayView }) {
   const rows: [string, string][] = [
     ["Proposed text, replayed", brier(replay.brierCandidate)],
     ["Current text, replayed", brier(replay.brierCurrentReplayed)],
     ["Current text, as it ran live", brier(replay.brierCurrentLive)],
   ];
+  const stop = replayStopWords(replay);
   return (
     <div style={{ display: "grid", gap: 8, background: alpha(C.orange, 0.06), border: `1px solid ${alpha(C.orange, 0.35)}`, borderRadius: 12, padding: "12px 14px" }}>
       <div style={{ display: "flex", flexWrap: "wrap", alignItems: "center", gap: 8 }}>
@@ -786,8 +827,8 @@ function ReplayBox({ replay }: { replay: NonNullable<AgentCandidateView["replay"
         </Pill>
       </div>
       <p style={{ margin: 0, ...small, fontSize: 13.5 }}>
-        The day&apos;s {replay.bars} candles were judged again with each text, on identical inputs. The reviewer had already seen how those candles ended, so a better score here is
-        expected and proves nothing; only later sessions can show whether the text helps.
+        {replayCoverageWords(replay)} The reviewer had already seen how those candles ended, so a better score here is expected and proves nothing; only later sessions can show
+        whether the text helps.
       </p>
       <dl className="tnum" style={{ display: "grid", gridTemplateColumns: "minmax(0, 1fr) auto", gap: "4px 16px", margin: 0, fontSize: 14 }}>
         {rows.map(([k, v]) => (
@@ -799,13 +840,16 @@ function ReplayBox({ replay }: { replay: NonNullable<AgentCandidateView["replay"
         <div style={{ display: "contents" }}>
           <dt style={{ color: C.textSoft }}>Calls that would pass the model-side checks</dt>
           <dd style={{ margin: 0, fontWeight: 650, color: C.textStrong, textAlign: "right" }}>
-            {replay.firesCandidate} vs {replay.firesCurrent}
+            proposed {replay.firesCandidate} · current {replay.firesCurrent}
           </dd>
         </div>
       </dl>
+      <div className="tnum" style={{ fontSize: 13.5, fontWeight: 600, color: C.textSoft, overflowWrap: "anywhere" }}>
+        {replayScoredWords(replay)}
+      </div>
       <div style={{ ...small, fontSize: 12.5 }}>
-        Lower Brier is better. The gap between the two current-text scores shows how much the score moves from run to run with no change of text. {replay.graded} of the calls could be
-        graded.{replay.complete ? "" : " The replay stopped early (cost cap), so it covers only part of the day."}
+        Lower Brier is better. The gap between the two current-text scores shows how much the score moves from run to run with no change of text.
+        {stop ? ` ${stop}` : ""}
       </div>
     </div>
   );
@@ -817,21 +861,24 @@ function CandidateCard({
   hasToken,
   onDecide,
 }: {
-  c: AgentCandidateView;
+  c: AgentCandidateCardView;
   generatedAt: string;
   hasToken: boolean;
   onDecide: AdminAction<{ id: string; decision: "approve" | "reject" }>;
 }) {
   const dialog = useAdminDialog<"approve" | "reject">((decision, token) => onDecide({ id: c.id, decision }, token), hasToken);
-  const diff = guidanceDiff(c.currentGuidance, c.guidance);
+  // The "before" is the text the candidate was written against (the reviewed session's), never the text in use now:
+  // after an approval the text in use is the candidate's own, and the diff would compare it with itself.
+  const diff = guidanceDiff(c.baseGuidance ?? c.currentGuidance, c.guidance);
   const pending = c.status === "PENDING";
-  const statusColor = pending ? C.gold : c.status === "APPROVED" ? C.green : c.status === "REJECTED" || c.status === "FAILED" ? C.red : C.muted;
+  const inUse = c.inUse ?? c.status === "APPROVED";
+  const statusColor = pending ? C.gold : c.status === "APPROVED" ? (inUse ? C.green : C.muted) : c.status === "REJECTED" || c.status === "FAILED" ? C.red : C.muted;
   return (
     <Panel style={{ padding: 16, display: "grid", gap: 14, border: pending ? `2px solid ${alpha(C.gold, 0.45)}` : undefined }}>
       <div style={{ display: "flex", flexWrap: "wrap", alignItems: "baseline", gap: "4px 12px" }}>
         <h3 style={h3}>Proposed guidance</h3>
         <span style={{ display: "inline-flex", alignItems: "center", gap: 6, fontSize: 14.5, fontWeight: 650, color: statusColor }}>
-          <Dot color={statusColor} size={7} /> {candidateStatusWords(c.status)}
+          <Dot color={statusColor} size={7} /> {candidateStatusWords(c.status, inUse)}
         </span>
       </div>
       <p style={{ margin: 0, ...body, fontSize: 15 }}>
@@ -862,7 +909,7 @@ function CandidateCard({
       <details className="inline-disclosure">
         <summary>Read both texts in full</summary>
         <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(min(100%, 300px), 1fr))", gap: 12, marginTop: 10 }}>
-          <GuidanceList title={`Current text (${c.baseVersion})`} points={diff.current} background={C.panelAlt} border={C.borderSoft} />
+          <GuidanceList title={`Text it was written against (${c.baseVersion})`} points={diff.current} background={C.panelAlt} border={C.borderSoft} />
           <GuidanceList title="Proposed text" points={diff.proposed} background={alpha(C.gold, 0.05)} border={alpha(C.gold, 0.3)} />
         </div>
       </details>
@@ -882,7 +929,10 @@ function CandidateCard({
               Reject
             </Btn>
           </div>
-          <div style={{ ...small }}>Approval works only outside market hours (before 09:15 or after 15:30 IST), so one session is judged by one text. Admin token needed.</div>
+          <div style={{ ...small }}>
+            Approve before 09:15 IST, or after the day&apos;s review and replay finish (about 16:20–16:45 IST), so the review and the replay judge the text the session ran with. Admin
+            token needed.
+          </div>
         </div>
       ) : (
         c.decidedAt && (
@@ -924,7 +974,7 @@ export function ReviewPanel({
   onDecide,
 }: {
   review: AgentReviewView | null;
-  candidate: AgentCandidateView | null;
+  candidate: AgentCandidateCardView | null;
   generatedAt: string;
   hasToken: boolean;
   onDecide: AdminAction<{ id: string; decision: "approve" | "reject" }>;
