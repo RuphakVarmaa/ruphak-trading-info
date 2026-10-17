@@ -118,6 +118,7 @@ describe("the reflex call", () => {
       model: REFLEX,
       latencyMs: 2_500,
       error: null,
+      possiblyBilledAttempts: 0,
     });
   });
 
@@ -335,6 +336,121 @@ describe("the deep call", () => {
 
   it("stops a call by default at every attempt's timeout plus 10 s (the escalation's own deadline)", () => {
     expect(deepAbortMs(ESCALATION.timeoutMs)).toBe(ESCALATION.abortMs);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Attempts that may have been billed (M2, M3): the real SDK over a fake fetch.
+// ---------------------------------------------------------------------------
+
+/** A 200 event stream that breaks (a reset connection) after its first events, before message_stop. */
+const cutStream = () => () => {
+  const first = [
+    { type: "message_start", message: { id: "msg_1", type: "message", role: "assistant", model: DEEP, content: [], stop_reason: null, stop_sequence: null, usage: { ...deepUsage, output_tokens: 1 } } },
+    { type: "content_block_start", index: 0, content_block: { type: "text", text: "" } },
+    { type: "content_block_delta", index: 0, delta: { type: "text_delta", text: '{"decision": {"fina' } },
+  ]
+    .map((e) => `event: ${e.type}\ndata: ${JSON.stringify(e)}\n\n`)
+    .join("");
+  let sent = false;
+  const body = new ReadableStream<Uint8Array>({
+    pull(c) {
+      if (!sent) {
+        sent = true;
+        c.enqueue(new TextEncoder().encode(first));
+      } else c.error(new TypeError("terminated: the connection was reset"));
+    },
+  });
+  return new Response(body, { status: 200, headers: { "content-type": "text/event-stream", "request-id": "req_test" } });
+};
+
+/** A dropped connection: the request went out and no response came back. */
+const dropped = () => {
+  throw new TypeError("fetch failed");
+};
+
+describe("attempts that may have been billed (M2, M3)", () => {
+  it("counts nothing for attempts answered with an error status: 529 then 529", async () => {
+    const { fetch } = fakeFetch([httpError(529)]);
+    const r = await deepJudge(fetch).structured(deepReq());
+    expect(fetch).toHaveBeenCalledTimes(2);
+    expect(r).toMatchObject({ status: "ERROR", usage: null, possiblyBilledAttempts: 0 });
+    const reflex = fakeFetch([httpError(529)]);
+    expect(await ask(reflexJudge(reflex.fetch))).toMatchObject({ status: "ERROR", usage: null, possiblyBilledAttempts: 0 });
+  });
+
+  it("counts every attempt that timed out: timeout then timeout is 2", async () => {
+    const { fetch } = fakeFetch([hang]);
+    const r = await deepJudge(fetch).structured(deepReq({ timeoutMs: 40 }));
+    expect(fetch).toHaveBeenCalledTimes(2);
+    expect(r).toMatchObject({ status: "TIMEOUT", usage: null, possiblyBilledAttempts: 2 });
+  });
+
+  it("counts the timed-out attempt beside the usage of the one that answered: timeout then 200 is 1", async () => {
+    const { fetch } = fakeFetch([hang, sse([{ type: "text", text: JSON.stringify(answer) }], "end_turn")]);
+    const r = await deepJudge(fetch).structured(deepReq({ timeoutMs: 40 }));
+    expect(fetch).toHaveBeenCalledTimes(2);
+    expect(r).toMatchObject({ status: "OK", parsed: answer, usage: { inputTokens: 4_500, outputTokens: 3_000 }, possiblyBilledAttempts: 1 });
+    // The reflex: a dropped connection, retried, then an answer.
+    const reflex = fakeFetch([dropped, message([{ type: "text", text: batchJson([d()]) }])]);
+    const rr = await ask(reflexJudge(reflex.fetch));
+    expect(reflex.fetch).toHaveBeenCalledTimes(2);
+    expect(rr).toMatchObject({ status: "OK", usage: { inputTokens: 3_100 }, possiblyBilledAttempts: 1 });
+  });
+
+  it("counts a 200 stream cut before message_stop as 1", async () => {
+    const { fetch } = fakeFetch([cutStream()]);
+    const r = await deepJudge(fetch).structured(deepReq());
+    expect(fetch).toHaveBeenCalledTimes(1);
+    expect(r).toMatchObject({ status: "ERROR", usage: null, possiblyBilledAttempts: 1 });
+  });
+
+  it("counts an attempt the caller aborted mid-request, and none for a request never sent", async () => {
+    const during = fakeFetch([hang]);
+    const ac = new AbortController();
+    const pending = ask(reflexJudge(during.fetch), { signal: ac.signal });
+    await vi.waitFor(() => expect(during.fetch).toHaveBeenCalled());
+    ac.abort();
+    expect(await pending).toMatchObject({ status: "TIMEOUT", possiblyBilledAttempts: 1 });
+    const before = new AbortController();
+    before.abort();
+    const never = fakeFetch([hang]);
+    expect(await ask(reflexJudge(never.fetch), { signal: before.signal })).toMatchObject({ status: "TIMEOUT", possiblyBilledAttempts: 0 });
+    expect(await ask(reflexJudge(never.fetch), { input: input({}) })).toMatchObject({ status: "ERROR", possiblyBilledAttempts: 0 });
+  });
+
+  it("cannot say when two calls on one judge overlap", async () => {
+    const slow = () => new Promise<Response>((resolve) => setTimeout(() => resolve(message([{ type: "text", text: batchJson([d()]) }])()), 20));
+    const { fetch } = fakeFetch([slow]);
+    const j = new ClaudeReflexJudge({ apiKey: KEY, model: REFLEX, fetch });
+    const [a, b] = await Promise.all([ask(j), ask(j)]);
+    expect(a.status).toBe("OK");
+    expect(a.possiblyBilledAttempts).toBeUndefined();
+    expect(b.possiblyBilledAttempts).toBeUndefined();
+    // The next call on its own counts again.
+    expect((await ask(j)).possiblyBilledAttempts).toBe(0);
+  });
+});
+
+describe("countTokens (M1)", () => {
+  const counted = (n: number) => () => new Response(JSON.stringify({ input_tokens: n }), { status: 200, headers: { "content-type": "application/json" } });
+
+  it("asks the API to count the user message alone, and never counts it as an attempt of a call", async () => {
+    const { fetch, requests } = fakeFetch([counted(21_345), sse([{ type: "text", text: JSON.stringify(answer) }], "end_turn")]);
+    const j = deepJudge(fetch);
+    expect(await j.countTokens("the review's user message")).toBe(21_345);
+    expect(requests[0].url).toMatch(/\/v1\/messages\/count_tokens/);
+    expect(requests[0].body).toEqual({ model: DEEP, messages: [{ role: "user", content: "the review's user message" }] });
+    expect(requests[0].headers.get("x-api-key")).toBe(KEY);
+    expect(await j.structured(deepReq())).toMatchObject({ status: "OK", possiblyBilledAttempts: 0 });
+  });
+
+  it("is null on any failure, with no retry", async () => {
+    const down = fakeFetch([httpError(529)]);
+    expect(await deepJudge(down.fetch).countTokens("x")).toBeNull();
+    expect(down.fetch).toHaveBeenCalledTimes(1);
+    expect(await deepJudge(fakeFetch([dropped]).fetch).countTokens("x")).toBeNull();
+    expect(await deepJudge(fakeFetch([counted(0)]).fetch).countTokens("x")).toBeNull();
   });
 });
 

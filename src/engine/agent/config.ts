@@ -1,4 +1,5 @@
 /** The agent's Worker settings (the AGENT_* vars), with defaults and bounds (SPEC §7.1). */
+import { isPricedModel } from "./cost";
 import type { AgentMode, AgentSettings } from "./types";
 
 /** What the Worker vars override: the reflex model, the deep model for escalations and for the review, the cap. */
@@ -42,12 +43,22 @@ function bounded(name: string, raw: string | undefined, fallback: number, min: n
   return v;
 }
 
-/** A model id as the API takes it, else the default (an empty or garbled var never reaches the API). */
+/**
+ * A model id as the API takes it that has its own row in the price table (cost.ts), else the default: an empty or
+ * garbled var never reaches the API, and a model the table cannot price could be billed above the daily cap.
+ */
 function modelId(name: string, raw: string | undefined, fallback: string, onIgnored?: IgnoredVar): string {
   const text = (raw ?? "").trim();
-  if (/^[A-Za-z0-9._:@/-]{1,100}$/.test(text)) return text;
-  if (text !== "") onIgnored?.(name, text, `not a model id; using ${fallback}`);
-  return fallback;
+  if (text === "") return fallback;
+  if (!/^[A-Za-z0-9._:@/-]{1,100}$/.test(text)) {
+    onIgnored?.(name, text, `not a model id; using ${fallback}`);
+    return fallback;
+  }
+  if (!isPricedModel(text)) {
+    onIgnored?.(name, text, `no row in the agent's price table, so the daily cost cap could not hold; using ${fallback}`);
+    return fallback;
+  }
+  return text;
 }
 
 /**

@@ -10,9 +10,9 @@ import { SESSION, formatHHMM, istMinutes } from "../clock";
 import { DEFAULT_CONFIG } from "../config";
 import { INDEX_IDS, type IndexId } from "../types";
 import { fnv1aHex } from "../util/hash";
-import { CHARS_PER_TOKEN_BOUND, ESCALATION, OUTCOME, PROSE_CHARS_PER_TOKEN } from "./constants";
+import { CHARS_PER_TOKEN_BOUND, ESCALATION, OUTCOME, PROSE_CHARS_PER_TOKEN, REVIEW_CALL } from "./constants";
 import { FINALIST_TEXT } from "./finalists";
-import { encodeSnapshot } from "./snapshot";
+import { encodeSnapshot, estimateProseTokens } from "./snapshot";
 import type { AgentTradeRecord, BriefContext, CalibrationSummary, CallRecord, DecisionRecord, Finalist, IndexSnapshot, ReflexDecision, ReflexInput, StoredBar } from "./types";
 import { cleanText } from "./validate";
 
@@ -453,10 +453,101 @@ function callLines(calls: readonly CallRecord[]): string[] {
   ];
 }
 
+const ENTRY_ACTIONS: ReadonlySet<string> = new Set(["ENTERED", "ENTRY_PENDING", "SHADOW_ENTRY"]);
+const EXIT_ACTIONS: ReadonlySet<string> = new Set(["EXITED", "EXIT_PENDING", "SHADOW_EXIT"]);
+
 /**
- * The review's user message (SPEC §4.7): the guidance in force, the calibration, the calls and their cost, every
- * trade, every decision as a compact row (effective ones and the reflex rows an escalation superseded) and the index
- * closes per bar.
+ * How much a row matters to the review when the message must shrink: 3 it traded or exited (or a trade names it), 2 it
+ * fired, 1 it is an escalation's, 0 none of these (it may be folded or left out).
+ */
+function rowWeight(d: DecisionRecord, traded: ReadonlySet<string>): number {
+  const e = d.execution;
+  if (traded.has(d.id) || (e && (ENTRY_ACTIONS.has(e.action) || EXIT_ACTIONS.has(e.action)))) return 3;
+  if (e?.gate.fired) return 2;
+  return d.source === "ESCALATION" ? 1 : 0;
+}
+
+/** "9 NEUTRAL, 1 LONG": each value's count, most frequent first. */
+function tally(values: readonly string[]): string {
+  const n = new Map<string, number>();
+  for (const v of values) n.set(v, (n.get(v) ?? 0) + 1);
+  return [...n.entries()]
+    .sort((x, y) => y[1] - x[1] || x[0].localeCompare(y[0]))
+    .map(([v, k]) => `${k} ${v}`)
+    .join(", ");
+}
+
+/** One row standing for consecutive calls of one finalist that neither fired, traded nor exited. */
+function foldedRow(run: readonly DecisionRecord[]): string {
+  const first = run[0];
+  const last = run[run.length - 1];
+  const confs = run.map((d) => d.directionConfidence).filter((x) => Number.isFinite(x));
+  const lo = Math.min(...confs);
+  const hi = Math.max(...confs);
+  return [
+    `${barTime(first.barCloseMs)}–${barTime(last.barCloseMs)} (${run.length} rows)`,
+    first.index,
+    cell(first.finalistId, 120),
+    "R",
+    "y",
+    tally(run.map((d) => d.direction)),
+    confs.length === 0 ? "-" : lo === hi ? num(lo, 2) : `${num(lo, 2)}–${num(hi, 2)}`,
+    "-",
+    "-",
+    "-",
+    "-",
+    "not fired",
+    "-",
+    tally(run.map((d) => d.outcome?.status ?? "PENDING")),
+    "-",
+  ].join("|");
+}
+
+/**
+ * The rows in time order, with every run of consecutive in-force reflex rows of one index and finalist that neither
+ * fired, traded nor exited folded into one row (a run of one stays as it is).
+ */
+function foldedRows(decisions: readonly DecisionRecord[], traded: ReadonlySet<string>): string[] {
+  const groups = new Map<string, DecisionRecord[]>();
+  for (const d of decisions) {
+    const key = `${d.index}|${d.finalistId}`;
+    groups.set(key, [...(groups.get(key) ?? []), d]);
+  }
+  const out: { t: number; key: string; text: string }[] = [];
+  for (const [key, rows] of groups) {
+    let run: DecisionRecord[] = [];
+    const flush = () => {
+      if (run.length >= 2) out.push({ t: run[0].barCloseMs, key, text: foldedRow(run) });
+      else for (const d of run) out.push({ t: d.barCloseMs, key, text: decisionRow(d) });
+      run = [];
+    };
+    for (const d of rows) {
+      if (d.effective && rowWeight(d, traded) === 0) run.push(d);
+      else {
+        flush();
+        out.push({ t: d.barCloseMs, key, text: decisionRow(d) });
+      }
+    }
+    flush();
+  }
+  return out.sort((x, y) => x.t - y.t || x.key.localeCompare(y.key)).map((r) => r.text);
+}
+
+const CUT_MARK = "\n(cut here: the review message reached its length limit)";
+
+/**
+ * The review's user message (SPEC §4.7): the guidance in force (with a note when it is not the session's own
+ * text), the calibration, the calls and their cost, every trade, every decision as a compact row (the effective ones;
+ * a reflex row an escalation superseded shows as eff n) and the index closes per bar.
+ *
+ * Its estimate (estimateProseTokens) never exceeds REVIEW_CALL.userTokenBound, so the review's worst case is known
+ * before the day ends. When the full message is over the bound, these apply in turn until it fits:
+ * 1. each run of consecutive rows of one index and finalist that neither fired, traded nor exited folds into one row
+ *    (the time range, the count per direction, the confidence range and the outcome counts);
+ * 2. the superseded rows (eff n) are left out;
+ * 3. only the rows that fired, traded or exited and the escalations' rows are kept, the rest counted as omitted
+ *    (and, if still too long, the least of those);
+ * 4. as a last resort the message is cut at the bound.
  */
 export function reviewUser(a: {
   date: string;
@@ -465,14 +556,18 @@ export function reviewUser(a: {
   calibration: CalibrationSummary;
   calls: CallRecord[];
   guidance: string;
+  /** Why the guidance shown is not the text the session ran with; null or absent when it is. */
+  guidanceNote?: string | null;
   closes: Partial<Record<IndexId, { t: string; c: number }[]>>;
 }): string {
   const decisions = [...a.decisions].sort((x, y) => x.barCloseMs - y.barCloseMs || x.index.localeCompare(y.index) || x.finalistId.localeCompare(y.finalistId) || Number(y.effective) - Number(x.effective));
   const trades = [...a.trades].sort((x, y) => x.entryMs - y.entryMs);
-  return [
+  const traded = new Set(trades.flatMap((t) => (t.decisionId ? [t.decisionId] : [])));
+  const head = [
     `Session ${a.date} (all times IST).`,
     "",
     "Judgement guidance in force during the session:",
+    ...(a.guidanceNote ? [`(Note: ${cleanText(a.guidanceNote, 300)}.)`] : []),
     a.guidance,
     "",
     ...calibrationLines(a.calibration),
@@ -482,9 +577,8 @@ export function reviewUser(a: {
     `Trades (${trades.length}):`,
     ...(trades.length ? trades.map(tradeLine) : ["- none"]),
     "",
-    `Decisions (${decisions.length}; src R reflex, E escalation; eff n marks a reflex row an escalation replaced; conf is directionConfidence; ret30 is the index move over the next ${HORIZON_MIN} minutes in %):`,
-    "bar|index|finalist|src|eff|dir|conf|setup|regime|risk|toxic|gate|action|outcome|ret30",
-    ...decisions.map(decisionRow),
+  ];
+  const tail = [
     "",
     "Index closes per bar:",
     ...INDEX_IDS.flatMap((i) => {
@@ -493,5 +587,35 @@ export function reviewUser(a: {
     }),
     "",
     "Write the review.",
-  ].join("\n");
+  ];
+  const legend = `src R reflex, E escalation; eff n marks a reflex row an escalation replaced; conf is directionConfidence; ret30 is the index move over the next ${HORIZON_MIN} minutes in %`;
+  const render = (rows: readonly string[], more = "") =>
+    [...head, `Decisions (${decisions.length}; ${legend}${more}):`, "bar|index|finalist|src|eff|dir|conf|setup|regime|risk|toxic|gate|action|outcome|ret30", ...rows, ...tail].join("\n");
+  const fits = (text: string) => estimateProseTokens(text) <= REVIEW_CALL.userTokenBound;
+  const folded = "; to keep this message within its length limit, a row whose bar is a time range stands for that many consecutive calls of one finalist that neither fired, traded nor exited: the count per direction, the confidence range and the outcome counts";
+
+  let text = render(decisions.map(decisionRow));
+  if (fits(text)) return text;
+  // 1. Fold the quiet runs.
+  text = render(foldedRows(decisions, traded), folded);
+  if (fits(text)) return text;
+  // 2. Leave out the reflex rows an escalation superseded.
+  const inForce = decisions.filter((d) => d.effective);
+  const superseded = decisions.length - inForce.length;
+  text = render(foldedRows(inForce, traded), `${folded}${superseded ? `; the ${superseded} reflex rows an escalation replaced are left out` : ""}`);
+  if (fits(text)) return text;
+  // 3. Only the rows that fired, traded or exited and the escalations'; still too long, the least of those go too.
+  const ranked = inForce
+    .map((d, i) => ({ d, i, w: rowWeight(d, traded) }))
+    .filter((r) => r.w > 0)
+    .sort((x, y) => y.w - x.w || x.i - y.i);
+  for (let keep = ranked.length; ; keep = Math.floor(keep * 0.8)) {
+    const kept = ranked.slice(0, keep).sort((x, y) => x.i - y.i);
+    const omitted = decisions.length - kept.length;
+    text = render([...kept.map((r) => decisionRow(r.d)), `(${omitted} rows omitted)`], `; to keep this message within its length limit only the rows that fired, traded or exited and the escalations' rows are listed`);
+    if (fits(text) || keep === 0) break;
+  }
+  if (fits(text)) return text;
+  // 4. The rest of the message alone is over the bound (it never is with real inputs): cut it there.
+  return `${text.slice(0, REVIEW_CALL.userTokenBound * PROSE_CHARS_PER_TOKEN - CUT_MARK.length)}${CUT_MARK}`;
 }

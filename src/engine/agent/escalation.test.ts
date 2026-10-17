@@ -3,8 +3,10 @@ import { defaultCalendar } from "../calendar/calendar";
 import { istAt, MINUTE_MS } from "../clock";
 import {
   applyEscalations,
+  costCapReason,
   DISAGREE_REASON,
   escalationAllowed,
+  escalationFits,
   escalationLate,
   escalationTargetBarMs,
   escalationTriggers,
@@ -113,11 +115,25 @@ describe("escalationAllowed", () => {
   });
 
   it("keeps the rest of the day's reflex budget back", () => {
-    expect(allowed({ budget: { spentUsd: 1, worstUsd: 0.19, reflexReserveUsd: 0.5, capUsd: 3 } }).ok).toBe(true);
-    const tight = allowed({ budget: { spentUsd: 2.5, worstUsd: 0.19, reflexReserveUsd: 0.4, capUsd: 3 } });
+    expect(allowed({ budget: { spentUsd: 1, worstUsd: 0.19, reflexReserveUsd: 0.5, reviewReserveUsd: 0, capUsd: 3 } }).ok).toBe(true);
+    const tight = allowed({ budget: { spentUsd: 2.5, worstUsd: 0.19, reflexReserveUsd: 0.4, reviewReserveUsd: 0, capUsd: 3 } });
     expect(tight.ok).toBe(false);
     expect(tight.reason).toBe("cost cap: $2.500 spent + $0.400 kept for the reflex + $0.190 worst case is over $3.00");
-    expect(allowed({ budget: { spentUsd: 2.41, worstUsd: 0.19, reflexReserveUsd: 0.4, capUsd: 3 } }).ok).toBe(true);
+    expect(allowed({ budget: { spentUsd: 2.41, worstUsd: 0.19, reflexReserveUsd: 0.4, reviewReserveUsd: 0, capUsd: 3 } }).ok).toBe(true);
+  });
+
+  it("keeps tonight's review budget back too, and says so (M1)", () => {
+    // $0.70 spent + $0.571 reflex + $1.132 review + $0.58 escalation = $2.983: fits under $3.
+    const budget = { spentUsd: 0.7, worstUsd: 0.58, reflexReserveUsd: 0.571, reviewReserveUsd: 1.132, capUsd: 3 };
+    expect(escalationFits(budget)).toBe(true);
+    expect(allowed({ budget }).ok).toBe(true);
+    // At $0.72 spent it would eat into the review's share.
+    const over = allowed({ budget: { ...budget, spentUsd: 0.72 } });
+    expect(over).toEqual({ ok: false, reason: "cost cap: $0.720 spent + $0.571 kept for the reflex + $1.132 kept for tonight's review + $0.580 worst case is over $3.00" });
+    // Once the review has run (its reserve is 0) the same spend leaves room.
+    expect(allowed({ budget: { ...budget, spentUsd: 0.72, reviewReserveUsd: 0 } }).ok).toBe(true);
+    expect(costCapReason({ ...budget, reviewReserveUsd: 0 })).toBe("cost cap: $0.700 spent + $0.571 kept for the reflex + $0.580 worst case is over $3.00");
+    expect(escalationFits({ ...budget, spentUsd: Number.NaN })).toBe(false);
   });
 
   it("must start within 170 seconds of the close", () => {

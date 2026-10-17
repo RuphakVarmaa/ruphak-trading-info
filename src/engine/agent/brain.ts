@@ -16,8 +16,8 @@ import type { LlmUsage, Logger } from "../ports";
 import type { IndexId } from "../types";
 import { calibrationSummary, sizingProbability } from "./calibration";
 import { AGENT_POLICY, ESCALATION, REFLEX_CALL, RETENTION_DAYS, REVIEW_CALL, USER_MESSAGE_TOKEN_LIMIT } from "./constants";
-import { capAllows, reflexReserveUsd, responseCostUsd, worstCaseUsd } from "./cost";
-import { escalationAllowed, escalationTriggers, mergeEscalation } from "./escalation";
+import { capAllows, reflexReserveUsd, responseCostUsd, worstCaseUsd, type PromptSize } from "./cost";
+import { costCapReason, escalationAllowed, escalationFits, escalationTriggers, mergeEscalation, type EscalationBudget } from "./escalation";
 import { briefContext, compileFinalists } from "./finalists";
 import type { DeepJudge, DeepRequest, DeepResponse, ReflexJudge, ReflexRequest, ReflexResponse } from "./judge";
 import { payoffRatio } from "./kelly";
@@ -25,7 +25,7 @@ import { archiveClosesMap } from "./outcomes";
 import { BUILTIN_GUIDANCE, ESCALATION_SYSTEM, escalationUser, instructionVersion, REVIEW_SYSTEM, reflexSystem, reflexUser, reviewUser } from "./prompt";
 import { candidateFrom, gradeDay, replayScore, type ReplayBar } from "./review";
 import { EscalationSchema, ReviewSchema } from "./schema";
-import { estimateTokens } from "./snapshot";
+import { estimateProseTokens, estimateTokens } from "./snapshot";
 import type {
   AgentExitReason,
   AgentJob,
@@ -102,8 +102,25 @@ const ESCALATION_INPUT_BOUND = 2 * USER_MESSAGE_TOKEN_LIMIT;
 const INTERRUPTED = "interrupted: the agent restarted while this call was running; it is not run again";
 /** A replay's next slice starts on a later alarm (REVIEW_CALL.replayBarsPerAlarm bars per alarm). */
 const REPLAY_NEXT_SLICE_MS = 1_000;
+/** The review regrades the decisions of this many earlier trading days still missing a label (their closes can arrive late). */
+const REGRADE_TRADING_DAYS = 5;
+/** Approve and revert are refused from the close until the day's review and replay finish (O3). */
+const APPROVAL_WINDOW_TEXT = "after today's review and replay finish (about 16:20–16:45 IST)";
 
 const errText = (err: unknown) => (err instanceof Error ? err.message : String(err));
+const usd = (x: number) => Math.round(x * 1e6) / 1e6;
+
+/** The worst case of a call (every attempt) and of one attempt of it, for openCall and closeCall. */
+interface CallWorst {
+  /** worstCaseUsd over every attempt: booked before the request goes out. */
+  all: number;
+  /** One attempt (worstCaseUsd with attempts 1): what each attempt that may have been billed beyond the usage adds. */
+  one: number;
+}
+const callWorst = (model: string, size: number | PromptSize, maxTokens: number): CallWorst => ({ all: worstCaseUsd(model, size, maxTokens), one: worstCaseUsd(model, size, maxTokens, 1) });
+
+/** The review's prompt by block: its fixed system text and a user message of `userTokens`. */
+const reviewSize = (userTokens: number): PromptSize => ({ systemTokens: estimateProseTokens(REVIEW_SYSTEM), userTokens });
 
 interface BriefCache {
   date: string;
@@ -128,6 +145,8 @@ interface CallResult {
   latencyMs: number;
   error: string | null;
   iterations?: readonly { model: string; usage: LlmUsage }[] | null;
+  /** HTTP attempts that may have been billed beyond the usage (judge.ts); undefined when the judge cannot say. */
+  possiblyBilledAttempts?: number;
 }
 
 /** A job either finished, or asks to run again at requeueAt (with a new payload when given). */
@@ -310,7 +329,11 @@ export class AgentBrain {
     });
   }
 
-  /** Approves or rejects the PENDING candidate. Approval only outside the session, so one session is judged by one text. */
+  /**
+   * Approves or rejects the PENDING candidate. Rejection is allowed any time. Approval is refused during the session
+   * (one session is judged by one text), from the close until that day's review and replay finish (they judge the text
+   * the session ran with; approvalRefusal), and for a candidate nothing was replayed for.
+   */
   async decideCandidate(id: string, decision: "approve" | "reject", actor: string): Promise<{ ok: boolean; message: string }> {
     const { store } = this.d;
     const now = this.d.now();
@@ -321,7 +344,9 @@ export class AgentBrain {
       await store.putCandidate({ ...c, status: "REJECTED", decidedMs: now, decidedBy: actor });
       return { ok: true, message: "rejected: the current guidance stays" };
     }
-    if (this.inSession(now)) return { ok: false, message: "approve after 15:30 so one session is judged by one text" };
+    const refusal = await this.approvalRefusal(now, "approve");
+    if (refusal) return { ok: false, message: refusal };
+    if (!c.replay || c.replay.bars === 0) return { ok: false, message: "nothing was replayed for this candidate; reject it or re-run the review" };
     const version = instructionVersion(c.guidance);
     await store.putInstruction({ version, guidance: c.guidance, createdMs: now, source: "CANDIDATE", candidateId: c.id, active: true });
     await store.setActiveInstruction(version);
@@ -330,10 +355,11 @@ export class AgentBrain {
     return { ok: true, message: `approved: the reflex uses guidance ${version} from its next call` };
   }
 
-  /** Makes the built-in guidance active again (/ops/agent-revert); only outside the session. */
+  /** Makes the built-in guidance active again (/ops/agent-revert); refused when approval would be (approvalRefusal). */
   async revertToBuiltin(actor: string): Promise<{ ok: boolean; message: string }> {
     const now = this.d.now();
-    if (this.inSession(now)) return { ok: false, message: "revert after 15:30 so one session is judged by one text" };
+    const refusal = await this.approvalRefusal(now, "revert");
+    if (refusal) return { ok: false, message: refusal };
     const version = instructionVersion(BUILTIN_GUIDANCE);
     const active = await this.d.store.activeInstruction();
     if (active?.version === version) return { ok: true, message: `the built-in guidance ${version} is already active` };
@@ -427,14 +453,14 @@ export class AgentBrain {
 
     const user = reflexUser(input, finalists, context);
     const inputEst = estimateTokens(reflexSystem(instruction.guidance)) + estimateTokens(user);
-    const worst = worstCaseUsd(reflex.model, inputEst, REFLEX_CALL.maxTokens);
+    const worst = callWorst(reflex.model, inputEst, REFLEX_CALL.maxTokens);
     const spent = await store.spentUsd(istDate(now));
-    if (!capAllows(spent, worst, settings.dailyUsdCap)) {
+    if (!capAllows(spent, worst.all, settings.dailyUsdCap)) {
       await this.skippedCall("REFLEX", T, reflex.model, instruction.version, now);
       return finish("COST_CAP", `the day's cost cap ($${settings.dailyUsdCap}) leaves no room for this call`, await this.exitOnly(T, finalists, instruction));
     }
 
-    const call = await this.openCall("REFLEX", T, reflex.model, instruction.version, worst);
+    const call = await this.openCall("REFLEX", T, reflex.model, instruction.version, worst.all);
     const res = await this.callReflex(reflex, { input, finalists, brief: context, guidance: instruction.guidance }, REFLEX_CALL.abortMs);
     await this.closeCall(call, res, worst);
     const callId = call.id;
@@ -513,8 +539,9 @@ export class AgentBrain {
 
   /**
    * Escalation triggers on this bar's reflex rows: queued when allowed (rate, daily cap, start deadline, and the cost:
-   * spent plus the rest of the day's reflex reserve plus this escalation's worst case under the cap; escalationAllowed's
-   * budget), else SKIPPED. Escalations queued on this bar count against the budget of the next.
+   * spent plus the rest of the day's reflex reserve plus tonight's review reserve plus this escalation's worst case
+   * under the cap; escalationAllowed's budget), else SKIPPED. Escalations queued on this bar count against the budget
+   * of the next.
    */
   private async queueEscalations(T: number, reflexRows: DecisionRecord[], now: number): Promise<void> {
     const { store, settings } = this.d;
@@ -524,10 +551,11 @@ export class AgentBrain {
     if (!triggers.length) return;
     const today = await store.escalations(date);
     const worstUsd = worstCaseUsd(this.d.escalation?.model ?? settings.escalationModel, ESCALATION_INPUT_BOUND, ESCALATION.maxTokens);
-    const reserve = await this.reflexReserve(now);
+    const reflexReserve = await this.reflexReserve(now);
+    const reviewReserve = await this.reviewReserve(now);
     let spentUsd = await store.spentUsd(istDate(now));
     for (const t of triggers) {
-      const budget = { spentUsd, worstUsd, reflexReserveUsd: reserve, capUsd: settings.dailyUsdCap };
+      const budget: EscalationBudget = { spentUsd, worstUsd, reflexReserveUsd: reflexReserve, reviewReserveUsd: reviewReserve, capUsd: settings.dailyUsdCap };
       const allowed = escalationAllowed(t.decision.index, T, now, today, settings.escalationsPerDay, this.d.calendar, budget);
       let reason = allowed.ok ? null : (allowed.reason ?? "not allowed");
       if (!reason && !this.d.escalation) reason = "no API key for the deep model";
@@ -578,11 +606,12 @@ export class AgentBrain {
     const history = (await store.barsForIndex(esc.index, esc.barCloseMs - ESCALATION.contextBars * BAR_5M_MS, esc.barCloseMs - BAR_5M_MS)).filter((b) => b.snapshot);
     const user = escalationUser({ finalist, reflex: reflexRow, trigger: esc.trigger, snapshots, history, guidance: instruction.guidance });
     const inputEst = estimateTokens(ESCALATION_SYSTEM) + estimateTokens(user);
-    if (!(await this.escalationFits(inputEst, now))) return put({ status: "SKIPPED", reason: "cost cap: the rest of the day's reflex calls come first" });
+    const worst = callWorst(judge.model, inputEst, ESCALATION.maxTokens);
+    const noRoom = await this.escalationRoom(worst.all, now);
+    if (noRoom) return put({ status: "SKIPPED", reason: noRoom });
 
-    const worst = worstCaseUsd(judge.model, inputEst, ESCALATION.maxTokens);
     await store.putEscalation({ ...esc, status: "RUNNING" });
-    const call = await this.openCall("ESCALATION", esc.barCloseMs, judge.model, instruction.version, worst);
+    const call = await this.openCall("ESCALATION", esc.barCloseMs, judge.model, instruction.version, worst.all);
     const res = await this.callDeep(judge, { system: ESCALATION_SYSTEM, user, effort: ESCALATION.effort, maxTokens: ESCALATION.maxTokens, timeoutMs: ESCALATION.timeoutMs, schema: EscalationSchema }, ESCALATION.abortMs);
     await this.closeCall(call, res, worst);
     const callId = call.id;
@@ -597,7 +626,9 @@ export class AgentBrain {
 
   /**
    * The nightly review (16:20 IST, again at 16:40 when the bar archive is not complete): grade the day's decisions
-   * from one price source per label, the calibration, the deep model's written review and an optional candidate text.
+   * from one price source per label (and the earlier days' still unlabelled ones), the calibration, the deep model's
+   * written review and an optional candidate text. The review, its candidate and the replay's current arm all judge
+   * the text the session ran with (sessionInstruction), whatever is active by the evening.
    */
   private async runReview(date: string, attempt: number): Promise<JobResult> {
     const { store, settings } = this.d;
@@ -609,57 +640,144 @@ export class AgentBrain {
       await store.putReview({ ...review, status: "PENDING", dueMs: retry, error: "the 5-minute bar archive is not complete yet; trying again" });
       return { requeueAt: retry, payload: { date, attempt: attempt + 1 } };
     }
-    await store.putReview({ ...review, status: "RUNNING", startedMs: now, error: null });
+    await store.putReview({ ...review, status: "RUNNING", startedMs: now, error: null, note: null });
 
     // 1. Grade every decision whose window has ended (review.ts gradeDay): both ends from the archive when both rows
-    //    exist, otherwise the stored closes for both; a regrade never downgrades a label.
+    //    exist, otherwise the stored closes for both; a regrade never downgrades a label. Then the earlier days'
+    //    decisions still without a label, whose closes may have arrived since (a late archive).
     await store.updateOutcomes(gradeDay(await store.decisions(date), closes.stored, this.d.calendar, now, closes.archive));
+    await this.regradeEarlierDays(date, now);
 
-    // 2. Calibration over the retention window, weighted to the active text.
-    const instruction = await this.instruction();
-    const calibration = await this.recomputeCalibration(instruction.version, now);
+    // 2. Calibration over the retention window, weighted to the active text (sizing goes forward with it); then
+    //    the rows older than the retention window go.
+    const active = await this.instruction();
+    const calibration = await this.recomputeCalibration(active.version, now);
+    await this.pruneBefore(addDays(date, -RETENTION_DAYS));
 
-    // 3. The written review and an optional candidate guidance text.
+    // 3. The written review and an optional candidate guidance text: not on a day with nothing to read.
+    const base = { ...review, startedMs: now, calibration, note: null };
+    const decisions = (await store.decisions(date)).filter((d) => d.effective);
+    const trades = await store.trades(date, date);
+    if (decisions.length === 0 && trades.length === 0) {
+      await store.putReview({ ...base, status: "SKIPPED", doneMs: this.d.now(), error: `nothing to review: no decision was in force and no trade was made on ${date}; the day was graded and scored` });
+      return DONE;
+    }
     const judge = this.d.review;
-    const base = { ...review, startedMs: now, calibration };
     if (!judge) {
       await store.putReview({ ...base, status: "SKIPPED", doneMs: this.d.now(), error: "NO_KEY: no API key for the deep model; the day was graded and scored" });
       return DONE;
     }
-    const graded = await store.decisions(date);
-    const trades = await store.trades(date, date);
+    const { instruction: session, note } = await this.sessionInstruction(date, active);
     const calls = await store.calls(date);
-    const user = reviewUser({ date, decisions: graded.filter((d) => d.effective), trades, calibration, calls, guidance: instruction.guidance, closes: closes.forPrompt });
-    const inputEst = estimateTokens(REVIEW_SYSTEM) + estimateTokens(user);
-    const worst = worstCaseUsd(judge.model, inputEst, REVIEW_CALL.maxTokens);
-    const spent = await store.spentUsd(istDate(now));
-    if (!capAllows(spent, worst, settings.dailyUsdCap)) {
-      await this.skippedCall("REVIEW", null, judge.model, instruction.version, now);
-      await store.putReview({ ...base, status: "SKIPPED", doneMs: this.d.now(), error: `the day's cost cap ($${settings.dailyUsdCap}) leaves no room for the review; the day was graded and scored` });
+    const user = reviewUser({ date, decisions, trades, calibration, calls, guidance: session.guidance, guidanceNote: note, closes: closes.forPrompt });
+    // The system block may be written to the cache; the user message is billed at the input rate (M1).
+    const worst = callWorst(judge.model, reviewSize(await this.countUserTokens(judge, user)), REVIEW_CALL.maxTokens);
+    const spent = await store.spentUsd(istDate(this.d.now()));
+    // A review run before the open (a forced one) leaves today's reflex calls their money; after 15:05 the reserve is 0.
+    const reflexReserve = await this.reflexReserve(this.d.now());
+    if (!capAllows(spent + reflexReserve, worst.all, settings.dailyUsdCap)) {
+      await this.skippedCall("REVIEW", null, judge.model, session.version, this.d.now());
+      const kept = reflexReserve > 0 ? ` after the $${reflexReserve.toFixed(3)} kept for today's reflex calls` : "";
+      await store.putReview({ ...base, note, status: "SKIPPED", doneMs: this.d.now(), error: `the day's cost cap ($${settings.dailyUsdCap}) leaves no room for the review (worst case $${worst.all.toFixed(3)})${kept}; the day was graded and scored` });
       return DONE;
     }
-    const call = await this.openCall("REVIEW", null, judge.model, instruction.version, worst);
+    const call = await this.openCall("REVIEW", null, judge.model, session.version, worst.all);
     const res = await this.callDeep(judge, { system: REVIEW_SYSTEM, user, effort: REVIEW_CALL.effort, maxTokens: REVIEW_CALL.maxTokens, timeoutMs: REVIEW_CALL.timeoutMs, schema: ReviewSchema }, REVIEW_CALL.abortMs);
     await this.closeCall(call, res, worst);
     const callId = call.id;
     if (res.status !== "OK" || !res.parsed) {
-      await store.putReview({ ...base, status: "FAILED", doneMs: this.d.now(), model: res.model, callId, error: `${res.status}: ${res.error ?? "no answer"}` });
+      await store.putReview({ ...base, note, status: "FAILED", doneMs: this.d.now(), model: res.model, callId, error: `${res.status}: ${res.error ?? "no answer"}` });
       return DONE;
     }
     const report = res.parsed;
-    await store.putReview({ ...base, status: "DONE", doneMs: this.d.now(), model: res.model, callId, report, error: null });
+    await store.putReview({ ...base, note, status: "DONE", doneMs: this.d.now(), model: res.model, callId, report, error: null });
 
-    const cand = candidateFrom(report, instruction, date, this.d.now(), this.d.newId);
+    const cand = candidateFrom(report, session, date, this.d.now(), this.d.newId);
     if (cand) {
       const prev = await store.latestCandidate();
       if (prev && (prev.status === "PENDING" || prev.status === "SCORING")) await store.putCandidate({ ...prev, status: "SUPERSEDED" });
       // Scored first: it can be decided only once the replay is done.
       await store.putCandidate({ ...cand, status: "SCORING", replay: null, decidedMs: null, decidedBy: null });
-      const state: ReplayState = { baseGuidance: instruction.guidance, done: [], candidate: {}, current: {}, failedCalls: 0, costUsd: 0 };
+      const state: ReplayState = { baseGuidance: session.guidance, done: [], candidate: {}, current: {}, failedCalls: 0, costUsd: 0 };
       await store.setMeta(AGENT_META.replay(cand.id), state);
       await store.putJob({ id: replayJobId(cand.id), kind: "REPLAY", dueMs: this.d.now(), status: "QUEUED", startedMs: null, payload: { candidateId: cand.id } });
     }
     return DONE;
+  }
+
+  /**
+   * The text the session of `date` ran with: the instruction version most of its OK batches carry (on a tie, the one
+   * that ran last), read from the store. When that text was never stored: the built-in text if the version is the
+   * built-in one's, else the active text, with a note saying so. A day with no OK batch: the active text.
+   */
+  private async sessionInstruction(date: string, active: InstructionRecord): Promise<{ instruction: InstructionRecord; note: string | null }> {
+    const { store } = this.d;
+    const tally = new Map<string, { n: number; last: number }>();
+    for (const b of await store.batches(date)) {
+      if (b.status !== "OK") continue;
+      const t = tally.get(b.instructionVersion) ?? { n: 0, last: -Infinity };
+      tally.set(b.instructionVersion, { n: t.n + 1, last: Math.max(t.last, b.barCloseMs) });
+    }
+    const top = [...tally.entries()].sort((x, y) => y[1].n - x[1].n || y[1].last - x[1].last)[0];
+    if (!top || top[0] === active.version) return { instruction: active, note: null };
+    const version = top[0];
+    let stored: InstructionRecord | null = null;
+    try {
+      stored = (await store.instruction?.(version)) ?? null;
+    } catch (err) {
+      this.d.logger.warn("agent: the session's guidance text could not be read", { version, error: errText(err) });
+    }
+    if (stored) return { instruction: stored, note: null };
+    if (version === instructionVersion(BUILTIN_GUIDANCE)) {
+      return { instruction: { version, guidance: BUILTIN_GUIDANCE, createdMs: this.d.now(), source: "BUILTIN", candidateId: null, active: false }, note: null };
+    }
+    const note = `the session ran with guidance ${version}, whose text is not stored; this review read the active text ${active.version} in its place`;
+    this.d.logger.warn("agent: the session's guidance text is not stored", { date, version, active: active.version });
+    return { instruction: active, note };
+  }
+
+  /** The API's token count of the review's user message when the judge can give one, else the local prose estimate. */
+  private async countUserTokens(judge: DeepJudge, user: string): Promise<number> {
+    let counted: number | null = null;
+    try {
+      counted = (await judge.countTokens?.(user)) ?? null;
+    } catch {
+      counted = null;
+    }
+    return counted !== null && Number.isFinite(counted) && counted > 0 ? counted : estimateProseTokens(user);
+  }
+
+  /**
+   * Regrades the previous REGRADE_TRADING_DAYS trading days' decisions that have no label or a MISSING one, from each
+   * day's closes as they are now (gradeDay never downgrades a label). Never throws: a failure waits for tomorrow's review.
+   */
+  private async regradeEarlierDays(date: string, now: number): Promise<void> {
+    const { store, calendar } = this.d;
+    let day = date;
+    for (let found = 0, tries = 0; found < REGRADE_TRADING_DAYS && tries < 4 * REGRADE_TRADING_DAYS; tries++) {
+      day = addDays(day, -1);
+      if (!calendar.isTradingDay(day)) continue;
+      found++;
+      try {
+        const open = (await store.decisions(day)).filter((d) => !d.outcome || d.outcome.status === "MISSING");
+        if (!open.length) continue;
+        const c = await this.closesFor(day);
+        const rows = gradeDay(open, c.stored, calendar, now, c.archive);
+        if (rows.length) await store.updateOutcomes(rows);
+      } catch (err) {
+        this.d.logger.warn("agent: regrading an earlier day failed", { day, error: errText(err) });
+      }
+    }
+  }
+
+  /** Deletes the stored rows dated before `beforeDate` (the retention window); never throws. */
+  private async pruneBefore(beforeDate: string): Promise<void> {
+    try {
+      const n = await this.d.store.prune(beforeDate);
+      if (n > 0) this.d.logger.info("agent: pruned rows older than the retention window", { beforeDate, rows: n });
+    } catch (err) {
+      this.d.logger.warn("agent: prune failed", { beforeDate, error: errText(err) });
+    }
   }
 
   /**
@@ -675,7 +793,7 @@ export class AgentBrain {
     const state = (await store.getMeta<ReplayState>(AGENT_META.replay(candidateId))) ?? { baseGuidance: BUILTIN_GUIDANCE, done: [], candidate: {}, current: {}, failedCalls: 0, costUsd: 0 };
     const batches = (await store.batches(cand.date)).filter((b) => b.status === "OK" && b.finalists.length > 0);
     const todo = batches.filter((b) => !state.done.includes(b.barCloseMs));
-    if (!reflex) return this.finishReplay(cand, state, batches, false, "no API key for the reflex model");
+    if (!reflex) return this.finishReplay(cand, state, batches, false, "no API key for the reflex model", "no_key");
 
     let processed = 0;
     let stop: "cap" | "deadline" | null = null;
@@ -688,21 +806,22 @@ export class AgentBrain {
       const input = await this.storedInput(b.barCloseMs, []);
       const finalists = b.finalists.filter((f) => input.snapshots[f.index]);
       const user = reflexUser(input, finalists, b.briefContext);
-      const worst = arms.map((a) => worstCaseUsd(reflex.model, estimateTokens(reflexSystem(a.guidance)) + estimateTokens(user), REFLEX_CALL.maxTokens));
+      const worst = arms.map((a) => callWorst(reflex.model, estimateTokens(reflexSystem(a.guidance)) + estimateTokens(user), REFLEX_CALL.maxTokens));
       // Both texts or neither: a bar judged by one text only would make the comparison uneven.
       const start = this.d.now();
       if (start + 2 * REFLEX_CALL.abortMs > deadlineMs) {
         stop = "deadline";
         break;
       }
-      if (!capAllows(await store.spentUsd(istDate(start)), worst[0] + worst[1], settings.dailyUsdCap)) {
+      // A replay never spends the money kept for today's remaining reflex calls (none are left after 15:05).
+      if (!capAllows((await store.spentUsd(istDate(start))) + (await this.reflexReserve(start)), worst[0].all + worst[1].all, settings.dailyUsdCap)) {
         await this.skippedCall("REPLAY", b.barCloseMs, reflex.model, instructionVersion(cand.guidance), start);
         stop = "cap";
         break;
       }
       const answers: Record<"candidate" | "current", ReflexDecision[]> = { candidate: [], current: [] };
       for (const [i, a] of arms.entries()) {
-        const call = await this.openCall("REPLAY", b.barCloseMs, reflex.model, instructionVersion(a.guidance), worst[i]);
+        const call = await this.openCall("REPLAY", b.barCloseMs, reflex.model, instructionVersion(a.guidance), worst[i].all);
         const res = await this.callReflex(reflex, { input, finalists, brief: b.briefContext, guidance: a.guidance }, REFLEX_CALL.abortMs);
         state.costUsd += await this.closeCall(call, res, worst[i]);
         if (res.status === "OK") answers[a.arm] = res.decisions;
@@ -714,13 +833,17 @@ export class AgentBrain {
       processed++;
     }
     await store.setMeta(AGENT_META.replay(candidateId), state);
-    if (stop === "cap") return this.finishReplay(cand, state, batches, false, "the cost cap stopped the replay early");
+    if (stop === "cap") return this.finishReplay(cand, state, batches, false, "the cost cap stopped the replay early", "cost_cap");
     // One slice per alarm: the next slice runs on the next alarm, a second from now.
     if (state.done.length < batches.length) return { requeueAt: this.d.now() + REPLAY_NEXT_SLICE_MS };
-    return this.finishReplay(cand, state, batches, true, null);
+    return this.finishReplay(cand, state, batches, true, null, null);
   }
 
-  private async finishReplay(cand: CandidateRecord, state: ReplayState, batches: ReflexBatch[], complete: boolean, note: string | null): Promise<JobResult> {
+  /**
+   * Scores the bars replayed so far and makes the candidate PENDING. `batches` are the day's candles with an OK batch
+   * (what the replay set out to judge: barsTotal); `stopReason` says why an incomplete replay stopped.
+   */
+  private async finishReplay(cand: CandidateRecord, state: ReplayState, batches: ReflexBatch[], complete: boolean, note: string | null, stopReason: NonNullable<ReplayResult["stopReason"]> | null): Promise<JobResult> {
     const { store } = this.d;
     const done = batches.filter((b) => state.done.includes(b.barCloseMs)).sort((a, b) => a.barCloseMs - b.barCloseMs);
     const stored = await store.bars(cand.date);
@@ -746,7 +869,8 @@ export class AgentBrain {
       complete,
     });
     const notes = [note, state.failedCalls ? `${state.failedCalls} replay call(s) failed and count as no answer` : null].filter(Boolean).join("; ");
-    await store.putCandidate({ ...cand, status: "PENDING", replay: { ...result, complete, cursorBarMs: complete ? null : (done[done.length - 1]?.barCloseMs ?? null) }, rationale: notes ? `${cand.rationale}\n(Replay: ${notes}.)` : cand.rationale });
+    const replay: ReplayResult = { ...result, complete, cursorBarMs: complete ? null : (done[done.length - 1]?.barCloseMs ?? null), barsTotal: batches.length, stopReason: complete ? null : stopReason };
+    await store.putCandidate({ ...cand, status: "PENDING", replay, rationale: notes ? `${cand.rationale}\n(Replay: ${notes}.)` : cand.rationale });
     await store.setMeta(AGENT_META.replay(cand.id), null);
     return DONE;
   }
@@ -769,13 +893,22 @@ export class AgentBrain {
 
   /**
    * Records the outcome, priced from the usage: each billed attempt at its own model when the response lists them
-   * (usage.iterations), never less than the whole usage at the model that answered; the worst case when a request
-   * went out and no usage came back.
+   * (usage.iterations), never less than the whole usage at the model that answered. Every HTTP attempt that may have
+   * been billed beyond that usage (no response, or a 200 whose body broke before the message was read; judge.ts
+   * possiblyBilledAttempts) adds one attempt's worst case; an attempt answered with an error status adds nothing.
+   * When the judge cannot say how many attempts went out (a fake, or one that threw), a call with no usage is booked
+   * at its whole worst case (#11: never under-counted). NO_KEY sent nothing.
    */
-  private async closeCall(rec: CallRecord, res: CallResult, worstUsd: number): Promise<number> {
+  private async closeCall(rec: CallRecord, res: CallResult, worst: CallWorst): Promise<number> {
     const model = res.model || rec.model;
     const priced = responseCostUsd({ usage: res.usage, model, iterations: res.iterations ?? null });
-    const costUsd = priced ?? (res.status === "NO_KEY" ? 0 : worstUsd);
+    const n = res.possiblyBilledAttempts;
+    const extra = typeof n === "number" && Number.isFinite(n) && n >= 0 ? n : null;
+    let costUsd: number;
+    if (res.status === "NO_KEY") costUsd = 0;
+    else if (priced !== null) costUsd = usd(priced + (extra ?? 0) * worst.one);
+    else if (extra !== null) costUsd = usd(extra * worst.one);
+    else costUsd = worst.all;
     await this.d.store.putCall({ ...rec, model, latencyMs: res.latencyMs, status: res.status, error: res.error, usage: res.usage, costUsd });
     return costUsd;
   }
@@ -821,11 +954,55 @@ export class AgentBrain {
     return reflexReserveUsd(now, worstCaseUsd(this.d.reflex.model, estimateTokens(reflexSystem(instruction.guidance)) + USER_MESSAGE_TOKEN_LIMIT, REFLEX_CALL.maxTokens));
   }
 
-  /** An escalation about to run, with its real prompt: capAllows(spent + the reflex reserve, its worst case, the cap). */
-  private async escalationFits(inputEst: number, now: number): Promise<boolean> {
-    const model = this.d.escalation?.model ?? this.d.settings.escalationModel;
-    const spent = await this.d.store.spentUsd(istDate(now));
-    return capAllows(spent + (await this.reflexReserve(now)), worstCaseUsd(model, inputEst, ESCALATION.maxTokens), this.d.settings.dailyUsdCap);
+  /**
+   * Tonight's review at its worst case, for a user message at REVIEW_CALL.userTokenBound (reviewUser keeps it there):
+   * kept back from escalations so a busy day still gets its review (M1). Nothing on a day without a session, without a
+   * review judge or in mode off, and nothing once today's review is DONE, FAILED or SKIPPED.
+   */
+  private async reviewReserve(now: number): Promise<number> {
+    const today = istDate(now);
+    const judge = this.d.review;
+    if (!judge || this.d.settings.mode === "off" || !this.d.calendar.isTradingDay(today)) return 0;
+    const r = await this.d.store.review(today);
+    if (r && (r.status === "DONE" || r.status === "FAILED" || r.status === "SKIPPED")) return 0;
+    return worstCaseUsd(judge.model, reviewSize(REVIEW_CALL.userTokenBound), REVIEW_CALL.maxTokens);
+  }
+
+  /**
+   * An escalation about to run, with its real prompt: null when its worst case fits after the spend and the reflex
+   * and review reserves (escalationFits), else why it does not.
+   */
+  private async escalationRoom(worstUsd: number, now: number): Promise<string | null> {
+    const budget: EscalationBudget = {
+      spentUsd: await this.d.store.spentUsd(istDate(now)),
+      worstUsd,
+      reflexReserveUsd: await this.reflexReserve(now),
+      reviewReserveUsd: await this.reviewReserve(now),
+      capUsd: this.d.settings.dailyUsdCap,
+    };
+    return escalationFits(budget) ? null : costCapReason(budget);
+  }
+
+  /**
+   * Why approve or revert (`verb`) is refused now, or null. During the session, as always. On a trading day from the
+   * close, while the day has a batch and its review or replay has not finished (the review missing, PENDING or
+   * RUNNING, its job queued, or the day's candidate still SCORING): both judge the text the session ran with, and a
+   * new text approved meanwhile would be compared with itself. Before the open and on holidays both are allowed.
+   */
+  private async approvalRefusal(now: number, verb: "approve" | "revert"): Promise<string | null> {
+    const { store, calendar } = this.d;
+    if (this.inSession(now)) return `${verb} after 15:30 so one session is judged by one text`;
+    const today = istDate(now);
+    if (!calendar.isTradingDay(today) || now < calendar.closeMs(today)) return null;
+    if ((await store.batches(today)).length === 0) return null;
+    const review = await store.review(today);
+    const queued = (await store.jobs()).some((j) => j.id === reviewJobId(today));
+    const latest = await store.latestCandidate();
+    const scoring = latest !== null && latest.status === "SCORING" && latest.date === today;
+    if (!review || review.status === "PENDING" || review.status === "RUNNING" || queued || scoring) {
+      return `${verb} ${APPROVAL_WINDOW_TEXT}; if no review runs today, ${verb} before 09:15 tomorrow`;
+    }
+    return null;
   }
 
   // -------------------------------------------------------------------------
@@ -929,7 +1106,7 @@ export class AgentBrain {
           return;
         }
         const batches = (await store.batches(cand.date)).filter((b) => b.status === "OK" && b.finalists.length > 0);
-        await this.finishReplay(cand, state, batches, false, "the replay was interrupted");
+        await this.finishReplay(cand, state, batches, false, "the replay was interrupted", "interrupted");
         return;
       }
     }

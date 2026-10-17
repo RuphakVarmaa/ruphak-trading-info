@@ -21,6 +21,7 @@ import { defaultCalendar, type TradingCalendar } from "../calendar/calendar";
 import { istDate, istIso } from "../clock";
 import type { EngineSettings, IndexId } from "../types";
 import { AGENT_HONESTY, AGENT_LIMITS, AGENT_POLICY } from "./constants";
+import { instructionVersion } from "./prompt";
 import type {
   AgentRiskSnapshot,
   AgentSettings,
@@ -415,7 +416,12 @@ function reviewView(r: ReviewRecord | null, costUsd: number | null): AgentReview
   };
 }
 
-function candidateView(c: CandidateRecord | null, currentGuidance: string): AgentCandidateView | null {
+/**
+ * The candidate card. baseGuidance is the text the candidate was written against (the reviewed session's; the diff's
+ * "before"), currentGuidance the text in use now; inUse says an APPROVED candidate's text is still the active one.
+ * The replay's counts and stop reason pass through when the record has them (older records lack them).
+ */
+function candidateView(c: CandidateRecord | null, currentGuidance: string, activeVersion: string | null): AgentCandidateView | null {
   if (!c) return null;
   const r = c.replay;
   return {
@@ -426,6 +432,8 @@ function candidateView(c: CandidateRecord | null, currentGuidance: string): Agen
     baseVersion: c.baseVersion,
     guidance: c.guidance,
     currentGuidance,
+    baseGuidance: c.baseGuidance ?? currentGuidance,
+    inUse: c.status === "APPROVED" && activeVersion !== null && instructionVersion(c.guidance) === activeVersion,
     rationale: c.rationale,
     wouldBeWrongIf: c.wouldBeWrongIf,
     replay: r
@@ -439,6 +447,12 @@ function candidateView(c: CandidateRecord | null, currentGuidance: string): Agen
           firesCurrent: r.firesCurrent,
           complete: r.complete,
           label: r.label,
+          ...(r.barsTotal !== undefined ? { barsTotal: r.barsTotal } : {}),
+          ...(r.gradedCandidate !== undefined ? { gradedCandidate: r.gradedCandidate } : {}),
+          ...(r.gradedCurrent !== undefined ? { gradedCurrent: r.gradedCurrent } : {}),
+          ...(r.gradedLive !== undefined ? { gradedLive: r.gradedLive } : {}),
+          ...(r.gradedCommon !== undefined ? { gradedCommon: r.gradedCommon } : {}),
+          ...(r.stopReason !== undefined ? { stopReason: r.stopReason } : {}),
         }
       : null,
     decidedAt: iso(c.decidedMs),
@@ -508,7 +522,7 @@ export function buildAgentView(a: AgentViewInput): AgentView {
     risk: riskView(a.risk),
     calibration: calibrationView(a.calibration, a.payoff, a.trades),
     review: reviewView(a.review, a.reviewCostUsd),
-    candidate: candidateView(a.candidate, a.baseGuidance),
+    candidate: candidateView(a.candidate, a.baseGuidance, a.instruction?.version ?? null),
     cost,
   };
 }

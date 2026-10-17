@@ -3,6 +3,7 @@ import type { AccountView } from "../api-types";
 import { TradingCalendar } from "../calendar/calendar";
 import { istAt, istIso, MINUTE_MS } from "../clock";
 import { AGENT_HONESTY } from "./constants";
+import { instructionVersion } from "./prompt";
 import { agentSample as s } from "./storeContract";
 import type { AgentSettings, CalibrationSummary, DecisionRecord, Finalist, IndexSnapshot } from "./types";
 import { buildAgentView, emptyAgentView, gateWords, snapshotFields, withAccountSettings, type AgentViewInput } from "./view";
@@ -233,6 +234,28 @@ describe("buildAgentView", () => {
     expect(v.cost.reflexLatencyMs).toEqual({ p50: 9_000, p95: 30_000 });
     expect(v.cost.capReached).toBe(false);
     expect(v.instructionVersion).toBe("core-1/1234abcd");
+  });
+
+  it("shows the text a candidate was written against, whether an approved one is still in use, and the replay's counts (D7, C5, D9)", () => {
+    const old = { bars: 60, graded: 40, brierCandidate: 0.24, brierCurrentReplayed: 0.25, brierCurrentLive: 0.26, firesCandidate: 2, firesCurrent: 3, hitRateCandidate: 0.5, hitRateCurrent: 0.33, costUsd: 0.11, complete: false, cursorBarMs: T, label: "in-sample, not proof" as const };
+    const replay = { ...old, barsTotal: 70, gradedCandidate: 45, gradedCurrent: 55, gradedLive: 58, gradedCommon: 40, stopReason: "cost_cap" as const };
+    const pending = buildAgentView(input({ candidate: s.candidate({ status: "PENDING", baseGuidance: "- The session's own text.", replay }) }));
+    expect(pending.candidate).toMatchObject({
+      baseGuidance: "- The session's own text.",
+      currentGuidance: "- Prefer NEUTRAL.",
+      inUse: false,
+      replay: { bars: 60, graded: 40, barsTotal: 70, gradedCandidate: 45, gradedCurrent: 55, gradedLive: 58, gradedCommon: 40, stopReason: "cost_cap" },
+    });
+    // A record written before these fields: the stated fallbacks, and no invented counts.
+    const before = buildAgentView(input({ candidate: s.candidate({ status: "PENDING", replay: old }) }));
+    expect(before.candidate?.baseGuidance).toBe("- Prefer NEUTRAL.");
+    for (const k of ["barsTotal", "gradedCandidate", "gradedCurrent", "gradedLive", "gradedCommon", "stopReason"]) expect(before.candidate?.replay).not.toHaveProperty(k);
+    // APPROVED and still the active text: in use. APPROVED and replaced since (a revert, a newer approval): not.
+    const guidance = s.candidate().guidance;
+    const active = buildAgentView(input({ instruction: s.instruction({ version: instructionVersion(guidance), guidance }), candidate: s.candidate({ status: "APPROVED" }) }));
+    expect(active.candidate?.inUse).toBe(true);
+    const replaced = buildAgentView(input({ candidate: s.candidate({ status: "APPROVED" }) }));
+    expect(replaced.candidate?.inUse).toBe(false);
   });
 
   it("reports a failed newest batch, a pending bar, the cost cap and a closed session", () => {

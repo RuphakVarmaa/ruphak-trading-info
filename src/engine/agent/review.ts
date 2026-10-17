@@ -53,7 +53,8 @@ const sameText = (a: string, b: string) => a.replace(/\s+/g, " ").trim() === b.r
 /**
  * The review's proposal as a candidate (status SCORING), or null when there is nothing to score: no candidate; a
  * guidance that is empty or longer than MAX_GUIDANCE_CHARS after trimming; the same text as the base (whitespace
- * aside); or a text containing the guidance marker.
+ * aside); or a text containing the guidance marker. `base` is the text the reviewed session ran with; the candidate
+ * keeps it (baseVersion, baseGuidance) as the "before" of its comparison.
  */
 export function candidateFrom(out: ReviewOut, base: InstructionRecord, date: string, nowMs: number, newId: () => string): CandidateRecord | null {
   const c = out.candidate;
@@ -67,6 +68,7 @@ export function candidateFrom(out: ReviewOut, base: InstructionRecord, date: str
     date,
     createdMs: nowMs,
     baseVersion: base.version,
+    baseGuidance: base.guidance,
     guidance,
     rationale: clean(c.rationale ?? "").slice(0, MAX_NOTE_CHARS),
     wouldBeWrongIf: clean(c.wouldBeWrongIf ?? "").slice(0, MAX_NOTE_CHARS),
@@ -95,12 +97,14 @@ export interface ReplayBar {
 }
 
 interface ArmScore {
-  brier: number | null;
-  /** Directional calls with a HIT or MISS label (the n behind the Brier score). */
-  graded: number;
+  /** Each call the run labelled HIT or MISS, keyed `${barCloseMs}:${finalistId}`: its stated confidence and label. */
+  labelled: Map<string, { p: number; y: 0 | 1 }>;
   fires: number;
   hitRate: number | null;
 }
+
+/** The key of one call in a replay: the candle and the finalist. */
+const callKey = (barCloseMs: number, finalistId: string) => `${barCloseMs}:${finalistId}`;
 
 function scoreArm(
   bars: readonly ReplayBar[],
@@ -110,7 +114,7 @@ function scoreArm(
   calendar: TradingCalendar,
   nowMs: number,
 ): ArmScore {
-  const rows: { p: number; y: 0 | 1 }[] = [];
+  const labelled = new Map<string, { p: number; y: 0 | 1 }>();
   let fires = 0;
   let fireGraded = 0;
   let fireHits = 0;
@@ -121,26 +125,29 @@ function scoreArm(
       if (!f || seen.has(d.finalistId)) continue;
       seen.add(d.finalistId);
       const o = labelDecision({ barCloseMs: bar.barCloseMs, direction: d.direction }, closes.get(f.index) ?? EMPTY, calendar, nowMs, archive?.get(f.index));
-      const labelled = (o.status === "HIT" || o.status === "MISS") && o.y !== null;
-      if (labelled) rows.push({ p: d.directionConfidence, y: o.y as 0 | 1 });
+      const isLabelled = (o.status === "HIT" || o.status === "MISS") && o.y !== null;
+      if (isLabelled) labelled.set(callKey(bar.barCloseMs, d.finalistId), { p: d.directionConfidence, y: o.y as 0 | 1 });
       if (modelFires(d, bar.snapshots[f.index] ?? null, f)) {
         fires++;
-        if (labelled) {
+        if (isLabelled) {
           fireGraded++;
           fireHits += o.y as number;
         }
       }
     }
   });
-  return { brier: brier(rows), graded: rows.length, fires, hitRate: fireGraded > 0 ? fireHits / fireGraded : null };
+  return { labelled, fires, hitRate: fireGraded > 0 ? fireHits / fireGraded : null };
 }
 
 /**
  * Scores a replay of the day's stored candles (SPEC §4.8 as amended, #14), bar by bar over `bars`:
  * - candidate: the candidate text, replayed; currentReplayed: the current text, replayed on the same inputs;
  *   current: the live decisions stored for those candles (reflex rows only, not escalations).
- * - Brier scores use the 30-minute hit label of each arm's directional calls; `graded` is the candidate's labelled
- *   calls. brierCurrentLive against brierCurrentReplayed shows how much the score moves with no change of text.
+ * - All three Brier scores use the 30-minute hit label, over exactly the calls (candle and finalist) that all three
+ *   runs labelled HIT or MISS: a text that answers NEUTRAL more, or a call that failed, can never win by being
+ *   scored on fewer or easier calls. `graded` = gradedCommon is that number; gradedCandidate, gradedCurrent and
+ *   gradedLive are each run's own labelled calls. brierCurrentLive against brierCurrentReplayed shows how much the
+ *   score moves with no change of text, on the same calls.
  * - fires count the calls passing the model side of the gate (modelFires); hit rates are those fires' share of hits.
  *   firesCurrent and hitRateCurrent are the replayed current text's.
  */
@@ -160,12 +167,14 @@ export function replayScore(a: {
   const candidate = score(a.candidate);
   const replayed = score(a.currentReplayed);
   const live = score(a.current.map((rows) => rows.filter((d) => d.source === "REFLEX")));
+  const common = [...candidate.labelled.keys()].filter((k) => replayed.labelled.has(k) && live.labelled.has(k));
+  const brierOn = (arm: ArmScore) => brier(common.map((k) => arm.labelled.get(k)!));
   return {
     bars: a.bars.length,
-    graded: candidate.graded,
-    brierCandidate: candidate.brier,
-    brierCurrentReplayed: replayed.brier,
-    brierCurrentLive: live.brier,
+    graded: common.length,
+    brierCandidate: brierOn(candidate),
+    brierCurrentReplayed: brierOn(replayed),
+    brierCurrentLive: brierOn(live),
     firesCandidate: candidate.fires,
     firesCurrent: replayed.fires,
     hitRateCandidate: candidate.hitRate,
@@ -174,5 +183,9 @@ export function replayScore(a: {
     complete: a.complete,
     cursorBarMs: a.bars.length > 0 ? a.bars[a.bars.length - 1].barCloseMs : null,
     label: REPLAY_LABEL,
+    gradedCandidate: candidate.labelled.size,
+    gradedCurrent: replayed.labelled.size,
+    gradedLive: live.labelled.size,
+    gradedCommon: common.length,
   };
 }

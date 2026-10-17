@@ -120,7 +120,11 @@ export interface SizingHint {
 export interface GateLine { gate: string; passed: boolean | null; detail: string }
 export interface GateVerdict { fired: boolean; lines: GateLine[]; codeToxic: string[]; codeRisk: AgentRiskLevel; effectiveRisk: AgentRiskLevel }
 export interface EdgeVerdict { passed: boolean; rows: GateResult[] }
-export interface SizingTrace { p: number; b: number; kelly: number; quarterKelly: number; riskPct: number; lots: number; riskRupees: number; limitedBy: string }
+export interface SizingTrace {
+  p: number; b: number; kelly: number; quarterKelly: number; riskPct: number; lots: number; riskRupees: number; limitedBy: string;
+  /** The effective (overlap-weighted) number of graded calls behind p (the decision's SizingHint.n); null when unknown. */
+  n?: number | null;
+}
 export interface DecisionExecution {
   t: number; gate: GateVerdict; action: AgentAction; detail: string;
   planId: string | null; positionId: string | null; tradingSymbol: string | null;
@@ -217,6 +221,8 @@ export interface ReviewRecord {
   date: string; status: "PENDING" | "RUNNING" | "DONE" | "FAILED" | "SKIPPED"; dueMs: number;
   startedMs: number | null; doneMs: number | null; model: string | null; callId: string | null;
   report: ReviewOut | null; calibration: CalibrationSummary | null; error: string | null;
+  /** Set when the review could not read the text the session ran with and read the active one instead. */
+  note?: string | null;
 }
 /**
  * Both texts replayed fresh on identical inputs (stored snapshots, finalists and brief context). brierCurrentLive scores
@@ -243,6 +249,8 @@ export interface CandidateRecord {
   id: string; date: string; createdMs: number; baseVersion: string; guidance: string; rationale: string; wouldBeWrongIf: string;
   status: "SCORING" | "PENDING" | "APPROVED" | "REJECTED" | "SUPERSEDED" | "FAILED";
   replay: ReplayResult | null; decidedMs: number | null; decidedBy: string | null;
+  /** The text the candidate was written against (baseVersion's): the text the reviewed session ran with. */
+  baseGuidance?: string;
 }
 export interface InstructionRecord { version: string; guidance: string; createdMs: number; source: "BUILTIN" | "CANDIDATE"; candidateId: string | null; active: boolean }
 /** A queued model job. It is marked RUNNING before its call; a RUNNING job found after a restart becomes FAILED, never re-run. */

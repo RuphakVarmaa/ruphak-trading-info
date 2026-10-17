@@ -1,5 +1,9 @@
 import { describe, expect, it } from "vitest";
 import { AGENT_DEFAULTS, parseAgentSettings } from "./config";
+import { MODEL_PRICES, isPricedModel } from "./cost";
+
+/** Priced models from the table other than the defaults (no model id is written out here). */
+const OTHERS = Object.keys(MODEL_PRICES).filter((m) => m !== AGENT_DEFAULTS.reflexModel && m !== AGENT_DEFAULTS.escalationModel);
 
 describe("parseAgentSettings", () => {
   it("defaults to off, the default models, a $3 cap and 8 escalations a day", () => {
@@ -18,10 +22,25 @@ describe("parseAgentSettings", () => {
   });
 
   it("takes the model vars, and falls back to the defaults for an empty or garbled one", () => {
-    const s = parseAgentSettings({ AGENT_MODEL: " model-a ", AGENT_ESCALATION_MODEL: "model-b", AGENT_REVIEW_MODEL: "model-c" });
-    expect([s.reflexModel, s.escalationModel, s.reviewModel]).toEqual(["model-a", "model-b", "model-c"]);
+    const [a, b, c] = OTHERS;
+    const s = parseAgentSettings({ AGENT_MODEL: ` ${a} `, AGENT_ESCALATION_MODEL: b, AGENT_REVIEW_MODEL: `${c}-20261001` });
+    expect([s.reflexModel, s.escalationModel, s.reviewModel]).toEqual([a, b, `${c}-20261001`]);
     const bad = parseAgentSettings({ AGENT_MODEL: "", AGENT_ESCALATION_MODEL: "two words", AGENT_REVIEW_MODEL: "x".repeat(101) });
     expect([bad.reflexModel, bad.escalationModel, bad.reviewModel]).toEqual([AGENT_DEFAULTS.reflexModel, AGENT_DEFAULTS.escalationModel, AGENT_DEFAULTS.reviewModel]);
+  });
+
+  it("accepts only a model the price table can price, and reports one it cannot (M4)", () => {
+    expect(OTHERS.length).toBeGreaterThanOrEqual(3);
+    for (const id of [AGENT_DEFAULTS.reflexModel, AGENT_DEFAULTS.escalationModel, ...OTHERS]) expect(isPricedModel(id)).toBe(true);
+    const heard: [string, string, string][] = [];
+    const s = parseAgentSettings({ AGENT_MODEL: "model-a", AGENT_ESCALATION_MODEL: "an-unpriced-model", AGENT_REVIEW_MODEL: "model-c-20261001" }, (...x) => heard.push(x));
+    expect([s.reflexModel, s.escalationModel, s.reviewModel]).toEqual([AGENT_DEFAULTS.reflexModel, AGENT_DEFAULTS.escalationModel, AGENT_DEFAULTS.reviewModel]);
+    const why = (fallback: string) => `no row in the agent's price table, so the daily cost cap could not hold; using ${fallback}`;
+    expect(heard).toEqual([
+      ["AGENT_MODEL", "model-a", why(AGENT_DEFAULTS.reflexModel)],
+      ["AGENT_ESCALATION_MODEL", "an-unpriced-model", why(AGENT_DEFAULTS.escalationModel)],
+      ["AGENT_REVIEW_MODEL", "model-c-20261001", why(AGENT_DEFAULTS.reviewModel)],
+    ]);
   });
 
   it("clamps the USD cap to 0..20 and uses 3 when it is not a number", () => {

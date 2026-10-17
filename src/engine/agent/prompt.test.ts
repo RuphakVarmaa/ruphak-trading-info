@@ -3,7 +3,7 @@ import { istAt, istIso } from "../clock";
 import { fakeBrief } from "../testing/fakeAgent";
 import { fnv1aHex } from "../util/hash";
 import { AGENT_DEFAULTS } from "./config";
-import { CHARS_PER_TOKEN_BOUND, PROSE_CHARS_PER_TOKEN, USER_MESSAGE_TOKEN_LIMIT } from "./constants";
+import { CHARS_PER_TOKEN_BOUND, PROSE_CHARS_PER_TOKEN, REVIEW_CALL, USER_MESSAGE_TOKEN_LIMIT } from "./constants";
 import { MODEL_PRICES } from "./cost";
 import { FINALIST_TEXT, compileFinalists } from "./finalists";
 import {
@@ -377,6 +377,117 @@ describe("the nightly review messages", () => {
     expect(text).toContain("Model calls: none.");
     expect(text).toContain("Trades (0):\n- none");
     expect(text).toContain("Decisions (0;");
+  });
+
+  it("names it when the guidance shown is not the session's own text", () => {
+    const text = reviewUser({ date: "2026-10-19", decisions: [base], trades: [], calibration, calls: [], guidance: "- The active text.", guidanceNote: "the session ran with guidance core-2/0bad0bad, whose text is not stored", closes: {} });
+    expect(text).toContain("Judgement guidance in force during the session:\n(Note: the session ran with guidance core-2/0bad0bad, whose text is not stored.)\n- The active text.");
+  });
+
+  describe("stays within REVIEW_CALL.userTokenBound (M1)", () => {
+    const D = "2026-10-19";
+    const B = (i: number) => istAt(D, "09:20") + i * 5 * 60_000;
+    const longId = (n: number, len: number) => `idea:adv-${D}-1:${"x".repeat(Math.max(0, len - 30))}-${n}`.slice(0, len);
+    const LONG_GATE = "setup_quality: setupQuality 1 is below the minimum of 2 needed to enter; the code also saw WIDE_SPREAD and STALE_OPTIONS on the put side";
+    const guidance = "- ".concat("Prefer NEUTRAL when the returns disagree and the flow is mixed. ".repeat(60)).slice(0, 3_000);
+    /** A whole day: 70 bars × the finalists, the longest gate texts, `esc` escalations (each with the reflex row it replaced). */
+    function day(o: { finalists: string[]; esc: number; fired?: (i: number, f: number) => boolean; idLen?: number }) {
+      const rows: DecisionRecord[] = [];
+      for (let i = 0; i < 70; i++) {
+        o.finalists.forEach((f, k) => {
+          const fired = o.fired?.(i, k) ?? false;
+          const row: DecisionRecord = {
+            ...base,
+            id: `d${i}-${k}`,
+            barCloseMs: B(i),
+            index: k % 2 ? "SENSEX" : "NIFTY",
+            finalistId: f,
+            direction: i % 3 ? "NEUTRAL" : "LONG",
+            directionConfidence: 0.4 + (i % 5) / 20,
+            setupQuality: 1,
+            regime: "MEAN_REVERTING",
+            riskState: "NEAR_LIMIT",
+            execution: {
+              ...base.execution!,
+              action: fired ? "SHADOW_ENTRY" : "NOT_EXECUTED",
+              gate: { ...base.execution!.gate, fired, lines: fired ? [] : [{ gate: "setup_quality", passed: false, detail: LONG_GATE }] },
+            },
+            outcome: { status: i > 65 ? "CENSORED" : "MISS", y: i > 65 ? null : 0, ret30Pct: i > 65 ? null : -0.123, paid: i > 65 ? null : false, source: i > 65 ? null : "BARS_5M", gradedMs: 0 },
+          };
+          rows.push(row);
+        });
+      }
+      for (let e = 0; e < o.esc; e++) {
+        const i = 3 + 8 * e;
+        const replaced = rows.find((r) => r.barCloseMs === B(i) && r.finalistId === o.finalists[0])!;
+        replaced.effective = false;
+        rows.push({ ...replaced, id: `e${e}`, source: "ESCALATION", effective: true, direction: "NEUTRAL", directionConfidence: 0.5 });
+      }
+      return rows;
+    }
+    const closes = { NIFTY: Array.from({ length: 75 }, (_, i) => ({ t: barTime(B(i)), c: 25_012.35 + i })), SENSEX: Array.from({ length: 75 }, (_, i) => ({ t: barTime(B(i)), c: 82_010.15 + i })) };
+    const calls = Array.from({ length: 80 }, (_, i) => call(i < 72 ? "REFLEX" : "ESCALATION", "OK", 0.001 + i / 1e6));
+    const est = (text: string) => Math.ceil(text.length / PROSE_CHARS_PER_TOKEN);
+    const decisionRows = (text: string) => text.split("\n").filter((l) => /^\d{2}:\d{2}(–\d{2}:\d{2} \(\d+ rows\))?\|/.test(l));
+    const six = ["gen:NIFTY", "gen:SENSEX", ...[1, 2, 3, 4].map((n) => longId(n, 40))];
+
+    it("keeps an ordinary day whole: every row, nothing folded", () => {
+      const rows = day({ finalists: ["gen:NIFTY", "gen:SENSEX"], esc: 3 });
+      const text = reviewUser({ date: D, decisions: rows.filter((r) => r.effective), trades: [trade], calibration, calls, guidance: BUILTIN_GUIDANCE, closes });
+      expect(est(text)).toBeLessThanOrEqual(REVIEW_CALL.userTokenBound);
+      expect(decisionRows(text)).toHaveLength(140);
+      expect(text).not.toContain("rows)|");
+    });
+
+    it("fits the longest day the agent can have: 70 bars × 6 finalists, 8 escalations, the longest gate texts, a 3,000-character guidance", () => {
+      const rows = day({ finalists: six, esc: 8, fired: (i, k) => k === 0 && i % 20 === 7 });
+      const text = reviewUser({ date: D, decisions: rows.filter((r) => r.effective), trades: [trade], calibration, calls, guidance, closes });
+      expect(est(text)).toBeLessThanOrEqual(REVIEW_CALL.userTokenBound);
+      // Every escalation's row and every row that fired is there.
+      expect(decisionRows(text).filter((l) => l.includes(`|${six[0]}|E|y|NEUTRAL|0.50|`))).toHaveLength(8);
+      expect(decisionRows(text).filter((l) => l.includes("|SHADOW_ENTRY|"))).toHaveLength(4);
+      expect(text).toContain(guidance);
+    });
+
+    it("folds quiet runs (and then drops superseded rows) when the rows are longer still, keeping every row that matters", () => {
+      // Finalist ids at the 120-character cell limit: the full table is about 40K tokens.
+      const ids = ["gen:NIFTY", "gen:SENSEX", ...[1, 2, 3, 4].map((n) => longId(n, 120))];
+      const rows = day({ finalists: ids, esc: 8, fired: (i, k) => k === 2 && i % 10 === 4 });
+      expect(rows).toHaveLength(428);
+      const text = reviewUser({ date: D, decisions: rows, trades: [trade], calibration, calls, guidance, closes });
+      expect(est(text)).toBeLessThanOrEqual(REVIEW_CALL.userTokenBound);
+      expect(text).toContain("a row whose bar is a time range stands for that many consecutive calls of one finalist that neither fired, traded nor exited");
+      const folded = decisionRows(text).filter((l) => / \(\d+ rows\)\|/.test(l));
+      expect(folded.length).toBeGreaterThan(0);
+      // A folded row: the time range, the count per direction, the confidence range and the outcome counts.
+      expect(folded[0]).toMatch(/^\d{2}:\d{2}–\d{2}:\d{2} \(\d+ rows\)\|(NIFTY|SENSEX)\|[^|]+\|R\|y\|\d+ (LONG|NEUTRAL)(, \d+ (LONG|NEUTRAL))?\|0\.\d{2}(–0\.\d{2})?\|-\|-\|-\|-\|not fired\|-\|\d+ (MISS|CENSORED)/);
+      // Every escalation row, every fired row and the traded row's decision are listed in full.
+      expect(decisionRows(text).filter((l) => l.includes("|E|y|"))).toHaveLength(8);
+      expect(decisionRows(text).filter((l) => l.includes("|SHADOW_ENTRY|"))).toHaveLength(7);
+      // The rows the folding stands for add up to every in-force row.
+      const counted = decisionRows(text).reduce((n, l) => n + Number(/ \((\d+) rows\)\|/.exec(l)?.[1] ?? 1), 0);
+      expect(counted).toBeLessThanOrEqual(rows.length);
+    });
+
+    it("keeps only the rows that fired, traded, exited or escalated, and counts the rest, when even folding is too long", () => {
+      // Every second row fired: nothing quiet is left to fold.
+      const ids = ["gen:NIFTY", "gen:SENSEX", ...[1, 2, 3, 4].map((n) => longId(n, 120))];
+      const rows = day({ finalists: ids, esc: 8, fired: (i, k) => (i + k) % 2 === 0 });
+      const text = reviewUser({ date: D, decisions: rows, trades: [trade], calibration, calls, guidance, closes });
+      expect(est(text)).toBeLessThanOrEqual(REVIEW_CALL.userTokenBound);
+      expect(text).toContain("only the rows that fired, traded or exited and the escalations' rows are listed");
+      expect(text).toMatch(/\(\d+ rows omitted\)/);
+      expect(decisionRows(text).filter((l) => l.includes("|E|y|"))).toHaveLength(8);
+      expect(decisionRows(text).every((l) => l.includes("|SHADOW_ENTRY|") || l.includes("|E|y|"))).toBe(true);
+    });
+
+    it("never exceeds the bound, even with every row firing and an over-long trade list", () => {
+      const ids = ["gen:NIFTY", "gen:SENSEX", ...[1, 2, 3, 4].map((n) => longId(n, 120))];
+      const rows = day({ finalists: ids, esc: 8, fired: () => true });
+      const trades = Array.from({ length: 600 }, (_, i) => ({ ...trade, positionId: `p${i}`, finalistId: longId(i, 120) }));
+      const text = reviewUser({ date: D, decisions: rows, trades, calibration, calls, guidance, closes });
+      expect(est(text)).toBeLessThanOrEqual(REVIEW_CALL.userTokenBound);
+    });
   });
 });
 

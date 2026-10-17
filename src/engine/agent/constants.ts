@@ -83,8 +83,23 @@ export const ESCALATION = {
 } as const;
 
 export const REFLEX_CALL = { effort: "low", maxTokens: 4_096, timeoutMs: 20_000, maxRetries: 1, abortMs: 45_000 } as const;
-/** The nightly review is streamed. It runs at dueIst and again at retryIst when the bar archive is not complete. */
-export const REVIEW_CALL = { effort: "high", maxTokens: 32_000, timeoutMs: 300_000, maxRetries: 1, abortMs: 540_000, replayBarsPerAlarm: 15, dueIst: "16:20", retryIst: "16:40" } as const;
+/**
+ * The nightly review is streamed. It runs at dueIst and again at retryIst when the bar archive is not complete.
+ * maxTokens is SPEC §4.7's 16K. userTokenBound bounds its user message in estimateProseTokens units (prompt.ts
+ * reviewUser folds rows until it fits), so the review's worst case is known before the day ends and escalations can
+ * leave room for it.
+ */
+export const REVIEW_CALL = {
+  effort: "high",
+  maxTokens: 16_000,
+  userTokenBound: 28_000,
+  timeoutMs: 300_000,
+  maxRetries: 1,
+  abortMs: 540_000,
+  replayBarsPerAlarm: 15,
+  dueIst: "16:20",
+  retryIst: "16:40",
+} as const;
 
 /**
  * The TE runner's step, inside TE's tick after main's exit polls. It runs under a time budget of

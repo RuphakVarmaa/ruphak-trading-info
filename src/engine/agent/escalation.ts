@@ -56,7 +56,20 @@ export interface EscalationBudget {
   worstUsd: number;
   /** The rest of the day's reflex calls at their worst case: kept back so an escalation never starves the reflex. */
   reflexReserveUsd: number;
+  /** Tonight's review at its worst case, kept back so escalations never skip it; 0 once today's review has run. */
+  reviewReserveUsd: number;
   capUsd: number;
+}
+
+/** Whether the escalation fits: spent + both reserves + its worst case within the cap (float noise allowed; not a number fails). */
+export function escalationFits(b: EscalationBudget): boolean {
+  return b.spentUsd + b.reflexReserveUsd + b.reviewReserveUsd + b.worstUsd <= b.capUsd + 1e-9;
+}
+
+/** Why an escalation does not fit the day's cap, in numbers. */
+export function costCapReason(b: EscalationBudget): string {
+  const review = b.reviewReserveUsd > 0 ? ` + $${b.reviewReserveUsd.toFixed(3)} kept for tonight's review` : "";
+  return `cost cap: $${b.spentUsd.toFixed(3)} spent + $${b.reflexReserveUsd.toFixed(3)} kept for the reflex${review} + $${b.worstUsd.toFixed(3)} worst case is over $${b.capUsd.toFixed(2)}`;
 }
 
 /** Reflex calls still to come on the bar's day after it (bars closing up to AGENT_POLICY.reflexLastBarIst). */
@@ -70,8 +83,8 @@ export function reflexCallsLeft(barCloseMs: number): number {
  * - the bar closed on a trading day at or before ESCALATION.lastBarIst;
  * - no escalation for the index was requested in the last ESCALATION.perIndexGapMs;
  * - today's escalations are below perDayCap;
- * - with a budget: spent + the reflex reserve + this worst case fit under the cap (without one, the caller checks
- *   the cost cap itself);
+ * - with a budget: spent + the reflex reserve + the review reserve + this worst case fit under the cap (without one,
+ *   the caller checks the cost cap itself);
  * - the job can start within ESCALATION.startWithinMs of the bar close.
  * Skipped requests made no call, so they count toward neither the gap nor the cap.
  */
@@ -94,12 +107,7 @@ export function escalationAllowed(
     return no(`${index} was escalated ${Math.round((nowMs - last.requestedMs) / 60_000)} min ago (at most one per ${ESCALATION.perIndexGapMs / 60_000} min)`);
   }
   if (!(asked.length < perDayCap)) return no(`today's cap of ${perDayCap} escalations is used`);
-  if (budget && !(budget.spentUsd + budget.reflexReserveUsd + budget.worstUsd <= budget.capUsd + 1e-9)) {
-    return no(
-      `cost cap: $${budget.spentUsd.toFixed(3)} spent + $${budget.reflexReserveUsd.toFixed(3)} kept for the reflex + ` +
-        `$${budget.worstUsd.toFixed(3)} worst case is over $${budget.capUsd.toFixed(2)}`,
-    );
-  }
+  if (budget && !escalationFits(budget)) return no(costCapReason(budget));
   if (nowMs - barCloseMs > ESCALATION.startWithinMs) return no(`too late to start: ${Math.round((nowMs - barCloseMs) / 1000)} s after the close (limit ${ESCALATION.startWithinMs / 1000} s)`);
   return { ok: true, reason: null };
 }
