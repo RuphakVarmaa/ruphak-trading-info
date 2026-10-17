@@ -12,6 +12,12 @@ const eslintConfig = defineConfig([
     "out/**",
     "build/**",
     "next-env.d.ts",
+    // Generated or separately linted code.
+    ".open-next/**",
+    "**/.wrangler/**",
+    "relay/**",
+    "**/worker-configuration.d.ts",
+    "cloudflare-env.d.ts",
   ]),
 ]);
 

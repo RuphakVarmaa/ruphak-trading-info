@@ -1,0 +1,2 @@
+# Append-only ledger written by several branches: keep every line from both sides on merge.
+reports/trials.jsonl merge=union

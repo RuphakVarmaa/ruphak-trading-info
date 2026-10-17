@@ -1,0 +1,20 @@
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "lib": ["ES2023"],
+    "module": "ESNext",
+    "moduleResolution": "bundler",
+    "types": ["./worker-configuration.d.ts"],
+    "strict": true,
+    "noEmit": true,
+    "skipLibCheck": true,
+    "resolveJsonModule": true,
+    "isolatedModules": true,
+    "verbatimModuleSyntax": false,
+    "noFallthroughCasesInSwitch": true,
+    // src/lib/options/outlook.ts (used by the advisor) imports through the dashboard's "@/" alias.
+    "paths": { "@/*": ["../../src/*"] }
+  },
+  "include": ["src/**/*.ts", "../../src/engine/**/*.ts", "../../src/db/**/*.ts"],
+  "exclude": ["../../src/**/*.test.ts", "../../src/engine/__fixtures__/**"]
+}

@@ -1,38 +1,69 @@
 'use client';
 
-import { useState, useEffect } from 'react';
-import type { CommodityPrice, StackHolding } from '@/utils/api';
+import { useState, useSyncExternalStore, type ReactNode } from 'react';
+import { C, pnlColor } from '@/components/shared/colors';
+import { Btn, inputStyle, microLabel, StatTile, tableStyle, tableWrap, td, tdNum, th, theadRow, thNum } from '@/components/shared/ui';
+import type { PricePoint, StackHolding } from '@/utils/api';
 import { calculateStackSummary } from '@/utils/api';
 
 function generateId(): string {
   return Date.now().toString(36) + Math.random().toString(36).slice(2, 6);
 }
 
+// Holdings live in localStorage, read through useSyncExternalStore: the server render and
+// hydration see an empty list, then the stored holdings appear (no effect needed).
+const STORAGE_KEY = 'ruphak-stack-holdings';
+const EMPTY_HOLDINGS: StackHolding[] = [];
+const holdingsListeners = new Set<() => void>();
+let cachedRaw: string | null | undefined;
+let cachedHoldings: StackHolding[] = EMPTY_HOLDINGS;
+
 function loadHoldings(): StackHolding[] {
-  if (typeof window === 'undefined') return [];
+  let raw: string | null = null;
   try {
-    const raw = localStorage.getItem('ruphak-stack-holdings');
-    return raw ? JSON.parse(raw) : [];
-  } catch { return []; }
+    raw = localStorage.getItem(STORAGE_KEY);
+  } catch { raw = null; }
+  if (raw !== cachedRaw) {
+    cachedRaw = raw;
+    try {
+      const parsed = raw ? JSON.parse(raw) : [];
+      cachedHoldings = Array.isArray(parsed) ? parsed : EMPTY_HOLDINGS;
+    } catch { cachedHoldings = EMPTY_HOLDINGS; }
+  }
+  return cachedHoldings;
+}
+
+const serverHoldings = () => EMPTY_HOLDINGS;
+
+function subscribeHoldings(cb: () => void) {
+  holdingsListeners.add(cb);
+  const onStorage = (e: StorageEvent) => { if (e.key === STORAGE_KEY || e.key === null) cb(); };
+  window.addEventListener('storage', onStorage);
+  return () => {
+    holdingsListeners.delete(cb);
+    window.removeEventListener('storage', onStorage);
+  };
 }
 
 function saveHoldings(holdings: StackHolding[]) {
   if (typeof window === 'undefined') return;
-  localStorage.setItem('ruphak-stack-holdings', JSON.stringify(holdings));
+  localStorage.setItem(STORAGE_KEY, JSON.stringify(holdings));
+  holdingsListeners.forEach((l) => l());
 }
 
 interface StackTrackerProps {
-  prices: CommodityPrice[];
+  /** US dollars per troy ounce by metal name; empty until the live prices load. */
+  prices: PricePoint[];
 }
 
 export default function StackTracker({ prices }: StackTrackerProps) {
-  const [holdings, setHoldings] = useState<StackHolding[]>([]);
+  const holdings = useSyncExternalStore(subscribeHoldings, loadHoldings, serverHoldings);
   const [showForm, setShowForm] = useState(false);
   const [form, setForm] = useState({ metal: 'gold', type: 'bar', weight: '', weightUnit: 'oz' as const, purchasePrice: '', purchaseDate: '', notes: '' });
 
-  useEffect(() => { setHoldings(loadHoldings()); }, []);
-
   const summary = calculateStackSummary(holdings, prices);
+  // Without live prices the holdings have no value yet: show dashes, never $0.
+  const priced = prices.length > 0 || holdings.length === 0;
 
   const addHolding = () => {
     if (!form.weight || !form.purchasePrice) return;
@@ -46,101 +77,77 @@ export default function StackTracker({ prices }: StackTrackerProps) {
       purchaseDate: form.purchaseDate || new Date().toISOString().split('T')[0],
       notes: form.notes,
     };
-    const updated = [...holdings, h];
-    setHoldings(updated);
-    saveHoldings(updated);
+    saveHoldings([...holdings, h]);
     setForm({ metal: 'gold', type: 'bar', weight: '', weightUnit: 'oz', purchasePrice: '', purchaseDate: '', notes: '' });
     setShowForm(false);
   };
 
   const removeHolding = (id: string) => {
-    const updated = holdings.filter(h => h.id !== id);
-    setHoldings(updated);
-    saveHoldings(updated);
+    saveHoldings(holdings.filter(h => h.id !== id));
   };
 
+  const money = (n: number) => `$${n.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+  const field = (label: string, control: ReactNode) => (
+    <label style={{ display: 'block', minWidth: 0 }}>
+      <span style={{ ...microLabel, display: 'block', marginBottom: 5 }}>{label}</span>
+      {control}
+    </label>
+  );
+
   return (
-    <div style={{ padding: '24px 30px', background: '#0a0a0a' }}>
-      <div style={{ marginBottom: 6, display: 'flex', alignItems: 'center', gap: 8 }}>
-        <span style={{ fontSize: 10, color: '#ffb300', fontWeight: 700, letterSpacing: '0.08em', textTransform: 'uppercase' }}>
-          PERSONAL TRACKER
-        </span>
-      </div>
-      <h3 style={{ margin: '0 0 6px', fontSize: 26, fontWeight: 400, color: '#e0e0e0', fontFamily: 'Georgia, serif' }}>
-        Your Precious Metals Stack
-      </h3>
-      <p style={{ margin: '0 0 20px', fontSize: 13, color: '#666' }}>
-        Track your physical metals holdings with real-time valuations. Data stored locally in your browser.
-      </p>
-
-      {/* Summary Cards */}
-      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 12, marginBottom: 20 }}>
-        <div style={{ background: '#111', border: '1px solid #222', borderRadius: 8, padding: 16 }}>
-          <div style={{ fontSize: 9, color: '#666', textTransform: 'uppercase', letterSpacing: '0.06em', marginBottom: 6 }}>Total Value</div>
-          <div style={{ fontSize: 22, fontWeight: 700, color: '#ffb300', fontFamily: 'monospace' }}>
-            ${summary.totalValueUsd.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
-          </div>
-        </div>
-        <div style={{ background: '#111', border: '1px solid #222', borderRadius: 8, padding: 16 }}>
-          <div style={{ fontSize: 9, color: '#666', textTransform: 'uppercase', letterSpacing: '0.06em', marginBottom: 6 }}>Cost Basis</div>
-          <div style={{ fontSize: 22, fontWeight: 700, color: '#ccc', fontFamily: 'monospace' }}>
-            ${summary.totalCostBasis.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
-          </div>
-        </div>
-        <div style={{ background: '#111', border: '1px solid #222', borderRadius: 8, padding: 16 }}>
-          <div style={{ fontSize: 9, color: '#666', textTransform: 'uppercase', letterSpacing: '0.06em', marginBottom: 6 }}>Gain/Loss</div>
-          <div style={{ fontSize: 22, fontWeight: 700, color: summary.totalGainLoss >= 0 ? '#4caf50' : '#f44336', fontFamily: 'monospace' }}>
-            {summary.totalGainLoss >= 0 ? '+' : ''}${summary.totalGainLoss.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
-          </div>
-        </div>
-        <div style={{ background: '#111', border: '1px solid #222', borderRadius: 8, padding: 16 }}>
-          <div style={{ fontSize: 9, color: '#666', textTransform: 'uppercase', letterSpacing: '0.06em', marginBottom: 6 }}>Return %</div>
-          <div style={{ fontSize: 22, fontWeight: 700, color: summary.totalGainLossPercent >= 0 ? '#4caf50' : '#f44336', fontFamily: 'monospace' }}>
-            {summary.totalGainLossPercent >= 0 ? '+' : ''}{summary.totalGainLossPercent.toFixed(2)}%
-          </div>
-        </div>
+    <div style={{ display: 'grid', gap: 14 }}>
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(150px, 1fr))', gap: 12 }}>
+        <StatTile label="Total value" value={priced ? money(summary.totalValueUsd) : '—'} color={C.textStrong} sub={priced ? undefined : 'waiting for live prices'} />
+        <StatTile label="Cost basis" value={money(summary.totalCostBasis)} color={C.textSoft} />
+        <StatTile label="Gain / loss" value={priced ? `${summary.totalGainLoss >= 0 ? '+' : ''}${money(summary.totalGainLoss)}` : '—'} color={priced ? pnlColor(summary.totalGainLoss) : C.muted} />
+        <StatTile label="Return" value={priced ? `${summary.totalGainLossPercent >= 0 ? '+' : ''}${summary.totalGainLossPercent.toFixed(2)}%` : '—'} color={priced ? pnlColor(summary.totalGainLossPercent) : C.muted} />
       </div>
 
-      {/* Per-Metal Breakdown */}
       {summary.holdings.length > 0 && (
-        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(200px, 1fr))', gap: 10, marginBottom: 20 }}>
-          {summary.holdings.map(h => (
-            <div key={h.metal} style={{ background: '#151515', border: '1px solid #222', borderRadius: 6, padding: 12 }}>
-              <div style={{ fontSize: 12, fontWeight: 700, color: '#ffb300', marginBottom: 6 }}>{h.metal}</div>
-              <div style={{ fontSize: 11, color: '#aaa', marginBottom: 2 }}>{h.totalOz.toFixed(2)} oz</div>
-              <div style={{ fontSize: 11, color: '#eee', fontFamily: 'monospace' }}>${h.totalValue.toLocaleString(undefined, { maximumFractionDigits: 2 })}</div>
-              <div style={{ fontSize: 10, color: h.gainLoss >= 0 ? '#4caf50' : '#f44336', fontFamily: 'monospace' }}>
-                {h.gainLoss >= 0 ? '+' : ''}{h.gainLossPercent.toFixed(2)}%
-              </div>
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(200px, 1fr))', gap: 10 }}>
+          {summary.holdings.map((h) => (
+            <div key={h.metal} style={{ background: C.panel, border: `1px solid ${C.border}`, borderRadius: 12, padding: 14 }}>
+              <div style={{ fontSize: 13, fontWeight: 700, color: C.textStrong, marginBottom: 6 }}>{h.metal}</div>
+              <div style={{ fontSize: 12, color: C.muted }}>{h.totalOz.toFixed(2)} oz</div>
+              <div style={{ fontSize: 13, color: C.textStrong, fontFamily: 'var(--font-num)', marginTop: 2 }}>{priced ? money(h.totalValue) : '—'}</div>
+              {priced && (
+                <div style={{ fontSize: 12, color: pnlColor(h.gainLoss), fontFamily: 'var(--font-num)' }}>
+                  {h.gainLoss >= 0 ? '+' : ''}
+                  {h.gainLossPercent.toFixed(2)}%
+                </div>
+              )}
             </div>
           ))}
         </div>
       )}
 
-      {/* Holdings Table */}
       {holdings.length > 0 && (
-        <div style={{ border: '1px solid #222', borderRadius: 8, overflow: 'hidden', marginBottom: 16 }}>
-          <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 11 }}>
+        <div style={tableWrap}>
+          <table style={tableStyle}>
             <thead>
-              <tr style={{ background: '#151515', color: '#888', textTransform: 'uppercase', fontSize: 9, letterSpacing: '0.06em' }}>
-                <th style={{ padding: '10px 12px', textAlign: 'left' }}>Metal</th>
-                <th style={{ padding: '10px 12px', textAlign: 'left' }}>Type</th>
-                <th style={{ padding: '10px 12px', textAlign: 'right' }}>Weight</th>
-                <th style={{ padding: '10px 12px', textAlign: 'right' }}>Purchase Price</th>
-                <th style={{ padding: '10px 12px', textAlign: 'right' }}>Date</th>
-                <th style={{ padding: '10px 12px', textAlign: 'center' }}></th>
+              <tr style={theadRow}>
+                <th style={th}>Metal</th>
+                <th style={th}>Type</th>
+                <th style={thNum}>Weight</th>
+                <th style={thNum}>Purchase price</th>
+                <th style={thNum}>Date</th>
+                <th style={th}></th>
               </tr>
             </thead>
             <tbody>
-              {holdings.map(h => (
-                <tr key={h.id} style={{ borderTop: '1px solid #1a1a1a' }}>
-                  <td style={{ padding: '8px 12px', color: '#ffb300', fontWeight: 600 }}>{h.metal}</td>
-                  <td style={{ padding: '8px 12px', color: '#aaa' }}>{h.type}</td>
-                  <td style={{ padding: '8px 12px', color: '#eee', textAlign: 'right', fontFamily: 'monospace' }}>{h.weight} {h.weightUnit}</td>
-                  <td style={{ padding: '8px 12px', color: '#eee', textAlign: 'right', fontFamily: 'monospace' }}>${h.purchasePrice.toLocaleString()}</td>
-                  <td style={{ padding: '8px 12px', color: '#888', textAlign: 'right' }}>{h.purchaseDate}</td>
-                  <td style={{ padding: '8px 12px', textAlign: 'center' }}>
-                    <button onClick={() => removeHolding(h.id)} style={{ background: 'none', border: 'none', color: '#f44336', cursor: 'pointer', fontSize: 14 }}>✕</button>
+              {holdings.map((h) => (
+                <tr key={h.id}>
+                  <td style={{ ...td, color: C.textStrong, fontWeight: 600 }}>{h.metal}</td>
+                  <td style={td}>{h.type}</td>
+                  <td style={tdNum}>
+                    {h.weight} {h.weightUnit}
+                  </td>
+                  <td style={tdNum}>${h.purchasePrice.toLocaleString()}</td>
+                  <td style={{ ...tdNum, color: C.muted }}>{h.purchaseDate}</td>
+                  <td style={{ ...td, textAlign: 'center' }}>
+                    <Btn variant="ghost" aria-label={`Remove ${h.metal} ${h.type}`} onClick={() => removeHolding(h.id)} style={{ color: C.red }}>
+                      ✕
+                    </Btn>
                   </td>
                 </tr>
               ))}
@@ -149,54 +156,45 @@ export default function StackTracker({ prices }: StackTrackerProps) {
         </div>
       )}
 
-      {/* Add Button / Form */}
       {!showForm ? (
-        <button onClick={() => setShowForm(true)} style={{ background: '#ffb300', color: '#000', border: 'none', padding: '10px 24px', borderRadius: 6, fontSize: 12, fontWeight: 700, cursor: 'pointer' }}>
-          + Add Holding
-        </button>
+        <div>
+          <Btn variant="gold" size="md" onClick={() => setShowForm(true)}>
+            + Add holding
+          </Btn>
+        </div>
       ) : (
-        <div style={{ background: '#111', border: '1px solid #222', borderRadius: 8, padding: 20 }}>
-          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 12, marginBottom: 12 }}>
-            <div>
-              <label style={{ fontSize: 9, color: '#888', textTransform: 'uppercase', display: 'block', marginBottom: 4 }}>Metal</label>
-              <select value={form.metal} onChange={e => setForm({ ...form, metal: e.target.value })} style={{ width: '100%', background: '#1a1a1a', border: '1px solid #333', borderRadius: 4, color: '#eee', padding: '8px', fontSize: 12 }}>
+        <div style={{ background: C.panel, border: `1px solid ${C.border}`, borderRadius: 12, padding: 18, display: 'grid', gap: 12 }}>
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(150px, 1fr))', gap: 12 }}>
+            {field(
+              'Metal',
+              <select value={form.metal} onChange={(e) => setForm({ ...form, metal: e.target.value })} style={inputStyle}>
                 <option value="gold">Gold</option>
                 <option value="silver">Silver</option>
                 <option value="platinum">Platinum</option>
                 <option value="copper">Copper</option>
-              </select>
-            </div>
-            <div>
-              <label style={{ fontSize: 9, color: '#888', textTransform: 'uppercase', display: 'block', marginBottom: 4 }}>Type</label>
-              <select value={form.type} onChange={e => setForm({ ...form, type: e.target.value })} style={{ width: '100%', background: '#1a1a1a', border: '1px solid #333', borderRadius: 4, color: '#eee', padding: '8px', fontSize: 12 }}>
+              </select>,
+            )}
+            {field(
+              'Type',
+              <select value={form.type} onChange={(e) => setForm({ ...form, type: e.target.value })} style={inputStyle}>
                 <option value="bar">Bar</option>
                 <option value="coin">Coin</option>
                 <option value="round">Round</option>
-                <option value="ETF">ETF Share</option>
-              </select>
-            </div>
-            <div>
-              <label style={{ fontSize: 9, color: '#888', textTransform: 'uppercase', display: 'block', marginBottom: 4 }}>Weight ({form.weightUnit})</label>
-              <input type="number" value={form.weight} onChange={e => setForm({ ...form, weight: e.target.value })} placeholder="e.g. 1" style={{ width: '100%', background: '#1a1a1a', border: '1px solid #333', borderRadius: 4, color: '#eee', padding: '8px', fontSize: 12, boxSizing: 'border-box' }} />
-            </div>
-          </div>
-          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 2fr', gap: 12, marginBottom: 14 }}>
-            <div>
-              <label style={{ fontSize: 9, color: '#888', textTransform: 'uppercase', display: 'block', marginBottom: 4 }}>Purchase Price ($)</label>
-              <input type="number" value={form.purchasePrice} onChange={e => setForm({ ...form, purchasePrice: e.target.value })} placeholder="e.g. 2400" style={{ width: '100%', background: '#1a1a1a', border: '1px solid #333', borderRadius: 4, color: '#eee', padding: '8px', fontSize: 12, boxSizing: 'border-box' }} />
-            </div>
-            <div>
-              <label style={{ fontSize: 9, color: '#888', textTransform: 'uppercase', display: 'block', marginBottom: 4 }}>Purchase Date</label>
-              <input type="date" value={form.purchaseDate} onChange={e => setForm({ ...form, purchaseDate: e.target.value })} style={{ width: '100%', background: '#1a1a1a', border: '1px solid #333', borderRadius: 4, color: '#eee', padding: '8px', fontSize: 12, boxSizing: 'border-box' }} />
-            </div>
-            <div>
-              <label style={{ fontSize: 9, color: '#888', textTransform: 'uppercase', display: 'block', marginBottom: 4 }}>Notes</label>
-              <input type="text" value={form.notes} onChange={e => setForm({ ...form, notes: e.target.value })} placeholder="Optional" style={{ width: '100%', background: '#1a1a1a', border: '1px solid #333', borderRadius: 4, color: '#eee', padding: '8px', fontSize: 12, boxSizing: 'border-box' }} />
-            </div>
+                <option value="ETF">ETF share</option>
+              </select>,
+            )}
+            {field(`Weight (${form.weightUnit})`, <input type="number" value={form.weight} onChange={(e) => setForm({ ...form, weight: e.target.value })} placeholder="e.g. 1" style={inputStyle} />)}
+            {field('Purchase price ($)', <input type="number" value={form.purchasePrice} onChange={(e) => setForm({ ...form, purchasePrice: e.target.value })} placeholder="e.g. 2400" style={inputStyle} />)}
+            {field('Purchase date', <input type="date" value={form.purchaseDate} onChange={(e) => setForm({ ...form, purchaseDate: e.target.value })} style={inputStyle} />)}
+            {field('Notes', <input type="text" value={form.notes} onChange={(e) => setForm({ ...form, notes: e.target.value })} placeholder="Optional" style={inputStyle} />)}
           </div>
           <div style={{ display: 'flex', gap: 10 }}>
-            <button onClick={addHolding} style={{ background: '#ffb300', color: '#000', border: 'none', padding: '8px 20px', borderRadius: 5, fontSize: 11, fontWeight: 700, cursor: 'pointer' }}>Save</button>
-            <button onClick={() => setShowForm(false)} style={{ background: 'transparent', color: '#888', border: '1px solid #333', padding: '8px 20px', borderRadius: 5, fontSize: 11, cursor: 'pointer' }}>Cancel</button>
+            <Btn variant="gold" size="md" onClick={addHolding}>
+              Save
+            </Btn>
+            <Btn variant="outline" size="md" onClick={() => setShowForm(false)}>
+              Cancel
+            </Btn>
           </div>
         </div>
       )}

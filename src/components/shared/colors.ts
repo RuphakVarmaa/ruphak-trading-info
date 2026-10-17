@@ -1,0 +1,189 @@
+/**
+ * Dashboard palette and semantic colour helpers. Colour is never the only channel:
+ * every helper here has a glyph/word companion (see glyph helpers) used next to it.
+ */
+import type {
+  EngineMode,
+  EnginePhase,
+  EventTaxonomy,
+  ImpactLevel,
+  Regime,
+  SessionPhase,
+  Severity,
+  SourceStatus,
+  Stance,
+} from "@/engine/api-types";
+import type { IntelItem } from "@/utils/api";
+
+/** Each colour is a CSS variable defined once, in :root (app/globals.css). */
+const token = (name: string) => `var(--c-${name})`;
+
+export const C = {
+  bg: token("bg"),
+  panel: token("panel"),
+  panelAlt: token("panelAlt"),
+  panelDeep: token("panelDeep"),
+  border: token("border"),
+  borderStrong: token("borderStrong"),
+  borderSoft: token("borderSoft"),
+  thead: token("thead"),
+  navActive: token("navActive"),
+  track: token("track"),
+  /** Accessible terracotta: text, links, buttons. */
+  gold: token("gold"),
+  /** Brand terracotta for lines, bars and tints only (not text). */
+  goldBright: token("goldBright"),
+  green: token("green"),
+  red: token("red"),
+  orange: token("orange"),
+  blue: token("blue"),
+  purple: token("purple"),
+  text: token("text"),
+  textStrong: token("textStrong"),
+  textSoft: token("textSoft"),
+  textDim: token("textDim"),
+  muted: token("muted"),
+  muted2: token("muted2"),
+  muted3: token("muted3"),
+} as const;
+
+// --- moved from IntelFeed -------------------------------------------------------
+
+export function getSeverityColor(severity: IntelItem["severity"] | Severity): string {
+  if (severity === "FLASH") return C.red;
+  if (severity === "ALERT") return C.orange;
+  return C.blue;
+}
+
+export function getCategoryColor(category: IntelItem["category"]): string {
+  if (category === "MINING") return C.gold;
+  if (category === "ENERGY") return C.orange;
+  if (category === "MILITARY") return C.red;
+  if (category === "MARITIME") return C.blue;
+  return C.muted;
+}
+
+// --- direction, stance, P&L ----------------------------------------------------------
+
+export function dirColor(d: number): string {
+  return d > 0 ? C.green : d < 0 ? C.red : C.muted;
+}
+
+export function dirGlyph(d: number): string {
+  return d > 0 ? "▲" : d < 0 ? "▼" : "▬";
+}
+
+export function stanceColor(s: Stance): string {
+  return s === "BULLISH" ? C.green : s === "BEARISH" ? C.red : C.muted;
+}
+
+export function stanceGlyph(s: Stance): string {
+  return s === "BULLISH" ? "▲" : s === "BEARISH" ? "▼" : "▬";
+}
+
+export function pnlColor(n: number): string {
+  return n > 0 ? C.green : n < 0 ? C.red : C.textDim;
+}
+
+// --- engine / market state ------------------------------------------------------------
+
+export function regimeColor(r: Regime): string {
+  switch (r) {
+    case "TREND_UP":
+      return C.green;
+    case "TREND_DOWN":
+      return C.red;
+    case "HIGH_VOL":
+      return C.orange;
+    case "EVENT":
+      return C.purple;
+    default:
+      return C.blue;
+  }
+}
+
+export function regimeGlyph(r: Regime): string {
+  switch (r) {
+    case "TREND_UP":
+      return "↗";
+    case "TREND_DOWN":
+      return "↘";
+    case "HIGH_VOL":
+      return "≋";
+    case "EVENT":
+      return "⚡";
+    default:
+      return "↔";
+  }
+}
+
+export function modeColor(m: EngineMode | "BACKTEST"): string {
+  return m === "LIVE" ? C.red : m === "PAPER" ? C.blue : C.purple;
+}
+
+export function phaseColor(p: SessionPhase): string {
+  return p === "OPEN" ? C.green : p === "PRE_OPEN" ? C.orange : p === "HOLIDAY" ? C.purple : C.muted;
+}
+
+export function enginePhaseColor(p: EnginePhase): string {
+  if (p === "OPEN") return C.green;
+  if (p === "PREMARKET" || p === "CLOSING") return C.orange;
+  if (p === "DEGRADED" || p === "KILLED") return C.red;
+  return C.muted;
+}
+
+export function healthColor(ok: boolean): string {
+  return ok ? C.green : C.red;
+}
+
+export function impactColor(level: ImpactLevel): string {
+  return level === "HIGH" ? C.red : level === "MED" ? C.orange : C.muted;
+}
+
+export function sourceStatusColor(s: SourceStatus): string {
+  return s === "ACTIVE" ? C.green : s === "PROBATION" ? C.orange : C.red;
+}
+
+export function sourceStatusGlyph(s: SourceStatus): string {
+  return s === "ACTIVE" ? "●" : s === "PROBATION" ? "◐" : "○";
+}
+
+export function taxonomyColor(t: EventTaxonomy): string {
+  switch (t) {
+    case "MACRO_POLICY":
+    case "US_MARKET_FED":
+      return C.blue;
+    case "GEOPOLITICAL":
+    case "DOMESTIC_POLITICS_REGULATION":
+      return C.red;
+    case "CHINA":
+      return "#b83b5e";
+    case "COMMODITY_SHOCK":
+      return C.orange;
+    case "WEATHER_DISASTER":
+      return "#1f7a72";
+    case "FII_FLOWS":
+      return C.purple;
+    case "CORPORATE_EARNINGS":
+      return C.gold;
+    default:
+      return C.muted;
+  }
+}
+
+/** Age dot: fresh (<60 s) green, delayed (<180 s) amber, stale red. */
+export function ageColor(ageMs: number | null, stale = false): string {
+  if (ageMs == null) return C.muted3;
+  if (stale || ageMs > 180_000) return C.red;
+  if (ageMs > 60_000) return C.orange;
+  return C.green;
+}
+
+/** A colour with alpha, e.g. alpha('#f44336', 0.12). A CSS variable (a theme colour) is mixed with transparent instead. */
+export function alpha(hex: string, a: number): string {
+  if (!hex.startsWith("#")) return `color-mix(in srgb, ${hex} ${Math.round(a * 100)}%, transparent)`;
+  const h = hex.replace("#", "");
+  const full = h.length === 3 ? h.split("").map((c) => c + c).join("") : h;
+  const n = parseInt(full, 16);
+  return `rgba(${(n >> 16) & 255},${(n >> 8) & 255},${n & 255},${a})`;
+}

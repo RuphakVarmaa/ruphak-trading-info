@@ -1,0 +1,527 @@
+/**
+ * The options agent inside main's exit-poll waits (TradingEngineDO.pollWait), on the real TE methods and a real
+ * AgentRunner, on fake timers where each D1 round trip, AgentDO call and flow read takes its own time.
+ * Main is positioned, so its tick is its trading cycle and exits, then two 10 s exit-poll waits each followed by its
+ * poll exits, then the agent's step under its budget. When main's own work reaches 26-28 s, the step gets 2.5 s or
+ * less (or is skipped), too little to submit a bar after its other parts; the waits then catch up on everything but
+ * the decisions:
+ * - the latest closed bar is submitted within its 4-minute window;
+ * - a drawdown halt flattens the agent within one wait;
+ * - main's waits stay 10 s and its next alarm stays 30 s after the tick's start;
+ * - a kill of main or of every account that squares off still goes first: the agent's work in a wait stops, and main's
+ *   square-off and the relay panic come exactly as early as without the agent;
+ * - a follower's square-off keeps main's timing too, and stops none of the agent's own work (its drawdown halt, the
+ *   model's exits).
+ * Main's own reads and writes take 60 ms and its Telegram alerts 300 ms, and production's two follower accounts are
+ * there, so a kill spends 0.4 s (main) to 1.5 s (every account) on its switches before the square-off starts. A wait or
+ * step that starts in that time must not set the agent's switch, close its position or send to the AgentDO first. In
+ * the kill tests the AgentDO has a fresh batch whose decision calls a crisis on NIFTY, where the agent holds a tagged
+ * paper position, so a step that is already running when the kill comes in has a batch to take and an exit to make.
+ */
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+
+vi.mock("cloudflare:workers", () => ({
+  DurableObject: class {
+    constructor(
+      public ctx: unknown,
+      public env: unknown,
+    ) {}
+  },
+  WorkerEntrypoint: class {
+    constructor(
+      public ctx: unknown,
+      public env: unknown,
+    ) {}
+  },
+}));
+// The bar's completeness and its snapshots need a day of market data; both are stood in for (agentRunner.test.ts does too).
+vi.mock("../../../../src/engine/agent/causal", async (orig) => ({ ...(await orig<typeof import("../../../../src/engine/agent/causal")>()), latestClosedBarMs: vi.fn() }));
+vi.mock("../../../../src/engine/agent/agentCycle", async (orig) => ({ ...(await orig<typeof import("../../../../src/engine/agent/agentCycle")>()), buildReflexInput: vi.fn() }));
+
+import { ACCOUNTS, accountConfig } from "../../../../src/engine/accounts";
+import { buildReflexInput } from "../../../../src/engine/agent/agentCycle";
+import { latestClosedBarMs } from "../../../../src/engine/agent/causal";
+import { AGENT_POLICY } from "../../../../src/engine/agent/constants";
+import type { AgentMode, AgentPositionTag, AgentSettings, DecisionRecord, IndexSnapshot, ReflexBatch } from "../../../../src/engine/agent/types";
+import { TradingCalendar } from "../../../../src/engine/calendar/calendar";
+import { istAt, istDate } from "../../../../src/engine/clock";
+import { DEFAULT_CONFIG } from "../../../../src/engine/config";
+import { MarketContextStore } from "../../../../src/engine/pipeline/marketContext";
+import type { CycleReport } from "../../../../src/engine/pipeline/tradingCycle";
+import { sequentialIds, silentLogger, type OptionQuoteSource, type Repository } from "../../../../src/engine/ports";
+import { accountRepository } from "../../../../src/engine/repo/accountRepo";
+import { InMemoryRepository } from "../../../../src/engine/repo/memory";
+import type { MarketSnapshot, OptionContract, Position, TradingMode } from "../../../../src/engine/types";
+import { AgentRunner, HOT_KEY, type AgentHot } from "../agent/agentRunner";
+import { TradingEngineDO, type AdminResult } from "./TradingEngineDO";
+
+const DAY = "2026-10-19"; // a Monday, a trading day
+const BAR = istAt(DAY, "10:00"); // the latest closed 5-minute bar
+const TICK0 = BAR + 30_000; // main's first tick after it
+const cfg = DEFAULT_CONFIG;
+const agentCfg = accountConfig(cfg, "agent");
+const cal = new TradingCalendar();
+const SETTINGS: AgentSettings = { mode: "shadow", reflexModel: "r", escalationModel: "d", reviewModel: "d", dailyUsdCap: 3, escalationsPerDay: 8 };
+/** A slow session: 60 ms a D1 round trip, 100 ms an AgentDO call, 300 ms a flow read (the step alone stopped submitting from 25.5 s). */
+const D1_MS = 60;
+const RPC_MS = 100;
+const FLOW_MS = 300;
+/** Main's own exit polls after each wait. */
+const POLL_EXITS_MS = 1_000;
+/** Main's (and each follower's) D1 round trip and Telegram alert: a kill awaits both for each account before its square-off. */
+const MAIN_D1_MS = 60;
+const MAIN_ALERT_MS = 300;
+
+const sleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
+type KillReq = { engaged: boolean; squareOff: boolean; reason: string };
+
+/** The members of TradingEngineDO these tests set or call (most are private in the class). */
+interface Te {
+  agentHold: number;
+  agentPreempt: (() => void) | null;
+  runTick(): Promise<number>;
+  pollWait(ms: number, cal: TradingCalendar, report: CycleReport): Promise<void>;
+  agentStep(report: CycleReport, calendar: TradingCalendar, degraded: boolean, tickStartMs: number): Promise<void>;
+  setKillSwitch(req: KillReq, actor: string, account?: string): Promise<AdminResult>;
+}
+
+/** A repository whose every call answers `latMs` later (a D1 round trip); calls sent together overlap. */
+function slowRepo<T extends object>(target: T, latMs: number): T {
+  return new Proxy(target, {
+    get(t, p, r) {
+      const v = Reflect.get(t, p, r);
+      if (typeof v === "function") {
+        return (...args: unknown[]) => {
+          const out = (v as (...a: unknown[]) => unknown).apply(t, args);
+          return out instanceof Promise ? out.then(async (x) => (await sleep(latMs), x)) : out;
+        };
+      }
+      if (v && typeof v === "object" && !Array.isArray(v) && !(v instanceof Map)) return slowRepo(v as object, latMs);
+      return v;
+    },
+  });
+}
+
+const report = (t: number): CycleReport => ({ t, phase: "OPEN", features: {}, convictions: {}, pressure: {}, decisions: [], entries: [], halted: null, errors: [], snapshot: {} as unknown as MarketSnapshot, perf: [] });
+
+/** A two-sided book around ₹100, as the runner's own live quotes would give. */
+const QUOTES: OptionQuoteSource = {
+  kind: "upstox",
+  quote: async (c, ctx) => ({ symbol: c.tradingSymbol, t: ctx.t, ltp: 100, bid: 99.5, ask: 100.5, bidQty: 650, askQty: 650, source: "upstox" }),
+};
+const CONTRACT: OptionContract = { index: "NIFTY", exchange: "NSE", tradingSymbol: "NIFTY26O2725000CE", growwSymbol: "NSE-NIFTY-27Oct26-25000-CE", exchangeToken: "50001", expiry: "2026-10-27", strike: 25_000, type: "CE", lotSize: 65, tickSize: 0.05 };
+
+function agentPosition(): Position {
+  return {
+    id: "pos-1",
+    planId: "plan-1",
+    index: "NIFTY",
+    side: "BULL",
+    contract: CONTRACT,
+    mode: "PAPER",
+    qty: 65,
+    avgEntry: 120,
+    entryMs: istAt(DAY, "09:40"),
+    entryCharges: 30,
+    status: "OPEN",
+    markPremium: 120,
+    markMs: istAt(DAY, "09:59"),
+    peakPremium: 120,
+    unrealized: 0,
+    stops: { stopPct: -30, targetPct: 50, trailActivatePct: 30, trailGivebackPct: 50, timeStopMs: istAt(DAY, "12:00"), squareOffMs: istAt(DAY, "15:05") },
+    horizonMin: 120,
+    convictionAtEntry: 0.5,
+    regimeAtEntry: "TREND_UP",
+    dominantSource: "VOL_REGIME",
+    attribution: [{ source: "VOL_REGIME", share: 1 }],
+    eventKeysAtEntry: [],
+    maePct: 0,
+    mfePct: 0,
+  };
+}
+
+/** The model calls a crisis on NIFTY: a decision exit (AGENT_CRISIS) for the agent's tagged NIFTY position. */
+const CRISIS_DECISION: DecisionRecord = {
+  id: "d-crisis",
+  date: DAY,
+  barCloseMs: BAR,
+  index: "NIFTY",
+  finalistKind: "GENERIC",
+  source: "REFLEX",
+  callId: "c-1",
+  instructionVersion: "core-1/test",
+  effective: true,
+  finalistId: "gen:NIFTY",
+  regime: "CRISIS",
+  direction: "NEUTRAL",
+  directionConfidence: 0.5,
+  toxicFlow: false,
+  setupQuality: 1,
+  riskState: "SAFE",
+  reason: "test",
+  sizing: null,
+  execution: null,
+  outcome: null,
+};
+const CRISIS_BATCH: ReflexBatch = {
+  barCloseMs: BAR,
+  date: DAY,
+  status: "OK",
+  error: null,
+  callId: "c-1",
+  instructionVersion: "core-1/test",
+  finalists: [],
+  briefId: null,
+  briefContext: null,
+  decisions: [CRISIS_DECISION],
+  exitOnly: [],
+  payoff: { b: 1, n: 0 },
+  completedMs: BAR + 40_000,
+};
+/** The tag of the agent's paper position: the model's exits apply to it. */
+const TAG: AgentPositionTag = { finalistId: "gen:NIFTY", decisionId: "d-entry", index: "NIFTY", side: "LONG" };
+
+interface Harness {
+  te: Te;
+  base: InMemoryRepository;
+  /** The agent's book without the D1 delay, for setting up and reading back. */
+  agentRepo: Repository;
+  kept: Map<string, unknown>;
+  /** When each bar reached the AgentDO, and which. */
+  submits: { at: number; bar: number }[];
+  /** When each takeDecisions reached the AgentDO. */
+  takes: number[];
+  records: number[];
+  alerts: string[];
+  /** Per tick: when main's poll exits started after each wait, from the tick's start. */
+  polls: number[][];
+  /** Main's next alarm after each tick. */
+  alarms: number[];
+  tickStarts: number[];
+  panicAt: number | null;
+}
+
+/**
+ * TE positioned, its own work `mainWorkMs` a tick (its cycle and exits, two 10 s waits, 1 s of poll exits after each),
+ * with a real AgentRunner on the same slow D1, or with no agent. `agentDoHangs`: the AgentDO never answers. `batch`:
+ * what takeDecisions answers (none by default); `mode` and `hot`: the agent's mode and its stored state.
+ */
+function harness(o: {
+  mainWorkMs: number;
+  agent?: boolean;
+  agentDoHangs?: boolean;
+  mode?: AgentMode;
+  batch?: (afterBarMs: number) => ReflexBatch | null;
+  hot?: Partial<AgentHot>;
+}): Harness {
+  // Each run starts at TICK0, without what an earlier run in the same test left running.
+  vi.clearAllTimers();
+  vi.setSystemTime(TICK0);
+  const base = new InMemoryRepository(cfg, TICK0);
+  const slow = slowRepo(base as unknown as Repository, D1_MS);
+  const kept = new Map<string, unknown>();
+  if (o.hot) kept.set(HOT_KEY, structuredClone(o.hot));
+  // The object returned: TE and the fakes below write into it as they run.
+  const h: Harness = {
+    te: Object.create(TradingEngineDO.prototype) as Te,
+    base,
+    agentRepo: accountRepository(base, "agent", agentCfg, () => Date.now()),
+    kept,
+    submits: [],
+    takes: [],
+    records: [],
+    alerts: [],
+    polls: [],
+    alarms: [],
+    tickStarts: [],
+    panicAt: null,
+  };
+  const answer = async <T,>(value: T): Promise<T> => {
+    await (o.agentDoHangs ? new Promise<void>(() => {}) : sleep(RPC_MS));
+    return value;
+  };
+  const marketContext = new MarketContextStore();
+  marketContext.set("NIFTY", { spot: 25_000, vix: 13, t: TICK0 });
+  marketContext.set("SENSEX", { spot: 82_000, vix: 13, t: TICK0 });
+  const runner = new AgentRunner({
+    account: { spec: ACCOUNTS.agent, cfg: agentCfg, repo: accountRepository(slow, "agent", agentCfg, () => Date.now()) },
+    mainRepo: slow,
+    settings: { ...SETTINGS, mode: o.mode ?? SETTINGS.mode },
+    storage: {
+      get: async <T,>(k: string) => (kept.has(k) ? (structuredClone(kept.get(k)) as T) : undefined),
+      put: async <T,>(k: string, v: T) => void kept.set(k, structuredClone(v)),
+    },
+    agentDo: {
+      submitBar: async (input) => {
+        h.submits.push({ at: Date.now(), bar: input.barCloseMs });
+        return answer({ accepted: true, reason: null });
+      },
+      takeDecisions: async (afterBarMs) => {
+        h.takes.push(Date.now());
+        return answer(o.batch?.(afterBarMs) ?? null);
+      },
+      recordExecution: async () => {
+        h.records.push(Date.now());
+        await answer(undefined);
+      },
+    },
+    feed: { getOptionFlowAsOf: async () => (await sleep(FLOW_MS), null) },
+    quotes: QUOTES,
+    instruments: { expiries: async () => [], resolve: async () => null, strikes: async () => [] },
+    marketContext,
+    alerts: { send: async (text) => (h.alerts.push(text), true) },
+    logger: silentLogger,
+    calendar: cal,
+    newId: sequentialIds("ag"),
+  });
+  const cycleMs = o.mainWorkMs - 2 * (10_000 + POLL_EXITS_MS);
+  // Main's own reads and writes and its alerts take real time, so a kill's writes and alerts take real time too.
+  const mainRepo = slowRepo(base as unknown as Repository, MAIN_D1_MS);
+  const mainAlerts = { send: async () => (await sleep(MAIN_ALERT_MS), true) };
+  // Production's follower accounts: a kill of every account sets each one's switch, audit row and alert in turn.
+  const followers = (["small10k", "small5k"] as const).map((id) => {
+    const fcfg = accountConfig(cfg, id);
+    return { spec: ACCOUNTS[id], cfg: fcfg, repo: accountRepository(mainRepo, id, fcfg, () => Date.now()), alerts: mainAlerts, errors: 0, copy: {} };
+  });
+  Object.assign(h.te, {
+    rt: { logger: silentLogger, repo: mainRepo, calendar: cal, cfg },
+    hot: { consecutiveErrors: 0, lastError: null, lastTickMs: null, lastOffHoursSnapshotMs: 0, lastReconcileMs: 0, reconcileMismatches: 0 },
+    ticking: null,
+    tickSoon: false,
+    followers,
+    relay: {
+      panic: async () => {
+        h.panicAt = Date.now();
+        return { status: 200, body: "ok" };
+      },
+    },
+    alerts: mainAlerts,
+    ctx: { storage: { setAlarm: async (ms: number) => void h.alarms.push(ms), put: async () => {}, getAlarm: async () => null } },
+    agentEnabled: o.agent !== false,
+    agentInitError: null,
+    agent: o.agent !== false ? runner : null,
+    agentAlerts: { send: async () => true },
+    agentPreempt: null,
+    agentStepping: false,
+    agentHold: 0,
+    agentKillsDue: 0,
+    agentKillOwed: false,
+    allResets: 0,
+    writeHeartbeat: async () => {},
+    kickQuoteRecorder: () => {},
+    calendarFor: () => cal,
+    // tick() while positioned: the cycle and exits, two exit-poll waits each followed by the poll exits, the agent's step.
+    tick: async function (this: Te, now: number): Promise<number> {
+      h.tickStarts.push(now);
+      const r = report(now);
+      const polls: number[] = [];
+      h.polls.push(polls);
+      await sleep(cycleMs);
+      for (const ms of [10_000, 10_000]) {
+        await this.pollWait(ms, cal, r);
+        polls.push(Date.now() - now);
+        await sleep(POLL_EXITS_MS);
+      }
+      await this.agentStep(r, cal, false, now);
+      return now + 30_000;
+    },
+  });
+  return h;
+}
+
+/** Runs main's alarm ticks 30 s apart from TICK0, as the alarm loop does. */
+async function ticks(h: Harness, n: number): Promise<void> {
+  for (let k = 0; k < n; k++) {
+    await vi.advanceTimersByTimeAsync(TICK0 + k * 30_000 - Date.now());
+    const running = h.te.runTick();
+    await vi.advanceTimersByTimeAsync(29_000);
+    await running;
+  }
+}
+
+/** Earlier losses: today starts at ₹4,20,000 against a ₹5,00,000 peak (16%, past the 15% limit). */
+async function seedDrawdown(h: Harness): Promise<void> {
+  h.kept.set(HOT_KEY, { date: DAY, peakEquity: 500_000 });
+  await h.agentRepo.ledger.save({ date: "2026-10-16", mode: "PAPER", realized: -80_000, unrealized: 0, charges: 0, trades: 4, wins: 0, losses: 4, consecutiveLosses: 4, ordersPlaced: 8, maxIntradayDrawdown: 80_000, peakEquity: 500_000, startEquity: 500_000, updatedMs: TICK0 - 3 * 86_400_000 });
+  await h.agentRepo.positions.save(agentPosition());
+}
+
+beforeEach(() => {
+  vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "Date"] });
+  vi.setSystemTime(TICK0);
+  vi.mocked(latestClosedBarMs).mockReset().mockReturnValue({ barCloseMs: BAR, complete: ["NIFTY", "SENSEX"] });
+  vi.mocked(buildReflexInput)
+    .mockReset()
+    .mockImplementation((a) => ({ barCloseMs: a.barCloseMs, date: istDate(a.barCloseMs), builtMs: a.nowMs, snapshots: { NIFTY: { c: 1 } as unknown as IndexSnapshot }, tokensEst: {}, closes: { NIFTY: 25_000 }, problems: [] }));
+});
+afterEach(() => vi.useRealTimers());
+
+describe("main at 26-28 s of tick work: the agent catches up in main's exit-poll waits", () => {
+  for (const mainWorkMs of [26_000, 27_000, 28_000]) {
+    const cycleMs = mainWorkMs - 2 * (10_000 + POLL_EXITS_MS);
+
+    it(`${mainWorkMs / 1000} s: the bar is submitted within its 4-minute window, in the first wait after it`, async () => {
+      const h = harness({ mainWorkMs });
+      await ticks(h, 8);
+      expect(h.submits.map((s) => s.bar)).toEqual([BAR]);
+      expect(h.submits[0].at - BAR).toBeLessThanOrEqual(AGENT_POLICY.maxDecisionAgeMs);
+      expect(h.submits[0].at).toBeLessThan(TICK0 + cycleMs + 10_000);
+      expect((h.kept.get(HOT_KEY) as AgentHot).lastSubmittedBarMs).toBe(BAR);
+    });
+
+    it(`${mainWorkMs / 1000} s: a drawdown halt flattens the agent within one wait`, async () => {
+      const h = harness({ mainWorkMs });
+      await seedDrawdown(h);
+      await ticks(h, 1);
+      const [trade] = await h.base.trades.recent(5, "PAPER@agent" as TradingMode);
+      expect(trade).toMatchObject({ positionId: "pos-1", exitReason: "KILL_SWITCH" });
+      expect(trade.exitMs).toBeLessThanOrEqual(TICK0 + cycleMs + 10_000);
+      expect(await h.agentRepo.settings.get()).toMatchObject({ killSwitch: true, killReason: "max drawdown 15% reached: re-arm on the Agent page" });
+      expect((h.kept.get(HOT_KEY) as AgentHot).ddHalt).toBe(true);
+      expect((await h.base.audit.recent(50)).filter((a) => a.action === "kill")).toHaveLength(1);
+      expect(h.alerts.filter((a) => /from its peak equity/.test(a))).toHaveLength(1);
+    });
+
+    for (const agentDoHangs of [false, true]) {
+      it(`${mainWorkMs / 1000} s: main's waits stay 10 s and its next alarm 30 s after the tick's start${agentDoHangs ? ", with a silent AgentDO" : ""}`, async () => {
+        const h = harness({ mainWorkMs, agentDoHangs });
+        await seedDrawdown(h);
+        await ticks(h, 4);
+        expect(h.polls).toEqual(Array.from({ length: 4 }, () => [cycleMs + 10_000, cycleMs + 10_000 + POLL_EXITS_MS + 10_000]));
+        expect(h.alarms).toEqual([1, 2, 3, 4].map((k) => TICK0 + k * 30_000));
+      });
+    }
+  }
+});
+
+describe("a kill that squares off, with main's own writes and alerts taking real time", () => {
+  /** Main's work in these ticks: its cycle and exits for 4 s, the waits from 4 s and from 15 s, the agent's step from 26 s. */
+  const MAIN_WORK_MS = 26_000;
+  const CYCLE_MS = MAIN_WORK_MS - 2 * (10_000 + POLL_EXITS_MS);
+
+  /**
+   * A kill that squares off `atMs` after an alarm tick's start (Telegram /kill "all", a kill of main, or of one
+   * follower), with main holding a LIVE position, the agent a tagged paper one, and the AgentDO a fresh batch whose
+   * decision calls a crisis on it (in paper mode a running step would close the position on it). Times are from the kill.
+   */
+  async function kill(o: { agent: boolean; target: "all" | "main" | "small10k" | "small5k"; atMs: number }) {
+    const h = harness({ mainWorkMs: MAIN_WORK_MS, agent: o.agent, mode: "paper", batch: (after) => (after < BAR ? CRISIS_BATCH : null), hot: { date: DAY, positions: { "pos-1": TAG } } });
+    await h.base.positions.save({ id: "live-1", mode: "LIVE", status: "OPEN", index: "NIFTY", contract: { tradingSymbol: "NIFTY-LIVE" } } as unknown as Position);
+    await h.agentRepo.positions.save(agentPosition());
+    void h.te.runTick();
+    await vi.advanceTimersByTimeAsync(o.atMs);
+    const killAt = Date.now();
+    const killing = h.te.setKillSwitch({ engaged: true, squareOff: true, reason: "owner /kill" }, "telegram", o.target);
+    await vi.advanceTimersByTimeAsync(120_000);
+    expect((await killing).ok).toBe(true);
+    const from = (at: number) => at - killAt;
+    return {
+      squareOffStart: from(h.tickStarts[1]),
+      alarms: h.alarms.map(from),
+      panic: from(h.panicAt ?? Number.NaN),
+      // Batches taken, execution records and bars that reached the AgentDO from the kill on.
+      sent: [...h.takes, ...h.records, ...h.submits.map((s) => s.at)].filter((at) => at >= killAt).map(from),
+      hold: h.te.agentHold,
+      preempt: h.te.agentPreempt,
+      agentKill: (await h.agentRepo.settings.get()).killSwitch,
+      // When the agent's own kill switch went on (its audit rows carry the actor "…@agent"), and when its position closed.
+      agentKillRows: (await h.base.audit.recent(100)).filter((a) => a.action === "kill" && a.actor.endsWith("@agent")).map((a) => from(a.ts)),
+      agentExits: (await h.base.trades.recent(10, "PAPER@agent" as TradingMode)).map((t) => from(t.exitMs)),
+      agentExitReasons: (await h.base.trades.recent(10, "PAPER@agent" as TradingMode)).map((t) => t.exitReason),
+    };
+  }
+
+  /**
+   * Main squares off and panics exactly as without the agent; the agent sends nothing to the AgentDO after the kill,
+   * and its switch, its kill audit rows and its exit all come after the panic.
+   */
+  async function expectMainFirst(target: "all" | "main", atMs: number): Promise<void> {
+    const without = await kill({ agent: false, target, atMs });
+    const withAgent = await kill({ agent: true, target, atMs });
+    const at = `${target}, kill at ${atMs} ms`;
+    expect(Number.isFinite(without.panic), at).toBe(true);
+    expect(withAgent.squareOffStart, at).toBe(without.squareOffStart);
+    expect(withAgent.panic, at).toBe(without.panic);
+    expect(withAgent.sent, at).toEqual([]);
+    expect(withAgent.hold, at).toBe(0);
+    expect(withAgent.preempt, at).toBeNull();
+    expect(withAgent.agentKill, at).toBe(true);
+    expect(withAgent.agentKillRows.length, at).toBeGreaterThan(0);
+    expect(withAgent.agentKillRows.filter((ms) => ms < withAgent.panic), at).toEqual([]);
+    expect(withAgent.agentExits, at).toHaveLength(1);
+    expect(withAgent.agentExits.filter((ms) => ms < withAgent.panic), at).toEqual([]);
+  }
+
+  for (const target of ["all", "main"] as const) {
+    // Into its kill coupling and exits, its drawdown check, and its risk row and book: always before its bar.
+    for (const afterMs of [30, 200, 400]) {
+      it(`${target}, ${afterMs} ms into the agent's work in a wait: main squares off and panics as without the agent; the agent starts nothing more`, async () => {
+        await expectMainFirst(target, CYCLE_MS + afterMs);
+      });
+    }
+    // A kill up to 1.6 s before a wait or the step starts lands while main's (and the followers') switches are being
+    // written and alerted: the agent is held from the kill's start, not from main's square-off. A step already running
+    // takes its batch about 0.8 s in and sends the exit the model calls for about 1.25 s in: a kill before then stops it
+    // before either (an exit sent before the kill still goes through).
+    for (const [name, startMs, untilMs] of [
+      ["the first wait", CYCLE_MS, 400],
+      ["the second wait", CYCLE_MS + 10_000 + POLL_EXITS_MS, 400],
+      ["the agent's step", MAIN_WORK_MS, 1_200],
+    ] as const) {
+      it(`${target}, a kill from 1.6 s before ${name} starts to ${untilMs / 1000} s after: main first, then the agent`, async () => {
+        for (let atMs = startMs - 1_600; atMs <= startMs + untilMs; atMs += 100) await expectMainFirst(target, atMs);
+      });
+    }
+  }
+
+  // A follower's kill that squares off holds the agent's step, from before the follower's switch is written until the
+  // tick in progress is done: main's square-off tick and its next alarm come exactly as without the agent.
+  for (const target of ["small10k", "small5k"] as const) {
+    it(`${target}, a kill in either wait or from 1.6 s before the agent's step starts to 0.4 s after: main's timing as without the agent`, async () => {
+      const times = [CYCLE_MS + 200, CYCLE_MS + 10_000 + POLL_EXITS_MS + 200];
+      for (let atMs = MAIN_WORK_MS - 1_600; atMs <= MAIN_WORK_MS + 400; atMs += 100) times.push(atMs);
+      for (const atMs of times) {
+        const without = await kill({ agent: false, target, atMs });
+        const withAgent = await kill({ agent: true, target, atMs });
+        const at = `${target}, kill at ${atMs} ms`;
+        expect(withAgent.squareOffStart, at).toBe(without.squareOffStart);
+        expect(withAgent.alarms, at).toEqual(without.alarms);
+        expect(withAgent.hold, at).toBe(0);
+        expect(withAgent.preempt, at).toBeNull();
+        // The follower's kill is that account's alone: the agent's switch stays off, and only the model's own call may
+        // close its position (a step in progress carries on, and the square-off tick runs a step of its own).
+        expect(withAgent.agentKill, at).toBe(false);
+        expect(withAgent.agentExitReasons.filter((r) => r !== "SIGNAL_FLIP"), at).toEqual([]);
+      }
+    });
+  }
+
+  it("small10k, a kill after the agent's step took its batch: the model's exit still goes out (the agent is not being killed)", async () => {
+    const atMs = MAIN_WORK_MS + 1_000;
+    const without = await kill({ agent: false, target: "small10k", atMs });
+    const withAgent = await kill({ agent: true, target: "small10k", atMs });
+    expect(withAgent.squareOffStart).toBe(without.squareOffStart);
+    expect(withAgent.alarms).toEqual(without.alarms);
+    // The model's CRISIS exit (it was recorded as not executed, and the position stayed open).
+    expect(withAgent.agentExitReasons).toEqual(["SIGNAL_FLIP"]);
+    expect(withAgent.agentKill).toBe(false);
+    expect(withAgent.hold).toBe(0);
+  });
+
+  it("small10k, a kill before the first wait: the agent's drawdown halt still flattens it within one wait", async () => {
+    const h = harness({ mainWorkMs: MAIN_WORK_MS });
+    await seedDrawdown(h);
+    void h.te.runTick();
+    await vi.advanceTimersByTimeAsync(500);
+    const killing = h.te.setKillSwitch({ engaged: true, squareOff: true, reason: "owner" }, "dashboard", "small10k");
+    await vi.advanceTimersByTimeAsync(120_000);
+    expect((await killing).ok).toBe(true);
+    // In the first wait, as without the kill (it waited for the next tick after the follower's square-off tick: the
+    // waits ran only the agent's code exits and no step ran until then).
+    const [trade] = await h.base.trades.recent(5, "PAPER@agent" as TradingMode);
+    expect(trade).toMatchObject({ positionId: "pos-1", exitReason: "KILL_SWITCH" });
+    expect(trade.exitMs).toBeLessThanOrEqual(TICK0 + CYCLE_MS + 10_000);
+    expect(await h.agentRepo.settings.get()).toMatchObject({ killSwitch: true, killReason: "max drawdown 15% reached: re-arm on the Agent page" });
+    expect(h.te.agentHold).toBe(0);
+  });
+});

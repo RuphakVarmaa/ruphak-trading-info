@@ -1,0 +1,225 @@
+// Trading engine Worker: Durable Objects (trading loop, ingestion), cron jobs, the
+// event-scoring queue consumer, and the EngineAdmin RPC entrypoint used by the dashboard.
+// Resource IDs are placeholders; see README "Cloudflare setup" for the create commands.
+{
+  "$schema": "../../node_modules/wrangler/config-schema.json",
+  "name": "ruphak-engine",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-09-30",
+  "compatibility_flags": ["nodejs_compat"],
+  // Public workers.dev URL for /ops/* (POST, Bearer ADMIN_TOKEN) and GET /health (phase and heartbeat only).
+  // The Telegram webhook ignores requests without the configured secret and chat ID.
+  "workers_dev": true,
+  "preview_urls": false,
+  "observability": { "enabled": true, "head_sampling_rate": 1 },
+  "limits": { "cpu_ms": 60000 },
+  // Cron day-of-week: Cloudflare numbers Sunday as 1, so weekdays are spelled MON-FRI.
+  "triggers": {
+    "crons": [
+      "*/10 * * * *",
+      "1-59/2 3-10 * * MON-FRI",
+      "* 3-10 * * MON-FRI",
+      "30 2 * * MON-FRI",
+      "40 2 * * MON-FRI",
+      "0 3 * * MON-FRI",
+      "30 10 * * MON-FRI",
+      // 16:15 IST: append the session's settled 5-minute bars to D1 bars_5m (docs/DATA.md).
+      "45 10 * * MON-FRI",
+      "30 14 * * *"
+    ]
+  },
+  "durable_objects": {
+    "bindings": [
+      { "name": "ENGINE_DO", "class_name": "TradingEngineDO" },
+      { "name": "INGEST_DO", "class_name": "IngestDO" },
+      { "name": "BACKTEST_DO", "class_name": "BacktestDO" },
+      { "name": "MARKET_FEED_DO", "class_name": "MarketFeedDO" },
+      // The Advisor tab's plain-English brief (Claude Opus 5.5 + web research), run on demand and once a trading day.
+      { "name": "ADVISOR_DO", "class_name": "AdvisorDO" },
+      // The options agent (a paper experiment, docs/AGENT.md): model calls, decisions, cost ledger and nightly review.
+      // It never places orders; the trading DO executes its decisions on the agent's own paper account.
+      { "name": "AGENT_DO", "class_name": "AgentDO" }
+    ]
+  },
+  "migrations": [
+    { "tag": "v1", "new_sqlite_classes": ["TradingEngineDO", "IngestDO"] },
+    { "tag": "v2", "new_sqlite_classes": ["BacktestDO"] },
+    // Upstox Market Data Feed V3 WebSocket (1-second index levels and option quotes).
+    { "tag": "v3", "new_sqlite_classes": ["MarketFeedDO"] },
+    // The advisor's brief, run state and history (AdvisorDO).
+    { "tag": "v4", "new_sqlite_classes": ["AdvisorDO"] },
+    // The options agent's records in its own SQLite (AgentDO).
+    { "tag": "v5", "new_sqlite_classes": ["AgentDO"] }
+  ],
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "ruphak-trading",
+      "database_id": "caa9f5cb-a414-414a-8ec3-e68e11fa1137",
+      "migrations_dir": "../../migrations"
+    }
+  ],
+  "kv_namespaces": [{ "binding": "KV", "id": "4e99b0bc3d9d4dfb83ddc4edcddcdccc" }],
+  "queues": {
+    "producers": [{ "binding": "SCORE_QUEUE", "queue": "events-to-score" }],
+    "consumers": [
+      {
+        "queue": "events-to-score",
+        "max_batch_size": 10,
+        "max_batch_timeout": 20,
+        "max_retries": 3,
+        "max_concurrency": 2,
+        "dead_letter_queue": "events-to-score-dlq"
+      },
+      // Messages that failed 3 times are scored with the lexicon scorer only.
+      { "queue": "events-to-score-dlq", "max_batch_size": 10, "max_batch_timeout": 30, "max_retries": 1 }
+    ]
+  },
+  // Optional R2 archive for dated instrument masters and backtest results. To enable it, add
+  //   "r2_buckets": [{ "binding": "R2", "bucket_name": "ruphak-data" }]
+  // and create the bucket (npx wrangler r2 bucket create ruphak-data).
+  // Workers AI runs the news scorer (GLM-5.3 by default) with no API key inside the Worker.
+  "ai": { "binding": "AI" },
+  "vars": {
+    "ENGINE_ENV": "prod",
+    "LIVE_TRADING": "false",
+    "GROWW_DATA_VIA_RELAY": "false",
+    // Paper practice quota on the main account: one practice trade per hour window 09:30–14:30.
+    // "main" every session, "main:YYYY-MM-DD" that IST date only, "off" to stop.
+    "PRACTICE_QUOTA": "main:2026-10-16",
+    // News scorer: "workers-ai" (AI binding) or "anthropic" (needs the ANTHROPIC_API_KEY secret).
+    "LLM_PROVIDER": "anthropic",
+    // Claude Sonnet 5.5 scores every story; Claude Opus 5.5 re-scores the LARGE/EXTREME ones (at most 4 a cycle).
+    "LLM_MODEL": "claude-sonnet-5-5",
+    "LLM_EFFORT": "low",
+    "LLM_ESCALATE_MODEL": "claude-opus-5-5",
+    "LLM_ESCALATE_EFFORT": "high",
+    "LLM_ESCALATE_MAX_PER_CYCLE": "4",
+    // Daily caps; the lexicon scorer takes over when one is reached. At GLM-5.3 list prices
+    // ($1.40/M input, $4.40/M output) these cap spend at about $8.60 a day.
+    "LLM_DAILY_INPUT_TOKEN_BUDGET": "2000000",
+    "LLM_DAILY_OUTPUT_TOKEN_BUDGET": "300000",
+    "CAPITAL_INR": "500000",
+    // Indices the engine trades, comma-separated: "NIFTY,SENSEX" trades both. Both share the daily limits.
+    "INDICES": "NIFTY,SENSEX",
+    // Most positions open at once on one index (1 to 3). They share the 4-entries-a-day and loss limits.
+    "MAX_OPEN_PER_INDEX": "2",
+    // Most entries per day across the indices (1 to 12). The 2-losses-in-a-row halt and the daily loss cap still apply.
+    "MAX_TRADES_PER_DAY": "8",
+    // Paper accounts to run, comma-separated; main is always on. "small10k" and "small5k" add the
+    // ₹10,000 and ₹5,000 accounts that follow main's signals with one cheaper out-of-the-money lot
+    // (src/engine/accounts.ts). "agent" adds the options agent's ₹5L paper book (a paper experiment run by a
+    // model's judgement of each 5-minute candle; code owns every limit, size and exit; docs/AGENT.md).
+    "ACCOUNTS": "main,small10k,small5k,agent",
+    // Edge gate for every account: "calibrated" re-runs the edge check on measured index moves and
+    // realized volatility (reports/wp2-wp5-gates.md). On today's signals it blocks every entry, so it
+    // pauses buying until a signal earns its decay and costs (owner's decision, 9 Oct 2026).
+    // "legacy" (or unset) restores the original gate.
+    "EDGE_GATE": "calibrated",
+    // Quote recorder source (read-only, no orders; docs/DATA.md): "auto" uses the Groww Trade API when
+    // GROWW_API_KEY/GROWW_TOTP_SECRET are set (a paid live-data plan), otherwise Upstox's official Market
+    // Data API when the free one-year read-only Analytics Token is set as the secret UPSTOX_ANALYTICS_TOKEN.
+    // "groww" or "upstox" forces one; "off" records nothing.
+    "QUOTE_SOURCE": "auto",
+    // Live data for the paper trading loop: "upstox" overlays Upstox's read-only Market Data API (index
+    // 1-minute candles, spots and paper option quotes) on Yahoo when UPSTOX_ANALYTICS_TOKEN is set;
+    // "yahoo" keeps Yahoo bars and Groww or synthetic paper quotes. Paper only: no orders either way.
+    "LIVE_DATA": "upstox",
+    // Dashboard base URL for the links in copy-trade alerts (empty: no links).
+    "DASHBOARD_URL": "https://ruphak-dashboard.sanjaysenthilkumar.workers.dev",
+    // Advisor tab (AdvisorDO): the model that writes the brief (uses the ANTHROPIC_API_KEY secret), the
+    // rate limit (runs per IST day, minutes between starts) and the daily automatic brief ("HH:MM" IST, or "off").
+    "ADVISOR_MODEL": "claude-opus-5-5",
+    "ADVISOR_MAX_RUNS_PER_DAY": "24",
+    "ADVISOR_MIN_GAP_MIN": "4",
+    "ADVISOR_AUTO_RUN": "09:25",
+    // Options agent (a paper experiment; docs/AGENT.md), with the ANTHROPIC_API_KEY secret. AGENT_MODE: "off",
+    // "shadow" (every candle judged and gated, decisions and what paper mode would have done recorded; no orders,
+    // positions or trades) or "paper" (orders on the agent's own paper account only; never LIVE).
+    "AGENT_MODE": "shadow",
+    // The reflex model judges each closed 5-minute candle; the deep model handles escalations and the nightly review.
+    "AGENT_MODEL": "claude-haiku-5-5",
+    "AGENT_ESCALATION_MODEL": "claude-opus-5-5",
+    "AGENT_REVIEW_MODEL": "claude-opus-5-5",
+    // USD per IST day across every agent model call; past it no more candles are judged (no new entries).
+    "AGENT_DAILY_USD_CAP": "3",
+    "AGENT_ESCALATIONS_PER_DAY": "8"
+  },
+  "env": {
+    "preview": {
+      "name": "ruphak-engine-preview",
+      "vars": {
+        "ENGINE_ENV": "preview",
+        "LIVE_TRADING": "false",
+        "GROWW_DATA_VIA_RELAY": "false",
+        "LLM_PROVIDER": "workers-ai",
+        "LLM_MODEL": "@cf/zai-org/glm-5.3",
+        "LLM_EFFORT": "low",
+        "LLM_DAILY_INPUT_TOKEN_BUDGET": "300000",
+        "LLM_DAILY_OUTPUT_TOKEN_BUDGET": "100000",
+        "CAPITAL_INR": "500000",
+        "INDICES": "NIFTY,SENSEX",
+        "MAX_OPEN_PER_INDEX": "1",
+        "MAX_TRADES_PER_DAY": "4",
+        "ACCOUNTS": "main,small10k,small5k",
+        "EDGE_GATE": "calibrated",
+        "QUOTE_SOURCE": "auto",
+        "LIVE_DATA": "upstox",
+        "DASHBOARD_URL": "",
+        "ADVISOR_MODEL": "claude-opus-5-5",
+        "ADVISOR_MAX_RUNS_PER_DAY": "24",
+        "ADVISOR_MIN_GAP_MIN": "4",
+        "ADVISOR_AUTO_RUN": "off",
+        // The same keys as the top level (so the generated Env requires them); the agent stays off in preview.
+        "AGENT_MODE": "off",
+        "AGENT_MODEL": "claude-haiku-5-5",
+        "AGENT_ESCALATION_MODEL": "claude-opus-5-5",
+        "AGENT_REVIEW_MODEL": "claude-opus-5-5",
+        "AGENT_DAILY_USD_CAP": "3",
+        "AGENT_ESCALATIONS_PER_DAY": "8"
+      },
+      "d1_databases": [
+        {
+          "binding": "DB",
+          "database_name": "ruphak-trading-preview",
+          "database_id": "00000000-0000-0000-0000-000000000001",
+          "migrations_dir": "../../migrations"
+        }
+      ],
+      "kv_namespaces": [{ "binding": "KV", "id": "00000000000000000000000000000001" }],
+      "queues": {
+        "producers": [{ "binding": "SCORE_QUEUE", "queue": "events-to-score-preview" }],
+        "consumers": [
+          {
+            "queue": "events-to-score-preview",
+            "max_batch_size": 10,
+            "max_batch_timeout": 20,
+            "max_retries": 3,
+            "dead_letter_queue": "events-to-score-preview-dlq"
+          },
+          { "queue": "events-to-score-preview-dlq", "max_batch_size": 10, "max_batch_timeout": 30, "max_retries": 1 }
+        ]
+      },
+      "ai": { "binding": "AI" },
+      "durable_objects": {
+        "bindings": [
+          { "name": "ENGINE_DO", "class_name": "TradingEngineDO" },
+          { "name": "INGEST_DO", "class_name": "IngestDO" },
+          { "name": "BACKTEST_DO", "class_name": "BacktestDO" },
+          { "name": "MARKET_FEED_DO", "class_name": "MarketFeedDO" },
+          { "name": "ADVISOR_DO", "class_name": "AdvisorDO" },
+          { "name": "AGENT_DO", "class_name": "AgentDO" }
+        ]
+      },
+      // The same migrations as the top level (an environment would otherwise inherit them).
+      "migrations": [
+        { "tag": "v1", "new_sqlite_classes": ["TradingEngineDO", "IngestDO"] },
+        { "tag": "v2", "new_sqlite_classes": ["BacktestDO"] },
+        { "tag": "v3", "new_sqlite_classes": ["MarketFeedDO"] },
+        { "tag": "v4", "new_sqlite_classes": ["AdvisorDO"] },
+        { "tag": "v5", "new_sqlite_classes": ["AgentDO"] }
+      ],
+      "triggers": { "crons": ["*/30 * * * *"] }
+    }
+  }
+}

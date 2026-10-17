@@ -1,0 +1,31 @@
+# Engine Worker secrets for `npm run dev:engine`. Copy to workers/engine/.dev.vars (gitignored).
+# In production set each with: npx wrangler secret put <NAME> --config workers/engine/wrangler.jsonc
+# Everything except ADMIN_TOKEN is optional: without keys the engine paper-trades on synthetic
+# option quotes and scores news with the lexicon fallback.
+
+# Dashboard admin actions (arm, kill switch, mode) and /ops/* endpoints.
+ADMIN_TOKEN=dev
+
+# News scoring uses Workers AI (GLM-5.3) through the AI binding in production. `npm run dev:engine`
+# runs locally with the lexicon scorer; `npm run dev:engine:ai` uses GLM-5.3 (needs `npx wrangler login`).
+# Claude instead: set LLM_PROVIDER=anthropic in workers/engine/wrangler.jsonc and this key.
+ANTHROPIC_API_KEY=
+# GNews (optional extra news source; Google News RSS needs no key).
+GNEWS_API_KEY=
+
+# Groww Trade API key of type TOTP and its TOTP secret (base32), from groww.in/trade-api/api-keys.
+GROWW_API_KEY=
+GROWW_TOTP_SECRET=
+
+# Static-IP order relay (live orders only). Leave empty for paper trading.
+# The HMAC secret must match the relay's; the relay requires >= 32 characters in live mode.
+RELAY_URL=
+RELAY_HMAC_SECRET=
+# Cloudflare Access service token in front of the relay's tunnel hostname.
+CF_ACCESS_CLIENT_ID=
+CF_ACCESS_CLIENT_SECRET=
+
+# Telegram alerts (bot token from @BotFather, your chat id) and the webhook secret for /status, /kill.
+TELEGRAM_BOT_TOKEN=
+TELEGRAM_CHAT_ID=
+TELEGRAM_WEBHOOK_SECRET=

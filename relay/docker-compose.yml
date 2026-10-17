@@ -1,0 +1,47 @@
+# Relay + Cloudflare Tunnel on one host. Usage (in relay/):
+#   cp .env.example .env && chmod 600 .env   # fill RELAY_HMAC_SECRET, GROWW_*, CF_ACCESS_*, TUNNEL_TOKEN
+#   docker compose up -d --build
+# In the tunnel's public hostname, point the service at http://relay:8790.
+services:
+  relay:
+    build: .
+    image: ruphak-order-relay:local
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      RELAY_HOST: 0.0.0.0
+      RELAY_DB_PATH: /app/data/relay.sqlite
+    volumes:
+      - relay-data:/app/data
+    # No published ports: only cloudflared on this network reaches the relay.
+    # To reach it from the host for manual checks, publish on loopback only:
+    # ports:
+    #   - "127.0.0.1:8790:8790"
+    read_only: true
+    tmpfs:
+      - /tmp
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    logging:
+      driver: json-file
+      options:
+        max-size: "20m"
+        max-file: "10"
+
+  cloudflared:
+    # Consider pinning a specific cloudflared release instead of latest.
+    image: cloudflare/cloudflared:latest
+    restart: unless-stopped
+    command: tunnel --no-autoupdate run
+    environment:
+      TUNNEL_TOKEN: ${TUNNEL_TOKEN:?set TUNNEL_TOKEN in .env}
+    depends_on:
+      relay:
+        condition: service_healthy
+    security_opt:
+      - no-new-privileges:true
+
+volumes:
+  relay-data:

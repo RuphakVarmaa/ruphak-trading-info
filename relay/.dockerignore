@@ -1,0 +1,10 @@
+node_modules
+dist
+data
+.env
+*.sqlite*
+deploy
+README.md
+docker-compose.yml
+src/**/*.test.ts
+src/test-helpers.ts
