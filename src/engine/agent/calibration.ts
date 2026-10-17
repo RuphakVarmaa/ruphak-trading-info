@@ -4,12 +4,15 @@
  * - The Brier score and the buckets use the 0.03% hit label of every graded decision in force, both sources.
  * - Sizing never uses the model's confidence as a probability. p is the CALIBRATION.sizingQuantile quantile (the 20th
  *   percentile) of the Beta posterior of the `paid` label (a move of at least OUTCOME.payMovePct in the called
- *   direction) on graded directional reflex decisions, starting from a prior of 0.5 worth CALIBRATION.pooledPriorN
- *   calls. With no history p is below 0.5, so Kelly with b ≤ 1 is negative and the agent does not trade.
+ *   direction) on graded directional decisions of the decision's own source (a reflex call on the reflex's record,
+ *   an escalation on the escalations'), starting from a prior of 0.5 worth CALIBRATION.pooledPriorN calls. With no
+ *   history p is below 0.5, so Kelly with b ≤ 1 is negative, and a hint with no graded calls never sizes a trade.
  * - Overlapping 30-minute windows share most of their move, so they are not independent evidence (#15): identical
- *   (index, bar, direction) rows count once, and each row weighs 1 / (the rows on its index whose windows overlap
- *   it). Older instruction versions weigh CALIBRATION.oldVersionWeight. Escalation rows are scored apart, never sized.
- * - NEUTRAL calls are scored on their own Brier line (#23) and never feed sizing.
+ *   (index, bar, direction) rows count once, and each row weighs 1 / (the rows whose windows overlap it, on either
+ *   index: NIFTY and SENSEX move together, so a call on each at one bar is one observation, not two). Older
+ *   instruction versions weigh CALIBRATION.oldVersionWeight.
+ * - NEUTRAL calls are scored on their own Brier line (#23) and never feed sizing. A row code made (codeMade: the
+ *   NEUTRAL 0.5 of a reflex/escalation disagreement) is not a forecast and is never scored.
  */
 import { BAR_5M_MS } from "../market/candles";
 import { INDEX_IDS } from "../types";
@@ -217,9 +220,11 @@ function lowerBound(xs: readonly number[], x: number): number {
 
 /**
  * The #15 weights of a set of graded directional rows: identical (index, bar, direction) rows collapse to one (the
- * active version's when there is one), then each row weighs versionWeight / (the rows of the set on its index whose
- * 30-minute windows overlap it, itself included). versionWeight is 1 for the active instruction version and
- * CALIBRATION.oldVersionWeight otherwise. The weights of a run of mutually overlapping rows add up to at most 1.
+ * active version's when there is one), then each row weighs versionWeight / (the rows of the set, on either index,
+ * whose 30-minute windows overlap it, itself included). The two indices count as one market: their 30-minute moves
+ * nearly always agree, so calls on both at one bar are not independent evidence. versionWeight is 1 for the active
+ * instruction version and CALIBRATION.oldVersionWeight otherwise. The weights of a run of mutually overlapping rows
+ * add up to at most 1.
  */
 export function overlapWeights<T extends WeightedFields>(rows: readonly T[], activeVersion: string): { row: T; w: number }[] {
   const kept = new Map<string, T>();
@@ -229,24 +234,19 @@ export function overlapWeights<T extends WeightedFields>(rows: readonly T[], act
     if (!prev || (prev.instructionVersion !== activeVersion && r.instructionVersion === activeVersion)) kept.set(key, r);
   }
   const unique = [...kept.values()].sort((a, b) => a.barCloseMs - b.barCloseMs || a.index.localeCompare(b.index) || a.direction.localeCompare(b.direction));
-  const bars = new Map<string, number[]>();
-  for (const r of unique) {
-    const list = bars.get(r.index) ?? [];
-    list.push(r.barCloseMs);
-    bars.set(r.index, list);
-  }
+  // Every unique row's bar, both indices together, in time order.
+  const bars = unique.map((r) => r.barCloseMs);
   return unique.map((r) => {
-    const list = bars.get(r.index)!;
     // Windows [t, t + 30 min] overlap when the bars are less than 30 minutes apart.
-    const overlapping = lowerBound(list, r.barCloseMs + OUTCOME_WINDOW_MS) - lowerBound(list, r.barCloseMs - OUTCOME_WINDOW_MS + 1);
+    const overlapping = lowerBound(bars, r.barCloseMs + OUTCOME_WINDOW_MS) - lowerBound(bars, r.barCloseMs - OUTCOME_WINDOW_MS + 1);
     const version = r.instructionVersion === activeVersion ? 1 : CALIBRATION.oldVersionWeight;
     return { row: r, w: version / Math.max(1, overlapping) };
   });
 }
 
-/** A graded row that may feed sizing: a reflex call in force, directional, with a usable confidence and labels. */
-function sizingRow(r: GradedDecision): boolean {
-  return r.source === "REFLEX" && r.effective && (r.direction === "LONG" || r.direction === "SHORT") && usable(r.directionConfidence) && (r.y === 0 || r.y === 1) && typeof r.paid === "boolean";
+/** A graded row that may feed sizing for `source`'s calls: one of that source, in force, directional, with a usable confidence and labels. */
+function sizingRow(r: GradedDecision, source: AgentDecisionSource): boolean {
+  return r.source === source && r.effective && (r.direction === "LONG" || r.direction === "SHORT") && usable(r.directionConfidence) && (r.y === 0 || r.y === 1) && typeof r.paid === "boolean";
 }
 
 interface Posterior {
@@ -280,16 +280,18 @@ function bucketOf(conf: number, edges: readonly number[]): number {
 const failClosed = (h: SizingHint): SizingHint => (Number.isFinite(h.p) ? h : { ...h, p: 0 });
 
 /**
- * The probability sizing uses for a decision stated at `conf` (SPEC §5.4 as amended).
+ * The probability sizing uses for a decision of `source` stated at `conf` (SPEC §5.4 as amended), from the graded
+ * rows of that source only: an escalation is sized on the escalations' own record, never the reflex's.
  * - "pooled" (the default): the paid posterior over every sizing row with confidence above
  *   CALIBRATION.fireMinConfidence, prior CALIBRATION.pooledPriorN, whatever the decision's own confidence.
- * - "buckets": once the rows weigh CALIBRATION.switchMinGraded in all and the decision's confidence bucket weighs
- *   bucketMinN, each bucket's paid posterior (prior bucketPriorN) is taken at the same quantile, the buckets are made
- *   non-decreasing in confidence (pav, weighted by their weight) and the decision's bucket is used.
+ * - "buckets": once the rows weigh CALIBRATION.switchMinGraded in all (each window counted once, #15, whatever bucket
+ *   it fell in) and the decision's confidence bucket weighs bucketMinN, each bucket's paid posterior (prior
+ *   bucketPriorN) is taken at the same quantile, the buckets are made non-decreasing in confidence (pav, weighted by
+ *   their weight) and the decision's bucket is used.
  * Each set's rows carry the #15 weights within that set. A probability that is not a number becomes 0 (no trade).
  */
-export function sizingProbability(conf: number, graded: readonly GradedDecision[], activeVersion: string): SizingHint {
-  const rows = graded.filter(sizingRow);
+export function sizingProbability(conf: number, graded: readonly GradedDecision[], activeVersion: string, source: AgentDecisionSource = "REFLEX"): SizingHint {
+  const rows = graded.filter((r) => sizingRow(r, source));
   const edges = CALIBRATION.bucketEdges;
   const k = usable(conf) ? bucketOf(conf, edges) : -1;
   if (k >= 0) {
@@ -298,7 +300,9 @@ export function sizingProbability(conf: number, graded: readonly GradedDecision[
       const inBucket = rows.filter((r) => r.directionConfidence >= edges[i] && r.directionConfidence < edges[i + 1]);
       perBucket.push(paidPosterior(overlapWeights(inBucket, activeVersion), CALIBRATION.bucketPriorN));
     }
-    const total = perBucket.reduce((s, b) => s + b.n, 0);
+    // The evidence in all, each overlapping window once: not the per-bucket weights added up (a window called in k
+    // buckets would count k times).
+    const total = overlapWeights(rows, activeVersion).reduce((s, x) => s + x.w, 0);
     if (total >= CALIBRATION.switchMinGraded - EPS && perBucket[k].n >= CALIBRATION.bucketMinN - EPS) {
       const fitted = pav(perBucket.map((b) => ({ p: b.p, w: b.n })));
       return failClosed({ p: fitted[k], mode: "buckets", n: perBucket[k].n, mean: perBucket[k].mean });
@@ -313,9 +317,10 @@ export function sizingProbability(conf: number, graded: readonly GradedDecision[
 // The summary the review stores and the dashboard shows
 // ---------------------------------------------------------------------------
 
-/** A decision's graded directional row (outcome HIT or MISS), or null. */
+/** A decision's graded directional row (outcome HIT or MISS), or null; a code-made row is not a forecast and never one. */
 export function toGraded(d: DecisionRecord): GradedDecision | null {
   const o = d.outcome;
+  if (d.codeMade === true) return null;
   if (!o || (o.status !== "HIT" && o.status !== "MISS") || (o.y !== 0 && o.y !== 1) || typeof o.paid !== "boolean") return null;
   if (d.direction !== "LONG" && d.direction !== "SHORT") return null;
   return {
@@ -334,9 +339,13 @@ export function toGraded(d: DecisionRecord): GradedDecision | null {
   };
 }
 
-/** A decision's graded NEUTRAL row (outcome NEUTRAL with y set), or null. */
+/**
+ * A decision's graded NEUTRAL row (outcome NEUTRAL with y set), or null; never a code-made row (the NEUTRAL 0.5 code
+ * puts in when the reflex and an escalation disagree is not the model's forecast).
+ */
 export function toGradedNeutral(d: DecisionRecord): GradedNeutral | null {
   const o = d.outcome;
+  if (d.codeMade === true) return null;
   if (!o || o.status !== "NEUTRAL" || (o.y !== 0 && o.y !== 1) || d.direction !== "NEUTRAL") return null;
   return {
     id: d.id,

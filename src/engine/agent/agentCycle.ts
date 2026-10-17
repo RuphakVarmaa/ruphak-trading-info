@@ -432,7 +432,14 @@ async function tryEntry(
     return out(v, lines, "NO_ENTRY", "no sizing probability: no trade");
   }
   const k = agentRiskPct(p, b);
-  const sizing: SizingTrace = { p, b, kelly: k.kelly, quarterKelly: k.quarterKelly, riskPct: k.riskPct, lots: 0, riskRupees: 0, limitedBy: k.reason };
+  const n = d.sizing?.n ?? null;
+  const sizing: SizingTrace = { p, b, kelly: k.kelly, quarterKelly: k.quarterKelly, riskPct: k.riskPct, lots: 0, riskRupees: 0, limitedBy: k.reason, n };
+  // A probability with no graded call behind it is the prior alone: it never sizes a trade, whatever b is.
+  if (!(n !== null && n > 0)) {
+    const none = "no graded calls of this kind yet";
+    lines.push({ gate: "kelly", passed: false, detail: none });
+    return out(v, lines, "NO_ENTRY", `${none}: no trade`, { sizing: { ...sizing, riskPct: 0, limitedBy: none } });
+  }
   if (!(k.riskPct > 0)) {
     lines.push({ gate: "kelly", passed: false, detail: `p ${p.toFixed(3)}, b ${b.toFixed(2)}, Kelly ${k.kelly.toFixed(3)}` });
     return out(v, lines, "NO_ENTRY", `Kelly ≤ 0: no measured edge yet (p=${p.toFixed(3)}, b=${b.toFixed(2)})`, { sizing });

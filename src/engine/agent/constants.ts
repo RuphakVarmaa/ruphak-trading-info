@@ -43,9 +43,10 @@ export const AGENT_LIMITS = {
 
 /**
  * Sizing probability (SPEC §5.4 as amended). p is the `sizingQuantile` quantile of
- * Beta(Σw·paid + 0.5·N0, Σw·(1 − paid) + 0.5·N0), N0 = pooledPriorN, over graded directional reflex decisions
- * with confidence above fireMinConfidence; each row is weighted by 1 / (the rows on its index whose 30-minute
- * windows overlap it).
+ * Beta(Σw·paid + 0.5·N0, Σw·(1 − paid) + 0.5·N0), N0 = pooledPriorN, over graded directional decisions of the
+ * decision's own source (reflex or escalation) with confidence above fireMinConfidence; each row is weighted by
+ * 1 / (the rows, on either index, whose 30-minute windows overlap it). With no such row (Σw = 0) the agent does not
+ * trade. switchMinGraded counts every window once (Σ_all w), whatever bucket it fell in.
  */
 export const CALIBRATION = {
   fireMinConfidence: 0.8,

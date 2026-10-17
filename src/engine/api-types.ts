@@ -1318,18 +1318,22 @@ export interface AgentCalibrationView {
   baselineBrier: number | null;
   byIndex: { index: IndexId; n: number; brier: number | null }[];
   byKind: { kind: AgentFinalistKind; n: number; brier: number | null }[];
-  /** Reflex and escalation calls scored apart; only reflex calls feed sizing. */
+  /** Reflex and escalation calls scored apart. Each is sized on its own kind's graded calls only. */
   bySource: { source: AgentDecisionSource; n: number; brier: number | null }[];
   /** NEUTRAL calls on their own line: right when the index stayed within 0.15% either way over 30 minutes. Never used for sizing. */
   neutral: { n: number; brier: number | null; baselineBrier: number | null };
   buckets: AgentCalibrationBucketView[];
   sizingMode: "pooled" | "buckets";
   /**
-   * The probability sizing uses for a confidence above 0.80 now: a cautious (20th percentile) estimate of the
-   * chance of a move of at least 0.15% in the called direction, from graded reflex calls; never the model's own number.
+   * The probability sizing uses for a reflex call with confidence above 0.80 now: a cautious (20th percentile)
+   * estimate of the chance of a move of at least 0.15% in the called direction, from graded reflex calls; never the
+   * model's own number. An escalation is sized the same way on graded escalations.
    */
   sizingP: number | null;
-  /** Effective number of graded calls behind sizingP, after overlapping 30-minute windows are counted once. */
+  /**
+   * Effective number of graded calls behind sizingP, after overlapping 30-minute windows (on either index) are counted
+   * once. 0 means the prior alone, and no trade.
+   */
   sizingN: number;
   /** The payoff ratio b sizing uses (capped at 1 until enough agent trades have closed). */
   payoffB: number;

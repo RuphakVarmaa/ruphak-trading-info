@@ -112,7 +112,7 @@ export interface CallRecord {
 export interface SizingHint {
   p: number;
   mode: "pooled" | "buckets";
-  /** Effective (weighted) number of graded decisions behind p. */
+  /** Effective (weighted) number of graded decisions of the decision's own source behind p; 0 means the prior alone (no trade). */
   n: number;
   /** The posterior mean of the paid rate, before the quantile. */
   mean: number;
@@ -208,12 +208,14 @@ export interface CalibrationSummary {
   byIndex: { index: IndexId; n: number; brier: number | null }[];
   byKind: { kind: AgentFinalistKind; n: number; brier: number | null }[];
   byVersion: { version: string; n: number; brier: number | null }[];
-  /** REFLEX and ESCALATION scored apart; only REFLEX rows feed sizing. */
+  /** REFLEX and ESCALATION scored apart. Each source's calls are sized on that source's graded rows only. */
   bySource: { source: AgentDecisionSource; n: number; brier: number | null }[];
   /** NEUTRAL decisions on their own Brier line (y = 1 when the index stayed within OUTCOME.neutralBandPct). */
   neutral: { n: number; brier: number | null; baselineBrier: number | null };
-  buckets: CalibrationBucket[]; sizingMode: "pooled" | "buckets"; sizingP: number | null;
-  /** Effective (weighted) number of graded decisions behind sizingP. */
+  buckets: CalibrationBucket[]; sizingMode: "pooled" | "buckets";
+  /** The probability a reflex call just above 0.80 would be sized on (an escalation is sized on its own record). */
+  sizingP: number | null;
+  /** Effective (weighted) number of graded reflex decisions behind sizingP; 0 means the prior alone (no trade). */
   sizingN: number;
   paidRate: number | null;
 }

@@ -492,9 +492,10 @@ export class AgentBrain {
     // A finished escalation whose finalist got no decision on this bar can still close a position.
     const exitOnly = await this.exitOnly(T, finalists, instruction);
 
-    // Sizing hints from measured results only (calibration.ts); never the model's stated confidence.
+    // Sizing hints from measured results only (calibration.ts); never the model's stated confidence. Each row is sized
+    // on its own source's record: an escalation on graded escalations, never on the reflex's.
     const sizingRows = await this.sizingRows(date, instruction.version);
-    for (const e of effective) if (e.direction !== "NEUTRAL") e.sizing = sizingProbability(e.directionConfidence, sizingRows, instruction.version);
+    for (const e of effective) if (e.direction !== "NEUTRAL") e.sizing = sizingProbability(e.directionConfidence, sizingRows, instruction.version, e.source);
 
     await store.putDecisions([...reflexRows.filter((r) => !r.effective), ...effective]);
     await this.queueEscalations(T, reflexRows, now);

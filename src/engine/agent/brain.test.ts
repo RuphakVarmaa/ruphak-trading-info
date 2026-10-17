@@ -8,8 +8,10 @@ import { sequentialIds, silentLogger, type LlmUsage } from "../ports";
 import type { IndexId } from "../types";
 import { AGENT_META, AgentBrain, type AgentBrainDeps } from "./brain";
 import { AGENT_POLICY, ESCALATION, REFLEX_CALL, RETENTION_DAYS, REVIEW_CALL, USER_MESSAGE_TOKEN_LIMIT } from "./constants";
+import { betaQuantile, sizingProbability } from "./calibration";
 import { callCostUsd, worstCaseUsd } from "./cost";
 import { ClaudeDeepJudge, ClaudeReflexJudge, type DeepJudge, type DeepRequest, type DeepResponse, type ReflexJudge, type ReflexRequest, type ReflexResponse } from "./judge";
+import { agentRiskPct } from "./kelly";
 import { BUILTIN_GUIDANCE, instructionVersion, REVIEW_SYSTEM } from "./prompt";
 import { estimateProseTokens, estimateTokens } from "./snapshot";
 import { MemoryAgentStore } from "./store";
@@ -208,12 +210,12 @@ async function drain(h: Harness, rounds = 6) {
 }
 
 /** Graded reflex history on earlier days, nine calls a day 40 minutes apart (no 30-minute windows overlap); most paid. */
-async function seedHistory(store: AgentStore, n: number, version: string) {
+async function seedHistory(store: AgentStore, n: number, version: string, source: "REFLEX" | "ESCALATION" = "REFLEX") {
   const rows: DecisionRecord[] = [];
   for (let i = 0; i < n; i++) {
     const date = addDays(DAY, -(1 + Math.floor(i / 9)));
     const t = istAt(date, "09:30") + (i % 9) * 40 * MINUTE_MS;
-    rows.push(agentSample.decision({ id: `h${i}`, date, barCloseMs: t, instructionVersion: version, directionConfidence: 0.9, outcome: agentSample.outcome({ status: "HIT", y: 1, paid: i % 10 !== 0 }) }));
+    rows.push(agentSample.decision({ id: `h${source}${i}`, date, barCloseMs: t, source, instructionVersion: version, directionConfidence: 0.9, outcome: agentSample.outcome({ status: "HIT", y: 1, paid: i % 10 !== 0 }) }));
   }
   await store.putDecisions(rows);
 }
@@ -506,6 +508,71 @@ describe("AgentBrain: escalations", () => {
     expect(b1.status).toBe("FAILED");
     expect(b1.decisions).toEqual([]);
     expect(b1.exitOnly.map((d) => [d.finalistId, d.source, d.effective, d.directionConfidence])).toEqual([["gen:NIFTY", "ESCALATION", false, 0.88]]);
+  });
+
+  it("sizes an escalation on graded escalations only: with none, the prior and no trade, however rich the reflex's record (C2, probe-escsizing)", async () => {
+    const h = harness({ answer: answerAll(lowConf), deep: deepAnswer });
+    const version = (await h.brain.status()).instructionVersion;
+    // 300 graded reflex calls, 90% paid: enough to size a reflex call.
+    await seedHistory(h.store, 300, version);
+    await step(h, 0);
+    await step(h, 1);
+    const b1 = (await h.store.batch(bar(1)))!;
+    const nifty = b1.decisions.find((d) => d.finalistId === "gen:NIFTY")!;
+    expect(nifty).toMatchObject({ source: "ESCALATION", effective: true, direction: "LONG", directionConfidence: 0.88 });
+    expect(nifty.sizing).toMatchObject({ mode: "pooled", n: 0, mean: 0.5 });
+    expect(nifty.sizing!.p).toBeCloseTo(betaQuantile(0.2, 50, 50), 12);
+    expect(agentRiskPct(nifty.sizing!.p, b1.payoff.b).riskPct).toBe(0);
+    // The reflex's own call on the same record clears Kelly.
+    const reflexP = sizingProbability(0.88, await h.store.graded(addDays(DAY, -RETENTION_DAYS)), version).p;
+    expect(agentRiskPct(reflexP, 1).riskPct).toBeGreaterThan(0);
+  });
+
+  it("sizes an escalation on the escalations' graded record once it has one", async () => {
+    const h = harness({ answer: answerAll(lowConf), deep: deepAnswer });
+    const version = (await h.brain.status()).instructionVersion;
+    await seedHistory(h.store, 300, version);
+    await seedHistory(h.store, 120, version, "ESCALATION");
+    await step(h, 0);
+    await step(h, 1);
+    const nifty = (await h.store.batch(bar(1)))!.decisions.find((d) => d.finalistId === "gen:NIFTY")!;
+    expect(nifty.source).toBe("ESCALATION");
+    // 120 graded escalations an hour apart, 108 paid: the reflex's 300 are not in it.
+    expect(nifty.sizing).toMatchObject({ mode: "pooled", n: 120 });
+    expect(nifty.sizing!.p).toBeCloseTo(betaQuantile(0.2, 108 + 50, 12 + 50), 12);
+  });
+
+  it("keeps a fresher NEUTRAL reflex call in force over a directional escalation, which can then only close a position (C2)", async () => {
+    let n = 0;
+    const h = harness({ answer: (req) => (n++ === 0 ? answerAll(lowConf)(req) : answerAll()(req)), deep: deepAnswer });
+    await step(h, 0);
+    expect((await h.store.escalations(DAY))[0]).toMatchObject({ status: "DONE", decision: expect.objectContaining({ direction: "LONG" }) });
+    await step(h, 1);
+    const b1 = (await h.store.batch(bar(1)))!;
+    expect(b1.status).toBe("OK");
+    expect(b1.decisions.map((d) => [d.finalistId, d.source, d.effective, d.direction])).toEqual([
+      ["gen:NIFTY", "REFLEX", true, "NEUTRAL"],
+      ["gen:SENSEX", "REFLEX", true, "NEUTRAL"],
+    ]);
+    expect(b1.exitOnly.map((d) => [d.finalistId, d.source, d.effective, d.direction, d.barCloseMs])).toEqual([["gen:NIFTY", "ESCALATION", false, "LONG", bar(1)]]);
+    expect((await h.store.escalations(DAY))[0].appliedBarMs).toBe(bar(1));
+    // Nothing on bar 1 can open a position: no directional row in force, nothing sized.
+    const rows = await h.store.decisionsForBar(bar(1));
+    expect(rows.filter((d) => d.effective && d.direction !== "NEUTRAL")).toEqual([]);
+    expect(rows.filter((d) => d.sizing !== null)).toEqual([]);
+  });
+
+  it("stores the NEUTRAL of a reflex/escalation disagreement as code-made, unsized (C8)", async () => {
+    let n = 0;
+    const h = harness({
+      answer: (req) => (n++ === 0 ? answerAll(lowConf)(req) : answerAll({ "gen:NIFTY": { direction: "SHORT", directionConfidence: 0.9, setupQuality: 3 } })(req)),
+      deep: deepAnswer,
+    });
+    await step(h, 0);
+    await step(h, 1);
+    const nifty = (await h.store.batch(bar(1)))!.decisions.find((d) => d.finalistId === "gen:NIFTY")!;
+    expect(nifty).toMatchObject({ source: "ESCALATION", effective: true, direction: "NEUTRAL", directionConfidence: 0.5, codeMade: true, sizing: null });
+    expect((await h.store.decisionsForBar(bar(1))).find((d) => d.id === nifty.id)?.codeMade).toBe(true);
   });
 
   it("makes a finished escalation exit-only when the next bar has no decision for its finalist (a dropped decision, the cost cap)", async () => {

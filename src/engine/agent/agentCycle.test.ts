@@ -261,11 +261,30 @@ describe("executeAgentBatch", () => {
 
   it("takes no trade when Kelly is not above zero (no measured edge yet)", async () => {
     const { agent, ctx } = await setup();
-    const r = await executeAgentBatch(agent, batchOf([fired({ sizing: { p: 0.5, mode: "pooled", n: 0, mean: 0.5 } })]), ctx());
+    const r = await executeAgentBatch(agent, batchOf([fired({ sizing: { p: 0.5, mode: "pooled", n: 120, mean: 0.52 } })]), ctx());
     const e = exec(r, "d-long");
     expect(e.action).toBe("NO_ENTRY");
     expect(e.detail).toMatch(/^Kelly ≤ 0: no measured edge yet \(p=0\.500, b=1\.00\)/);
     expect(await agent.repo.orders.open("BACKTEST")).toEqual([]);
+  });
+
+  it("never sizes a trade on a probability with no graded call behind it, whatever b is (C2)", async () => {
+    const { agent, ctx } = await setup();
+    // The prior alone (an escalation with no graded escalation yet) and a payoff that would clear break-even.
+    const prior = { p: 0.4578886359060713, mode: "pooled" as const, n: 0, mean: 0.5 };
+    const r = await executeAgentBatch(agent, batchOf([fired({ source: "ESCALATION", sizing: prior })], { payoff: { b: 1.5, n: 40 } }), ctx());
+    const e = exec(r, "d-long");
+    expect(e.action).toBe("NO_ENTRY");
+    expect(e.detail).toBe("no graded calls of this kind yet: no trade");
+    expect(line(e, "kelly")).toEqual({ gate: "kelly", passed: false, detail: "no graded calls of this kind yet" });
+    expect(e.sizing).toMatchObject({ p: prior.p, b: 1.5, n: 0, riskPct: 0, lots: 0, riskRupees: 0 });
+    // Kelly alone would have sized it.
+    expect(e.sizing!.kelly).toBeGreaterThan(0);
+    expect(line(e, "plan")).toBeUndefined();
+    expect(await agent.repo.orders.between(0, Number.MAX_SAFE_INTEGER)).toEqual([]);
+    // A weight that is not a number fails closed too.
+    const nan = await executeAgentBatch(agent, batchOf([fired({ sizing: { ...prior, p: 0.6, n: Number.NaN } })], { payoff: { b: 1.5, n: 40 } }), ctx());
+    expect(exec(nan, "d-long").action).toBe("NO_ENTRY");
   });
 
   it("records why the code gate did not fire, with no order", async () => {

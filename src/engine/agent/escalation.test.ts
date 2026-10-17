@@ -1,8 +1,8 @@
 import { describe, expect, it } from "vitest";
 import { defaultCalendar } from "../calendar/calendar";
 import { istAt, MINUTE_MS } from "../clock";
+import { calibrationSummary, toGraded, toGradedNeutral } from "./calibration";
 import {
-  applyEscalations,
   costCapReason,
   DISAGREE_REASON,
   escalationAllowed,
@@ -13,6 +13,7 @@ import {
   mergeEscalation,
   reflexCallsLeft,
 } from "./escalation";
+import { closesMap, labelDecision } from "./outcomes";
 import type { DecisionRecord, EscalationRecord, Finalist, ReflexDecision } from "./types";
 
 const B = istAt("2026-10-19", "10:35");
@@ -70,6 +71,15 @@ describe("escalationTriggers", () => {
       ["crisis", "CRISIS_FLIP"],
       ["sx", "LOW_CONFIDENCE"],
     ]);
+  });
+
+  it("never escalates a NEUTRAL call for low confidence: its confidence is the chance of no move (probe-neutraltrigger)", () => {
+    expect(escalationTriggers([decision({ direction: "NEUTRAL", directionConfidence: 0.55, setupQuality: 2, regime: "MEAN_REVERTING" })], [])).toEqual([]);
+    expect(escalationTriggers([decision({ direction: "NEUTRAL", directionConfidence: 0.2, setupQuality: 3 })], [])).toEqual([]);
+    // A NEUTRAL call that flips to CRISIS is still escalated.
+    expect(escalationTriggers([decision({ direction: "NEUTRAL", directionConfidence: 0.55, regime: "CRISIS" })], [])[0].trigger).toBe("CRISIS_FLIP");
+    // A NEUTRAL call never hides a directional one on the same index.
+    expect(escalationTriggers([decision({ id: "n", direction: "NEUTRAL", directionConfidence: 0.3, setupQuality: 3 }), decision({ id: "s", finalistId: "idea:b:1", direction: "SHORT", directionConfidence: 0.5 })], []).map((t) => t.decision.id)).toEqual(["s"]);
   });
 
   it("looks only at the reflex's own decisions", () => {
@@ -171,12 +181,42 @@ describe("mergeEscalation", () => {
     expect(mergeEscalation(reflex({ toxicFlow: true }), esc(), ids)!.toxicFlow).toBe(true);
   });
 
-  it("calls NEUTRAL when the reflex and the escalation call opposite directions", () => {
+  it("calls NEUTRAL when the reflex and the escalation call opposite directions, and marks that call code-made", () => {
     const m = mergeEscalation(reflex({ direction: "SHORT", directionConfidence: 0.9 }), esc(), ids)!;
-    expect(m).toMatchObject({ source: "ESCALATION", effective: true, direction: "NEUTRAL", directionConfidence: 0.5, reason: DISAGREE_REASON });
+    expect(m).toMatchObject({ source: "ESCALATION", effective: true, direction: "NEUTRAL", directionConfidence: 0.5, reason: DISAGREE_REASON, codeMade: true });
     expect(DISAGREE_REASON).toBe("reflex and escalation disagree");
-    // A NEUTRAL reflex is not a disagreement.
-    expect(mergeEscalation(reflex({ direction: "NEUTRAL" }), esc(), ids)!.direction).toBe("LONG");
+    // An agreeing merge is the model's own call: not code-made.
+    expect(mergeEscalation(reflex(), esc(), ids)!).not.toHaveProperty("codeMade");
+  });
+
+  it("never lets an older directional escalation turn a fresher NEUTRAL reflex call into a trade", () => {
+    // The reflex on B + 1 says NEUTRAL: it stays in force; the caller makes the escalation exit-only.
+    const r = reflex({ direction: "NEUTRAL", directionConfidence: 0.7 });
+    expect(mergeEscalation(r, esc(), ids)).toBe(r);
+    expect(mergeEscalation(r, esc({}, { direction: "SHORT" }), ids)).toBe(r);
+    // A NEUTRAL escalation still merges: no new direction comes from it.
+    const n = mergeEscalation(reflex(), esc({}, { direction: "NEUTRAL", directionConfidence: 0.66 }), ids)!;
+    expect(n).toMatchObject({ source: "ESCALATION", direction: "NEUTRAL", directionConfidence: 0.66 });
+    expect(n).not.toHaveProperty("codeMade");
+  });
+
+  it("never scores the code-made NEUTRAL 0.5 of a disagreement (probe-neutral)", () => {
+    const merged = mergeEscalation(reflex({ direction: "LONG", directionConfidence: 0.9 }), esc({}, { direction: "SHORT", directionConfidence: 0.85 }), ids)!;
+    // The index stayed within 0.15%: as a forecast, "NEUTRAL 0.5" would be scored right with a Brier of 0.25.
+    const closes = closesMap([
+      { barCloseMs: B1, close: 25_000 },
+      { barCloseMs: B1 + 30 * MINUTE_MS, close: 25_010 },
+    ]);
+    const outcome = labelDecision(merged, closes, cal, B1 + 6 * 60 * MINUTE_MS);
+    expect(outcome.status).toBe("NEUTRAL");
+    const graded = { ...merged, outcome };
+    expect(toGradedNeutral(graded)).toBeNull();
+    expect(toGraded(graded)).toBeNull();
+    const row = toGradedNeutral(graded);
+    expect(calibrationSummary([], "core-1/v", B1 + 6 * 60 * MINUTE_MS, row ? [row] : []).neutral).toEqual({ n: 0, brier: null, baselineBrier: null });
+    // The same row made by the model is scored.
+    const model = { ...graded, codeMade: undefined };
+    expect(toGradedNeutral(model)).not.toBeNull();
   });
 
   it("turns the escalation into an exit-only record when the reflex failed on the next candle", () => {
@@ -205,44 +245,5 @@ describe("mergeEscalation", () => {
     expect(escalationTargetBarMs(esc())).toBe(B1);
     expect(escalationLate(esc(), { barCloseMs: B1 })).toBe(true);
     expect(escalationLate(esc(), null)).toBe(false);
-  });
-});
-
-describe("applyEscalations", () => {
-  const finalists = [finalist("gen:NIFTY"), finalist("gen:SENSEX", "SENSEX"), finalist("idea:b:1")];
-  const reflexRows = [
-    decision({ id: "rN", barCloseMs: B1, directionConfidence: 0.55 }),
-    decision({ id: "rS", barCloseMs: B1, index: "SENSEX", finalistId: "gen:SENSEX" }),
-  ];
-
-  it("merges each finalist's escalation, supersedes its reflex row and records where it was applied", () => {
-    const out = applyEscalations({ barCloseMs: B1, finalists, reflex: reflexRows, reflexOk: true, escalations: [esc()], instructionVersion: "core-1/v", ids });
-    expect(out.decisions.map((d) => [d.finalistId, d.source, d.effective])).toEqual([
-      ["gen:NIFTY", "ESCALATION", true],
-      ["gen:SENSEX", "REFLEX", true],
-    ]);
-    expect(out.superseded).toEqual([{ ...reflexRows[0], effective: false }]);
-    expect(out.exitOnly).toEqual([]);
-    expect(out.applied).toEqual([{ ...esc(), appliedBarMs: B1 }]);
-  });
-
-  it("uses an escalation for exits only when the reflex call failed or gave no decision for that finalist", () => {
-    const failed = applyEscalations({ barCloseMs: B1, finalists, reflex: [], reflexOk: false, escalations: [esc()], instructionVersion: "core-1/v", ids });
-    expect(failed.decisions).toEqual([]);
-    expect(failed.exitOnly).toEqual([expect.objectContaining({ finalistId: "gen:NIFTY", effective: false, source: "ESCALATION", barCloseMs: B1 })]);
-    expect(failed.applied).toHaveLength(1);
-    const idea = esc({ id: "e2", finalistId: "idea:b:1" }, { finalistId: "idea:b:1" });
-    const dropped = applyEscalations({ barCloseMs: B1, finalists, reflex: reflexRows, reflexOk: true, escalations: [idea], instructionVersion: "core-1/v", ids });
-    expect(dropped.decisions.map((d) => d.id)).toEqual(["rN", "rS"]);
-    expect(dropped.exitOnly.map((d) => [d.finalistId, d.finalistKind, d.effective])).toEqual([["idea:b:1", "IDEA", false]]);
-  });
-
-  it("ignores escalations for other candles, finalists no longer in the batch, and late ones", () => {
-    const gone = esc({ id: "e3", finalistId: "idea:old:9" }, { finalistId: "idea:old:9" });
-    const old = esc({ id: "e4", barCloseMs: B - 5 * MINUTE_MS });
-    const late = esc({ id: "e5", status: "LATE" });
-    const out = applyEscalations({ barCloseMs: B1, finalists, reflex: reflexRows, reflexOk: true, escalations: [gone, old, late], instructionVersion: "core-1/v", ids });
-    expect(out.decisions).toEqual(reflexRows);
-    expect(out).toMatchObject({ superseded: [], exitOnly: [], applied: [] });
   });
 });
