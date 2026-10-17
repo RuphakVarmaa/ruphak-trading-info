@@ -482,14 +482,16 @@ export class AgentBrain {
     for (const r of reflexRows) {
       const esc = escalations.find((e) => e.barCloseMs === prevMs && e.finalistId === r.finalistId && e.status === "DONE" && e.appliedBarMs === null);
       const merged = esc ? mergeEscalation(r, esc, this.d.newId) : undefined;
-      // An escalation that cannot be merged comes back as the reflex row itself.
+      // An escalation that cannot be merged comes back as the reflex row itself, and so does a directional one when
+      // this bar's reflex call is NEUTRAL (the fresher call stays in force); exitOnly below then takes it in.
       if (esc && merged && merged !== r) {
         r.effective = false;
         effective.push({ ...merged, date, barCloseMs: T, index: r.index, finalistKind: r.finalistKind, instructionVersion: instruction.version, effective: true, execution: null, outcome: null });
         await store.putEscalation({ ...esc, appliedBarMs: T });
       } else effective.push(r);
     }
-    // A finished escalation whose finalist got no decision on this bar can still close a position.
+    // A finished escalation no decision of this bar took in (no decision for its finalist, or a NEUTRAL one) can still
+    // close a position, never open one.
     const exitOnly = await this.exitOnly(T, finalists, instruction);
 
     // Sizing hints from measured results only (calibration.ts); never the model's stated confidence. Each row is sized
@@ -504,7 +506,8 @@ export class AgentBrain {
 
   /**
    * The previous bar's finished escalations that no decision of this bar took in (its reflex failed or was skipped,
-   * or gave no decision for that finalist): exit-only records that may close positions, never open one.
+   * gave no decision for that finalist, or called it NEUTRAL against a directional escalation): exit-only records
+   * that may close positions, never open one.
    */
   private async exitOnly(T: number, finalists: Finalist[], instruction: InstructionRecord): Promise<DecisionRecord[]> {
     const { store } = this.d;
