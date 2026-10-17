@@ -18,6 +18,7 @@ import { promptFinalists } from "../../../../src/engine/agent/prompt";
 import { MemoryAgentStore } from "../../../../src/engine/agent/store";
 import { agentSample } from "../../../../src/engine/agent/storeContract";
 import type { AgentMode, AgentSettings, DecisionRecord, ExecutionRecord, ReflexDecision, ReflexInput } from "../../../../src/engine/agent/types";
+import { withAccountSettings } from "../../../../src/engine/agent/view";
 import { formatHHMM, istAt, istDate, istMinutes, MINUTE_MS } from "../../../../src/engine/clock";
 import { makeConfig } from "../../../../src/engine/config";
 import { BAR_5M_MS } from "../../../../src/engine/market/candles";
@@ -32,7 +33,7 @@ import { FakeReflexJudge, fakeFlowView } from "../../../../src/engine/testing/fa
 import { loadMarketFixtures } from "../../../../src/engine/testing/fixtures";
 import { createReplayDeps, type ReplayDeps } from "../../../../src/engine/testing/replayHarness";
 import { MARKET_SYMBOLS, type IndexId, type TradingMode } from "../../../../src/engine/types";
-import { AgentRunner, HOT_KEY, type AgentDoPort, type AgentHot } from "./agentRunner";
+import { AgentRunner, HOT_KEY, type AgentDoPort, type AgentHot, type AgentRunnerOptions } from "./agentRunner";
 
 const DAY = "2026-10-07";
 const fixtures = loadMarketFixtures();
@@ -117,6 +118,7 @@ async function flowAsOf(index: IndexId, asOfMs: number) {
 
 interface Agent {
   store: MemoryAgentStore;
+  brain: AgentBrain;
   reflex: FakeReflexJudge;
   agentDo: InProcessAgentDo;
   runner: AgentRunner;
@@ -126,11 +128,28 @@ interface Agent {
   eod: string | null;
 }
 
-async function makeAgent(main: ReplayDeps, mode: AgentMode): Promise<Agent> {
+interface AgentOptions {
+  /** The runner's clock moves 1 ms on every read within a tick, as a Worker's Date.now() moves on after each I/O. */
+  drift?: boolean;
+  /** The fake reflex model's script (default: `decide`). */
+  script?: (req: ReflexRequest) => ReflexDecision[];
+  /** Offer the runner main's own market data source, as TE once wired it. */
+  offerMainMarket?: boolean;
+}
+
+async function makeAgent(main: ReplayDeps, mode: AgentMode, o: AgentOptions = {}): Promise<Agent> {
   const settings: AgentSettings = { ...AGENT_DEFAULTS, mode };
   const store = new MemoryAgentStore();
-  const reflex = new FakeReflexJudge(decide, { model: settings.reflexModel });
+  const reflex = new FakeReflexJudge(o.script ?? decide, { model: settings.reflexModel });
   const now = () => main.clock.now();
+  let tickAt = -1;
+  let reads = 0;
+  const runnerNow = o.drift
+    ? () => {
+        if (main.clock.now() !== tickAt) [tickAt, reads] = [main.clock.now(), 0];
+        return tickAt + ++reads;
+      }
+    : now;
   const brain = new AgentBrain({
     store,
     settings,
@@ -151,7 +170,7 @@ async function makeAgent(main: ReplayDeps, mode: AgentMode): Promise<Agent> {
   const repo = accountRepository(main.repo, "agent", agentCfg, now);
   const kept = new Map<string, unknown>();
   const alerts: string[] = [];
-  const runner = new AgentRunner({
+  const options: AgentRunnerOptions = {
     account: { spec: ACCOUNTS.agent, cfg: agentCfg, repo },
     mainRepo: main.repo,
     settings,
@@ -164,7 +183,6 @@ async function makeAgent(main: ReplayDeps, mode: AgentMode): Promise<Agent> {
     agentDo,
     feed: { getOptionFlowAsOf: flowAsOf },
     quotes: liveLabelled(new SyntheticOptionQuotes(main.calendar, agentCfg)),
-    market: main.market,
     instruments: main.instruments,
     marketContext: main.marketContext,
     alerts: {
@@ -176,10 +194,12 @@ async function makeAgent(main: ReplayDeps, mode: AgentMode): Promise<Agent> {
     logger: silentLogger,
     calendar: main.calendar,
     // TE's clock; the paper broker's simulated latency must not move the replay's time.
-    clock: { now, sleep: async () => {} },
+    clock: { now: runnerNow, sleep: async () => {} },
     newId: sequentialIds("agent-run"),
-  });
-  return { store, reflex, agentDo, runner, repo, alerts, hot: () => kept.get(HOT_KEY) as AgentHot, eod: null };
+  };
+  // TE once handed the runner main's own market source under `market`; the runner must ignore one if it is offered.
+  const runner = new AgentRunner(o.offerMainMarket ? ({ ...options, market: main.market } as AgentRunnerOptions) : options);
+  return { store, brain, reflex, agentDo, runner, repo, alerts, hot: () => kept.get(HOT_KEY) as AgentHot, eod: null };
 }
 
 interface KvWrite {
@@ -188,7 +208,7 @@ interface KvWrite {
   agent: boolean;
 }
 
-async function replay(o: { mode: AgentMode | null; beforeStep?: (t: number, a: Agent) => Promise<void> }) {
+async function replay(o: { mode: AgentMode | null; beforeStep?: (t: number, a: Agent) => Promise<void>; agent?: AgentOptions }) {
   const start = istAt(DAY, "09:15");
   const main = createReplayDeps({ cfg: mainCfg, startMs: start, candles: fixtures.candles, daily: fixtures.daily });
   // Spies on main's kv and on the market context main writes; `inAgent` marks the agent's part of a tick.
@@ -205,7 +225,14 @@ async function replay(o: { mode: AgentMode | null; beforeStep?: (t: number, a: A
     if (inAgent) contextWrites.push(index);
     ctxSet(index, c);
   };
-  const agent = o.mode ? await makeAgent(main, o.mode) : null;
+  // Reads of main's market data source (its request budget and caches): main's own, and any made in the agent's part.
+  const marketReads = { main: 0, agent: 0 };
+  const snapshot = main.market.snapshot.bind(main.market);
+  main.market.snapshot = (t: number) => {
+    marketReads[inAgent ? "agent" : "main"]++;
+    return snapshot(t);
+  };
+  const agent = o.mode ? await makeAgent(main, o.mode, o.agent) : null;
   const asAgent = async (fn: () => Promise<unknown>) => {
     inAgent = true;
     try {
@@ -250,9 +277,11 @@ async function replay(o: { mode: AgentMode | null; beforeStep?: (t: number, a: A
   const storedModes = new Set<string>();
   for (const m of ["BACKTEST", "BACKTEST@agent", "PAPER", "PAPER@agent", "LIVE", "LIVE@agent"] as TradingMode[]) if ((await main.repo.orders.between(from, to, m)).length) storedModes.add(m);
   return {
+    main,
     agent,
     kv,
     contextWrites,
+    marketReads,
     mainBook: await book(main.repo, "BACKTEST"),
     agentBook: agent ? await book(agent.repo, "PAPER") : null,
     decisions: await main.repo.decisions.between(from, to),
@@ -280,6 +309,8 @@ async function expectMainUnchanged(run: Run): Promise<void> {
   expect(mainKv(run.kv)).toEqual(mainKv(base.kv));
   expect(run.kv.filter((w) => w.agent).every((w) => w.key.startsWith("acct:agent:"))).toBe(true);
   expect(run.contextWrites).toEqual([]);
+  expect(run.marketReads.agent).toBe(0);
+  expect(run.marketReads.main).toBe(base.marketReads.main);
 }
 
 /** Every bar went in, every judged bar's decisions came back and went through the code gate. */
@@ -406,6 +437,36 @@ describe("the options agent end to end on a replayed day (runner, in-process Age
     expect(run.agentBook!.orders.filter((x) => x.reason === "ENTRY").every((x) => x.createdMs < halt)).toBe(true);
     expect((await a.store.latestRisk())?.ddHalt).toBe(true);
     expect(a.eod).toMatch(/\(halted: re-arm on the Agent page\)$/);
+    await expectMainUnchanged(run);
+
+    // The operator re-arms in the evening, when no step runs: the Agent page (the AgentDO's view with the live kill
+    // switches over it) drops the halt at once.
+    run.main.clock.set(istAt(DAY, "18:30"));
+    expect((await a.runner.rearm("dashboard")).ok).toBe(true);
+    const view = withAccountSettings(await a.brain.view(DAY, null), await a.repo.settings.get(), await run.main.repo.settings.get());
+    expect(view.risk).toMatchObject({ drawdownHalt: false, killSwitch: false, drawdownPct: 0 });
+  });
+
+  it("the snapshot shows the open P&L on every bar the agent holds a position, with a clock that moves on every read", async () => {
+    const run = await replay({ mode: "paper", agent: { drift: true } });
+    const held = (await run.agent!.store.bars(DAY)).filter((b) => b.index === "NIFTY" && b.snapshot && b.snapshot.bk.pos !== "-");
+    expect(held.length).toBeGreaterThan(5);
+    // The book is stamped after its positions were read, so their marks count: "null" would tell the model it is flat.
+    expect(held.filter((b) => b.snapshot!.bk.pnl === null).map((b) => at(b.barCloseMs))).toEqual([]);
+  });
+
+  it("a call on an index main computed no features for: the agent never reads main's market data source", async () => {
+    // Main trades NIFTY only; the model calls SENSEX up at 12:00.
+    const sensexAt12 = (req: ReflexRequest): ReflexDecision[] =>
+      decide(req).map((d) => {
+        const f = promptFinalists(req.input, req.finalists).find((x) => x.id === d.finalistId);
+        return f?.index === "SENSEX" && at(req.input.barCloseMs) === "12:00" ? { ...d, direction: "LONG", directionConfidence: 0.9, setupQuality: 3, reason: "higher highs" } : { ...d, direction: "NEUTRAL", directionConfidence: 0.45, setupQuality: 1 };
+      });
+    const run = await replay({ mode: "shadow", agent: { script: sensexAt12, offerMainMarket: true } });
+    const call = (await run.agent!.store.decisions(DAY)).find((d) => d.index === "SENSEX" && at(d.barCloseMs) === "12:00" && d.direction === "LONG");
+    expect(call).toBeDefined();
+    expect(call!.execution!.action).toBe("NO_ENTRY");
+    expect(run.marketReads.agent).toBe(0);
     await expectMainUnchanged(run);
   });
 });

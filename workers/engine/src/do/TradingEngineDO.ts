@@ -5,7 +5,10 @@
  * (features -> conviction -> gates -> plan -> entry) in the current entry mode, then position
  * cycles for every mode with open positions, polling exits twice more while positioned. Last, under
  * its own time budget, comes the options agent's step (a paper experiment on its own account,
- * workers/engine/src/agent/agentRunner.ts): main's work and its timing never wait for it.
+ * workers/engine/src/agent/agentRunner.ts): main's work and its timing never wait for it. The budget
+ * ends before main's next alarm is due, and a kill that squares off ends TE's wait for a running agent
+ * step and skips the agent in its own ticks, so main is flat (and the relay panic sent) before the
+ * agent's kill switch and exits come.
  * Off hours it refreshes a market snapshot hourly and sleeps until 09:00 IST.
  * After a tick (never inside it) the read-only quote recorder may take a snapshot of option quotes (the
  * Groww Trade API, or Upstox's free read-only token) for the 09:15 straddle study
@@ -16,10 +19,11 @@
  */
 import { DurableObject } from "cloudflare:workers";
 import { accountStateKey, followerIds, parseAccountId, type AccountId } from "../../../../src/engine/accounts";
+import type { AgentStatus } from "../../../../src/engine/agent/brain";
 import type { ReflexBatch } from "../../../../src/engine/agent/types";
 import type { AccountView, OptionFlowView } from "../../../../src/engine/api-types";
 import type { TradingCalendar } from "../../../../src/engine/calendar/calendar";
-import { MINUTE_MS, istAt, istDate, istIso, systemClock } from "../../../../src/engine/clock";
+import { MINUTE_MS, formatHHMM, istAt, istDate, istIso, istMinutes, systemClock } from "../../../../src/engine/clock";
 import { PaperBroker } from "../../../../src/engine/broker/paperBroker";
 import { computeCharges } from "../../../../src/engine/broker/charges";
 import {
@@ -89,6 +93,14 @@ const HEARTBEAT_STALE_MS = 120_000;
 const PAPER_QUOTE_PAUSE_MS = 30_000;
 /** The quote recorder covers both indices whatever the engine trades (INDICES). */
 const RECORDED_INDICES = ["NIFTY", "SENSEX"] as const;
+/** The agent's step ends at least this long before main's next alarm is due (its budget never delays main's next tick). */
+const AGENT_STEP_ALARM_MARGIN_MS = 1_500;
+/** An agent step with less time than this is skipped: its exits already ran in main's exit polls, or run next tick. */
+const AGENT_STEP_MIN_MS = 1_000;
+/** The end of day waits this long for the AgentDO to queue the review; the POSTMARKET cron asks again. */
+const AGENT_REVIEW_SCHEDULE_MS = 5_000;
+/** Telegram /status waits this long for the AgentDO's line. */
+const AGENT_STATUS_MS = 3_000;
 
 type BookMode = Extract<TradingMode, "PAPER" | "LIVE">;
 
@@ -164,6 +176,10 @@ export class TradingEngineDO extends DurableObject<Env> {
   private agentInitError: string | null = null;
   /** Telegram for the agent when its runner is missing, deduplicated under the agent's kv prefix (acct:agent:). */
   private readonly agentAlerts: Alerts;
+  /** Ends TE's wait for the agent step in progress at once (the step itself carries on and re-reads the kill switches). */
+  private agentPreempt: (() => void) | null = null;
+  /** While above zero no agent step starts: a kill's square-off (and its relay panic) is running. */
+  private agentHold = 0;
   /** The running bar-archive job, if any (concurrent callers share it). */
   private archiving: Promise<BarArchiveStatus> | null = null;
 
@@ -241,8 +257,19 @@ export class TradingEngineDO extends DurableObject<Env> {
       alert: (text) => this.alerts.send(text, { key: "quote-recorder", minIntervalMs: 6 * 60 * MINUTE_MS }),
     });
     const ids = enabledAccounts(env);
-    const views = accountViews(this.rt, ids);
-    const view = (id: AccountId): AccountView => views.find((v) => v.id === id) ?? accountViews(this.rt, [id])[0];
+    // Each account's config is validated on its own: one that fails leaves that account out (the agent's with the
+    // reason on /status and in an alert), never main. Main's own failure still throws.
+    const views = accountViews(this.rt, ids, (id, err) => {
+      const reason = errorMessage(err).slice(0, 300);
+      if (id === "agent") this.agentInitError = reason;
+      logger.error("account not started: its config failed validation", { account: id, error: reason });
+    });
+    const started = new Set<string>(views.map((v) => v.id));
+    const view = (id: AccountId): AccountView => {
+      const v = views.find((x) => x.id === id);
+      if (!v) throw new Error(`account ${id} has no view`);
+      return v;
+    };
     const copyFor = (r: Repository, c: EngineConfig, account: AccountView, alerts: Alerts): CopyAlertContext => ({
       repo: r,
       cfg: c,
@@ -254,6 +281,7 @@ export class TradingEngineDO extends DurableObject<Env> {
     });
     this.copy = copyFor(repo, cfg, view("main"), this.alerts);
     this.followers = followerIds(ids)
+      .filter((id) => started.has(id))
       .map((id) => {
         const a = accountRuntime(this.rt, id);
         // Its alert dedupe keys live under the account's prefix (the scoped repo's state).
@@ -262,8 +290,8 @@ export class TradingEngineDO extends DurableObject<Env> {
       });
     this.agentEnabled = ids.includes("agent");
     this.agentAlerts = new Alerts(env, { get: <T,>(k: string) => repo.state.get<T>(accountStateKey("agent", k)), set: <T,>(k: string, v: T) => repo.state.set(accountStateKey("agent", k), v) }, logger);
-    if (this.agentEnabled) {
-      // A failure here (for example the agent's pinned config failing validation) leaves the agent off, never main.
+    if (this.agentEnabled && started.has("agent")) {
+      // A failure here leaves the agent off, never main.
       try {
         this.agent = this.buildAgentRunner(env, ctx);
       } catch (err) {
@@ -282,7 +310,8 @@ export class TradingEngineDO extends DurableObject<Env> {
 
   /**
    * The options agent's runner: its own account (PAPER@agent), its own Upstox quote budget (never paperQuotes, so its
-   * requests cannot push main onto synthetic prices) and the AgentDO and MarketFeedDO stubs; main's market data.
+   * requests cannot push main onto synthetic prices) and the AgentDO and MarketFeedDO stubs. It is never given main's
+   * market data source: the features of main's tick are its only market input.
    */
   private buildAgentRunner(env: Env, ctx: DurableObjectState): AgentRunner {
     const account = accountRuntime(this.rt, "agent");
@@ -291,7 +320,7 @@ export class TradingEngineDO extends DurableObject<Env> {
     return new AgentRunner({
       account,
       mainRepo: this.rt.repo,
-      settings: agentSettings(env),
+      settings: agentSettings(env, this.rt.logger),
       storage: { get: <T,>(key: string) => ctx.storage.get<T>(key), put: <T,>(key: string, value: T) => ctx.storage.put(key, value) },
       agentDo: {
         submitBar: (input) => agentDo().submitBar(input),
@@ -300,7 +329,6 @@ export class TradingEngineDO extends DurableObject<Env> {
       },
       feed: { getOptionFlowAsOf: (index, asOfMs) => feed().getOptionFlowAsOf(index, asOfMs) as Promise<OptionFlowView | null> },
       quotes: agentQuoteSource(upstoxLiveClient(env)),
-      market: this.market,
       instruments: this.instruments,
       marketContext: this.marketContext,
       alerts: new Alerts(env, account.repo.state, this.rt.logger),
@@ -611,7 +639,7 @@ export class TradingEngineDO extends DurableObject<Env> {
       for (const f of this.followers) await this.followerPositions(f, report, cal);
       counts = await this.openCounts();
     }
-    // The options agent last, under its own time budget: main's exits and polls are done.
+    // The options agent last, under its own time budget: main's exits and polls are done. None while a kill squares off.
     await this.agentStep(report, cal, degraded, now);
 
     if (this.liveAvailable && (counts.LIVE > 0 || mode === "LIVE") && now - this.hot.lastReconcileMs >= RECONCILE_EVERY_MS) {
@@ -629,22 +657,34 @@ export class TradingEngineDO extends DurableObject<Env> {
   }
 
   /**
-   * The options agent's step (agentRunner.ts) under its own budget, agentStepBudgetMs: TE waits at most that long, and
-   * the runner checks the same deadline before each remote call. It never throws and never counts toward DEGRADED.
+   * The options agent's step (agentRunner.ts) under its own budget: agentStepBudgetMs, and never past
+   * AGENT_STEP_ALARM_MARGIN_MS before main's next alarm (a step with less than AGENT_STEP_MIN_MS is skipped). TE
+   * waits at most that long, and the runner checks the same deadline before each remote call. A kill's square-off
+   * ends the wait at once (agentPreempt) and starts no step while it runs (agentHold). It never throws and never
+   * counts toward DEGRADED.
    */
   private async agentStep(report: CycleReport, cal: TradingCalendar, degraded: boolean, tickStartMs: number): Promise<void> {
-    if (!this.agentEnabled) return;
+    if (!this.agentEnabled || this.agentHold > 0) return;
     const runner = this.agent;
     if (!runner) {
-      await this.agentAlerts.send(`⚠ ${ALERT_PREFIX} is in ACCOUNTS but could not start, so it stays off: ${this.agentInitError ?? "unknown error"}`, { key: "agent-init", minIntervalMs: 6 * 60 * MINUTE_MS });
+      await this.agentAlerts
+        .send(`⚠ ${ALERT_PREFIX} is in ACCOUNTS but could not start, so it stays off: ${this.agentInitError ?? "unknown error"}`, { key: "agent-init", minIntervalMs: 6 * 60 * MINUTE_MS })
+        .catch((err) => this.rt.logger.warn("agent init alert failed", { error: errorMessage(err) }));
       return;
     }
-    const budget = agentStepBudgetMs(tickStartMs, Date.now());
+    const now = Date.now();
+    const nextAlarmMs = tickStartMs + (degraded ? DEGRADED_LOOP_MS : LOOP_MS);
+    const budget = Math.min(agentStepBudgetMs(tickStartMs, now), nextAlarmMs - AGENT_STEP_ALARM_MARGIN_MS - now);
+    if (budget < AGENT_STEP_MIN_MS) {
+      this.rt.logger.warn("agent step skipped: main's next tick is due", { budgetMs: budget });
+      return;
+    }
     let timer: ReturnType<typeof setTimeout> | undefined;
     try {
       await Promise.race([
         runner.step(report, cal, degraded, Date.now() + budget),
         new Promise<void>((resolve) => {
+          this.agentPreempt = resolve;
           timer = setTimeout(resolve, budget);
         }),
       ]);
@@ -653,6 +693,7 @@ export class TradingEngineDO extends DurableObject<Env> {
       this.rt.logger.error("agent step failed", { error: errorMessage(err) });
     } finally {
       clearTimeout(timer);
+      this.agentPreempt = null;
     }
   }
 
@@ -894,15 +935,34 @@ export class TradingEngineDO extends DurableObject<Env> {
         logger.error("agent end of day failed", { error: errorMessage(err) });
       } finally {
         // Queued even when the end of day failed (the POSTMARKET cron asks too; the AgentDO keeps one per day).
-        try {
-          await this.env.AGENT_DO.get(this.env.AGENT_DO.idFromName("agent")).scheduleReview(istDate(now));
-        } catch (err) {
-          logger.error("agent review not scheduled", { error: errorMessage(err) });
-        }
+        await this.scheduleAgentReview(istDate(now));
       }
     }
     await this.alerts.send(`📊 ${istDate(now)} summary\n${lines.join("\n")}`);
     return { ok: true, message: lines.join(" | ") };
+  }
+
+  /**
+   * Asks the AgentDO to queue the nightly review of `date`, waiting at most AGENT_REVIEW_SCHEDULE_MS: a silent AgentDO
+   * never holds up main's daily summary. The POSTMARKET cron asks again after the end of day. Never throws.
+   */
+  private async scheduleAgentReview(date: string): Promise<void> {
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    try {
+      const answered = await Promise.race([
+        this.env.AGENT_DO.get(this.env.AGENT_DO.idFromName("agent"))
+          .scheduleReview(date)
+          .then(() => true),
+        new Promise<false>((resolve) => {
+          timer = setTimeout(() => resolve(false), AGENT_REVIEW_SCHEDULE_MS);
+        }),
+      ]);
+      if (!answered) this.rt.logger.warn("agent review not scheduled yet: the AgentDO did not answer in time; the POSTMARKET cron asks again", { date, waitedMs: AGENT_REVIEW_SCHEDULE_MS });
+    } catch (err) {
+      this.rt.logger.error("agent review not scheduled", { date, error: errorMessage(err) });
+    } finally {
+      clearTimeout(timer);
+    }
   }
 
   /**
@@ -969,10 +1029,28 @@ export class TradingEngineDO extends DurableObject<Env> {
    * Engages the kill switch. Position cycles treat it as a halt and market-exit every open position;
    * LIVE positions are also handed to the relay's panic (cancel all, square off longs).
    * `inTick` is true when called from inside a tick: the exits then run in an immediate follow-up tick.
+   * Outside a tick the agent's kill switch follows at once, after main's square-off (with its own exits when
+   * squaring off); inside one, the agent's own coupling at its next step does it.
    */
   private async engageKill(reason: string, actor: string, squareOff: boolean, inTick = false): Promise<void> {
     await this.setMainKill(reason, actor, squareOff);
     if (squareOff) await this.squareOffNow(reason, actor, inTick);
+    if (!inTick) await this.coupleAgentKill(reason, actor, squareOff);
+  }
+
+  /**
+   * Main's kill engages the agent's at once, so a main kill reset seconds later can never leave the agent trading.
+   * Called after main's square-off, so the agent's exits never delay main's. Never throws: a failure is logged and the
+   * agent's coupling at its next step is the backstop.
+   */
+  private async coupleAgentKill(reason: string, actor: string, squareOff: boolean): Promise<void> {
+    if (!this.agentEnabled) return;
+    try {
+      const res = await this.agentKill({ engaged: true, squareOff, reason: `main kill switch: ${reason}` }, actor, false);
+      if (!res.ok) this.rt.logger.warn("agent kill switch not engaged with main's", { message: res.message.slice(0, 200) });
+    } catch (err) {
+      this.rt.logger.error("agent kill switch not engaged with main's", { error: errorMessage(err) });
+    }
   }
 
   /** Main's kill switch on, audited and alerted; no exits yet. */
@@ -984,14 +1062,31 @@ export class TradingEngineDO extends DurableObject<Env> {
     await this.alerts.send(`🛑 KILL SWITCH by ${actor}: ${reason}${squareOff ? " (squaring off)" : ""}`);
   }
 
-  /** Exits every position whose account's kill switch is on: an immediate tick (or the next, inside a tick); LIVE also via the relay's panic. */
+  /**
+   * Exits every position whose account's kill switch is on: an immediate tick (or the next, inside a tick); LIVE also
+   * via the relay's panic. Outside a tick main goes first: TE stops waiting for an agent step already running, and no
+   * agent step starts until the square-off tick and the panic are done.
+   */
   private async squareOffNow(reason: string, actor: string, inTick = false): Promise<void> {
-    const { repo } = this.rt;
-    if (inTick) this.tickSoon = true;
-    else {
+    if (inTick) {
+      this.tickSoon = true;
+      await this.relayPanic(reason, actor);
+      return;
+    }
+    this.agentHold++;
+    try {
+      this.agentPreempt?.();
       if (this.ticking) await this.ticking;
       await this.runTick();
+      await this.relayPanic(reason, actor);
+    } finally {
+      this.agentHold--;
     }
+  }
+
+  /** LIVE positions to the relay's panic (cancel all, square off longs), when main holds any. */
+  private async relayPanic(reason: string, actor: string): Promise<void> {
+    const { repo } = this.rt;
     if (this.relay && (await repo.positions.open("LIVE")).length > 0) {
       try {
         const res = await this.relay.panic(reason);
@@ -1016,6 +1111,8 @@ export class TradingEngineDO extends DurableObject<Env> {
     if (!f) return { ok: false, message: `account ${target} is not enabled` };
     const res = await this.followerKill(f, req, actor);
     if (req.engaged && req.squareOff) {
+      // The follower's exits come before the agent's step in a tick; a running agent step is not waited for.
+      this.agentPreempt?.();
       if (this.ticking) await this.ticking;
       await this.runTick();
     }
@@ -1023,8 +1120,10 @@ export class TradingEngineDO extends DurableObject<Env> {
   }
 
   /**
-   * "all" (Telegram /kill): main's switch first, then each follower's and the agent's, each on its own so one failure
-   * never stops the rest (killAll). Then one tick squares off every account at once.
+   * "all" (Telegram /kill): main's switch first, then each follower's, each on its own so one failure never stops the
+   * rest (killAll). With a square-off, one tick then squares off main and the followers (and the relay panic goes out)
+   * before the agent's switch is set and its own exits run: the agent never delays main's square-off. Without one, and
+   * for a reset, the agent's switch is set in the same pass as the others.
    */
   private async killAllAccounts(req: { engaged: boolean; squareOff: boolean; reason: string }, actor: string): Promise<AdminResult> {
     const reason = req.reason || "manual";
@@ -1036,11 +1135,22 @@ export class TradingEngineDO extends DurableObject<Env> {
         return { ok: true, message: "kill switch engaged" };
       },
     };
-    const others: KillStep[] = this.followers.map((f) => ({ label: f.spec.shortLabel, run: () => this.followerKill(f, req, actor) }));
-    if (this.agentEnabled) others.push({ label: "Agent", run: () => this.agentKill(req, actor, true) });
-    const res = await killAll(req.engaged, main, others);
-    if (req.engaged && req.squareOff) await this.squareOffNow(reason, actor);
-    return res;
+    const followers: KillStep[] = this.followers.map((f) => ({ label: f.spec.shortLabel, run: () => this.followerKill(f, req, actor) }));
+    if (!(req.engaged && req.squareOff)) {
+      const others = this.agentEnabled ? [...followers, { label: "Agent", run: () => this.agentKill(req, actor, true) }] : followers;
+      return killAll(req.engaged, main, others);
+    }
+    const res = await killAll(true, main, followers);
+    await this.squareOffNow(reason, actor);
+    if (!this.agentEnabled) return res;
+    // Alone (not "all"): the agent sets its switch, then runs its own exits.
+    let agent: AdminResult;
+    try {
+      agent = await this.agentKill(req, actor, false);
+    } catch (err) {
+      agent = { ok: false, message: `Agent: kill switch not engaged: ${errorMessage(err).slice(0, 200)}` };
+    }
+    return { ok: res.ok && agent.ok, message: `${res.message}; ${agent.message}` };
   }
 
   /** One follower's kill switch. */
@@ -1052,9 +1162,9 @@ export class TradingEngineDO extends DurableObject<Env> {
   }
 
   /**
-   * The agent account's kill switch (AgentRunner.setKill). Alone, an engage that squares off runs the agent's own
-   * exits and never a tick; for "all", the one tick after every switch does it. A reset is refused during the
-   * agent's drawdown halt (use Re-arm).
+   * The agent account's kill switch (AgentRunner.setKill). Alone (`all` false), an engage that squares off runs the
+   * agent's own exits and never a tick; with `all`, the switch is only set (a kill of every account without a
+   * square-off, or a reset). A reset is refused during the agent's drawdown halt (use Re-arm).
    */
   private async agentKill(req: { engaged: boolean; squareOff: boolean; reason: string }, actor: string, all: boolean): Promise<AdminResult> {
     if (!this.agentEnabled) return { ok: false, message: "account agent is not enabled" };
@@ -1133,6 +1243,34 @@ export class TradingEngineDO extends DurableObject<Env> {
     }
     if (this.agent) lines.push(...(await this.agent.statusLines()));
     else if (this.agentEnabled) lines.push(`Agent (paper experiment): not running (${this.agentInitError ?? "unknown error"})`);
+    if (this.agentEnabled) lines.push(await this.agentDoStatusLine(now));
     return lines.join("\n");
+  }
+
+  /**
+   * The AgentDO's line for /status: mode, pause, next job, today's spend against the cap and the last batch. Waits at
+   * most AGENT_STATUS_MS and never throws. Calling /ops/status first after a deploy makes TE the AgentDO's first
+   * caller, so a new AgentDO is placed near TE, which calls it several times a tick (docs/AGENT.md, Rollout).
+   */
+  private async agentDoStatusLine(now: number): Promise<string> {
+    const at = (ms: number) => `${istDate(ms) === istDate(now) ? "" : `${istDate(ms)} `}${formatHHMM(istMinutes(ms))}`;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    try {
+      const s = await Promise.race([
+        this.env.AGENT_DO.get(this.env.AGENT_DO.idFromName("agent")).status() as Promise<AgentStatus>,
+        new Promise<null>((resolve) => {
+          timer = setTimeout(() => resolve(null), AGENT_STATUS_MS);
+        }),
+      ]);
+      if (!s) return `  AgentDO: no answer within ${AGENT_STATUS_MS / 1000} s`;
+      return (
+        `  AgentDO: mode ${s.mode}${s.paused ? " · PAUSED" : ""} · next job ${s.nextJobMs !== null ? at(s.nextJobMs) : "none"}` +
+        ` · spent $${s.spentUsd.toFixed(3)} of $${s.capUsd.toFixed(2)} today · last batch ${s.lastBatch ? `${at(s.lastBatch.barCloseMs)} ${s.lastBatch.status}` : "none"}`
+      );
+    } catch (err) {
+      return `  AgentDO: status unavailable (${errorMessage(err).slice(0, 120)})`;
+    } finally {
+      clearTimeout(timer);
+    }
   }
 }

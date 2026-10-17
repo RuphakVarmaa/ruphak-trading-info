@@ -6,7 +6,7 @@
  */
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { ACCOUNTS, accountConfig } from "../../../../src/engine/accounts";
-import { agentPositionPass, bookAsOf, bookFrom, buildReflexInput, executeAgentBatch, initialBook } from "../../../../src/engine/agent/agentCycle";
+import { agentPositionPass, bookAsOf, bookFrom, buildReflexInput, executeAgentBatch, initialBook, type ExecuteContext } from "../../../../src/engine/agent/agentCycle";
 import { latestClosedBarMs } from "../../../../src/engine/agent/causal";
 import { AGENT_STEP } from "../../../../src/engine/agent/constants";
 import { drawdownBreached, riskSnapshotFrom } from "../../../../src/engine/agent/risk";
@@ -22,7 +22,7 @@ import { sequentialIds, silentLogger, type OptionQuoteSource, type Repository } 
 import { accountRepository } from "../../../../src/engine/repo/accountRepo";
 import { InMemoryRepository } from "../../../../src/engine/repo/memory";
 import type { MarketSnapshot, OptionContract, Position, TradeRecord, TradingMode } from "../../../../src/engine/types";
-import { AgentRunner, HOT_KEY, agentQuoteSource, agentStepBudgetMs, killAll, type AgentDoPort, type AgentHot, type AgentResult, type KillStep } from "./agentRunner";
+import { AGENT_NO_MARKET, AgentRunner, HOT_KEY, agentQuoteSource, agentStepBudgetMs, killAll, type AgentDoPort, type AgentHot, type AgentResult, type KillStep } from "./agentRunner";
 
 vi.mock("../../../../src/engine/agent/agentCycle", () => ({
   agentPositionPass: vi.fn(),
@@ -195,12 +195,26 @@ const QUOTES: OptionQuoteSource = {
   quote: async (c, ctx) => ({ symbol: c.tradingSymbol, t: ctx.t, ltp: 100, bid: 99.5, ask: 100.5, bidQty: 650, askQty: 650, source: "upstox" }),
 };
 
-function setup(o: { settings?: Partial<AgentSettings>; agentDo?: FakeAgentDo; clock?: Clock; repo?: (r: Repository) => Repository; quotes?: OptionQuoteSource | null; hot?: Partial<AgentHot> } = {}) {
+function setup(
+  o: {
+    settings?: Partial<AgentSettings>;
+    agentDo?: FakeAgentDo;
+    clock?: Clock;
+    repo?: (r: Repository) => Repository;
+    quotes?: OptionQuoteSource | null;
+    hot?: Partial<AgentHot>;
+    /** Main's repository and TE's storage, to share them between two runners (a restart). */
+    base?: InMemoryRepository;
+    kept?: Map<string, unknown>;
+    /** True: this put to TE's storage fails. */
+    failPut?: () => boolean;
+  } = {},
+) {
   const clock = o.clock ?? new FixedClock(T0);
-  const base = new InMemoryRepository(cfg, T0);
+  const base = o.base ?? new InMemoryRepository(cfg, T0);
   const scoped = accountRepository(base, "agent", agentCfg, () => clock.now());
   const agentRepo = o.repo ? o.repo(scoped) : scoped;
-  const kept = new Map<string, unknown>();
+  const kept = o.kept ?? new Map<string, unknown>();
   if (o.hot) kept.set(HOT_KEY, structuredClone(o.hot));
   const agentDo = o.agentDo ?? new FakeAgentDo();
   const alerts: string[] = [];
@@ -214,17 +228,13 @@ function setup(o: { settings?: Partial<AgentSettings>; agentDo?: FakeAgentDo; cl
     storage: {
       get: async <T,>(key: string) => (kept.has(key) ? (structuredClone(kept.get(key)) as T) : undefined),
       put: async <T,>(key: string, value: T) => {
+        if (o.failPut?.()) throw new Error("storage put failed (transient)");
         kept.set(key, structuredClone(value));
       },
     },
     agentDo,
     feed: { getOptionFlowAsOf: async () => null },
     quotes: o.quotes === undefined ? QUOTES : o.quotes,
-    market: {
-      snapshot: async () => {
-        throw new Error("the runner reads no market data itself");
-      },
-    },
     instruments: { expiries: async () => [], resolve: async () => null, strikes: async () => [] },
     marketContext,
     alerts: {
@@ -602,6 +612,8 @@ describe("AgentRunner.step", () => {
   it("re-arms only after the step in progress, so the step cannot write the old peak back", async () => {
     const h = setup({ hot: { date: DAY, peakEquity: 500_000, ddHalt: true } });
     await h.agentRepo.ledger.save({ date: "2026-10-16", mode: "PAPER", realized: -80_000, unrealized: 0, charges: 0, trades: 4, wins: 0, losses: 4, consecutiveLosses: 4, ordersPlaced: 8, maxIntradayDrawdown: 80_000, peakEquity: 500_000, startEquity: 500_000, updatedMs: T0 - 3 * 86_400_000 });
+    // The halt as it stands once latched: its kill switch on.
+    await h.agentRepo.settings.update({ killSwitch: true, killReason: "max drawdown 15% reached: re-arm on the Agent page" }, "engine");
     await h.agentRepo.positions.save(position());
     let release = () => {};
     vi.mocked(agentPositionPass).mockImplementationOnce(
@@ -695,11 +707,16 @@ describe("AgentRunner.step", () => {
       outbox: [{ barCloseMs: istAt("2026-10-16", "15:05"), t: 1, decisions: [{ decisionId: "x", execution: {} as never }], exits: [], trades: [], risk: risk(1) }],
     };
     const h = setup({ hot: yesterday });
+    // The AgentDO is away, so the record stays in the outbox (a paused agent still sends its records when it can).
+    h.agentDo.record = async () => {
+      throw new Error("AgentDO restarting");
+    };
     await h.runner.step(report(), calendar, false, LATER);
     const hot = h.hot();
     expect(hot).toMatchObject({ date: DAY, lastSubmittedBarMs: istMidnight(DAY), lastExecutedBarMs: istMidnight(DAY), peakEquity: 510_000, ddHalt: true, paused: true, sentTrades: [] });
     expect(hot.books.map((b) => b.t)).toEqual([T0]);
     expect(hot.outbox).toHaveLength(1);
+    expect(hot.outbox[0].barCloseMs).toBe(istAt("2026-10-16", "15:05"));
   });
 
   it("alerts once a day when the model budget is used up", async () => {
@@ -837,5 +854,340 @@ describe("afterEndOfDay", () => {
     h.clock.set(istAt(DAY, "16:00"));
     expect(await h.runner.afterEndOfDay()).toMatch(/; 1 trade record wait for the AgentDO$/);
     expect(h.hot().unsentTrades.map((t) => t.positionId)).toEqual(["pos-9"]);
+  });
+});
+
+/** Earlier losses: today starts at ₹4,20,000 against a ₹5,00,000 peak (16%, past the 15% limit). */
+async function seedDrawdown(repo: Repository, realized = -80_000): Promise<void> {
+  await repo.ledger.save({ date: "2026-10-16", mode: "PAPER", realized, unrealized: 0, charges: 0, trades: 4, wins: 0, losses: 4, consecutiveLosses: 4, ordersPlaced: 8, maxIntradayDrawdown: -realized, peakEquity: 500_000, startEquity: 500_000, updatedMs: T0 - 3 * 86_400_000 });
+}
+
+const killRows = async (repo: Repository) => (await repo.audit.recent(50)).filter((a) => a.action === "kill");
+const haltAlerts = (alerts: string[]) => alerts.filter((a) => /from its peak equity/.test(a));
+
+describe("the drawdown halt acts first, latches last and is checked again on every step", () => {
+  it("a TE storage write that fails at the breach: the halt's actions are done already, and nothing is lost on the next step", async () => {
+    let failNext = true;
+    const h = setup({ hot: { date: DAY, peakEquity: 500_000 }, failPut: () => (failNext ? ((failNext = false), true) : false) });
+    await seedDrawdown(h.agentRepo);
+    await h.agentRepo.positions.save(position());
+    await h.runner.step(report(), calendar, false, LATER);
+    // The latch is the last write of the halt: it failed, so the step counts as failed...
+    expect(h.runner.errors).toBe(1);
+    // ...but the kill switch, the audit row, the alert and the exit at market were already done.
+    expect(await h.agentRepo.settings.get()).toMatchObject({ killSwitch: true, killReason: "max drawdown 15% reached: re-arm on the Agent page" });
+    expect(await h.agentRepo.positions.get("pos-1")).toMatchObject({ status: "CLOSED", exitReason: "KILL_SWITCH" });
+    h.clock.advance(30_000);
+    await h.runner.step(report(), calendar, false, LATER + 30_000);
+    expect(h.runner.errors).toBe(0);
+    expect(h.hot().ddHalt).toBe(true);
+    expect((await h.agentRepo.settings.get()).killSwitch).toBe(true);
+    expect(await killRows(h.base)).toHaveLength(1);
+    expect(haltAlerts(h.alerts)).toHaveLength(1);
+  });
+
+  it("a kill-switch write that fails at the breach: the next step does all of it, also after TE restarted", async () => {
+    const base = new InMemoryRepository(cfg, T0);
+    const kept = new Map<string, unknown>([[HOT_KEY, { date: DAY, peakEquity: 500_000 }]]);
+    const clock = new FixedClock(T0);
+    let failNext = true;
+    const failingSettings = (r: Repository): Repository => ({
+      ...r,
+      settings: {
+        get: () => r.settings.get(),
+        update: async (patch, by) => {
+          if (failNext) {
+            failNext = false;
+            throw new Error("D1_ERROR: transient");
+          }
+          return r.settings.update(patch, by);
+        },
+      },
+    });
+    const first = setup({ base, kept, clock, repo: failingSettings });
+    await seedDrawdown(first.agentRepo);
+    await first.agentRepo.positions.save(position());
+    await first.runner.step(report(), calendar, false, LATER);
+    expect(first.runner.errors).toBe(1);
+    // Nothing latched: the halt is not on record yet.
+    expect(first.hot().ddHalt ?? false).toBe(false);
+    expect((await first.agentRepo.settings.get()).killSwitch).toBe(false);
+
+    // TE restarted: a new runner on the same storage and book.
+    const second = setup({ base, kept, clock });
+    for (let k = 1; k <= 4; k++) {
+      clock.set(T0 + k * 30_000);
+      await second.runner.step(report({ t: clock.now() }), calendar, false, clock.now() + 60_000);
+    }
+    expect(second.hot().ddHalt).toBe(true);
+    expect(await second.agentRepo.settings.get()).toMatchObject({ killSwitch: true });
+    expect(await second.agentRepo.positions.open("PAPER")).toEqual([]);
+    expect(await second.agentRepo.positions.get("pos-1")).toMatchObject({ status: "CLOSED", exitReason: "KILL_SWITCH" });
+    expect(await killRows(base)).toHaveLength(1);
+    expect(haltAlerts(second.alerts)).toHaveLength(1);
+  });
+
+  it("once latched, a kill switch that went off is put back on and the exits run again", async () => {
+    const h = setup({ hot: { date: DAY, peakEquity: 500_000, ddHalt: true } });
+    await seedDrawdown(h.agentRepo);
+    await h.agentRepo.positions.save(position());
+    expect((await h.agentRepo.settings.get()).killSwitch).toBe(false);
+    await h.runner.step(report(), calendar, false, LATER);
+    expect(await h.agentRepo.settings.get()).toMatchObject({ killSwitch: true, killReason: "max drawdown 15% reached: re-arm on the Agent page" });
+    expect(await h.agentRepo.positions.get("pos-1")).toMatchObject({ status: "CLOSED", exitReason: "KILL_SWITCH" });
+    // The halt was on record already: no second audit row or alert.
+    expect(await killRows(h.base)).toEqual([]);
+    expect(haltAlerts(h.alerts)).toEqual([]);
+  });
+});
+
+describe("the runner and main's market data", () => {
+  it("gives every batch a market source that refuses reads: the agent never reads main's", async () => {
+    const h = setup();
+    h.agentDo.batches = [batch()];
+    await h.runner.step(report(), calendar, false, LATER);
+    const [deps] = vi.mocked(executeAgentBatch).mock.calls[0];
+    expect(deps.market).toBe(AGENT_NO_MARKET);
+    expect(h.runner.deps().market).toBe(AGENT_NO_MARKET);
+    await expect(deps.market.snapshot(T0)).rejects.toThrow("the agent never reads main's market data source");
+  });
+});
+
+describe("the operator's pause and a running batch", () => {
+  it("passes the pause to the batch, read live: a pause set while the batch runs reaches its order checks", async () => {
+    const h = setup();
+    h.agentDo.batches = [batch()];
+    const seen: (boolean | null)[] = [];
+    vi.mocked(executeAgentBatch).mockImplementationOnce(async (_deps, b, x) => {
+      const paused = (x as ExecuteContext & { paused?: () => boolean }).paused;
+      seen.push(paused ? paused() : null);
+      // /ops/agent-pause arrives while the batch is pricing its entry.
+      await h.runner.setPaused(true, "ops");
+      seen.push(paused ? paused() : null);
+      return { barCloseMs: b.barCloseMs, t: x.nowMs, decisions: [], exits: [], trades: [], risk: risk(x.nowMs) };
+    });
+    await h.runner.step(report(), calendar, false, LATER);
+    expect(seen).toEqual([false, true]);
+  });
+});
+
+describe("the book's time", () => {
+  it("is stamped after its positions are read: a fill after a bar's close never reaches that bar's book", async () => {
+    // A step that starts 2 s before the 10:05 close; its exit pass is slow and ends 1 s after the close.
+    const close = BAR + 300_000;
+    const clock = new FixedClock(close - 2_000);
+    const h = setup({ clock });
+    await h.agentRepo.positions.save(position());
+    vi.mocked(agentPositionPass).mockImplementationOnce(async (deps) => {
+      clock.set(close + 1_000);
+      return runPositionCycle(deps, {});
+    });
+    await h.runner.step(report({ t: close - 2_000 }), calendar, false, close + 60_000);
+    const book = h.hot().books.at(-1)!;
+    expect(book.t).toBe(close + 1_000);
+    // bookAsOf for the 10:05 bar picks the newest book at or before its close: never this one.
+    expect(book.t).toBeGreaterThan(close);
+  });
+
+  it("is never older than the marks it carries when the clock moves on every read (as Date.now does in a Worker)", async () => {
+    let t = T0;
+    const clock: Clock = { now: () => ++t, sleep: async () => {} };
+    const h = setup({ clock });
+    await h.agentRepo.positions.save(position({ markMs: T0 - 60_000 }));
+    let readAt = 0;
+    const open = h.agentRepo.positions.open.bind(h.agentRepo.positions);
+    h.agentRepo.positions.open = async (mode) => {
+      const rows = await open(mode);
+      readAt = t;
+      return rows;
+    };
+    await h.runner.step(report(), calendar, false, T0 + 60_000);
+    const book = h.hot().books.at(-1)!;
+    // The exits re-marked the position during this step; the book is stamped after its positions were read.
+    expect(book.positions).toHaveLength(1);
+    expect(book.positions[0].markMs).toBeGreaterThan(T0);
+    expect(book.positions[0].markMs).toBeLessThanOrEqual(book.t);
+    expect(book.t).toBeGreaterThanOrEqual(readAt);
+  });
+});
+
+/** A repository whose every call takes `lat` ms of the clock (a D1 round trip); calls sent together overlap. */
+function slowRepo<T extends object>(target: T, clock: FixedClock, lat: number): T {
+  return new Proxy(target, {
+    get(t, p, r) {
+      const v = Reflect.get(t, p, r);
+      if (typeof v === "function") {
+        return (...args: unknown[]) => {
+          const start = clock.now();
+          const out = (v as (...a: unknown[]) => unknown).apply(t, args);
+          if (out && typeof (out as Promise<unknown>).then === "function") {
+            return (out as Promise<unknown>).then((x) => {
+              clock.set(Math.max(clock.now(), start + lat));
+              return x;
+            });
+          }
+          return out;
+        };
+      }
+      if (v && typeof v === "object" && !Array.isArray(v) && !(v instanceof Map)) return slowRepo(v as object, clock, lat);
+      return v;
+    },
+  });
+}
+
+describe("the bar while main is positioned (the agent's step gets its 4 s floor)", () => {
+  it("is still submitted on the first tick at 60 ms a D1 round trip, 100 ms an AgentDO call and 300 ms a flow read", async () => {
+    const tick0 = BAR + 30_000;
+    const clock = new FixedClock(tick0);
+    const base = slowRepo(new InMemoryRepository(cfg, tick0) as unknown as Repository, clock, 60);
+    const scoped = accountRepository(base, "agent", agentCfg, () => clock.now());
+    const kept = new Map<string, unknown>();
+    const submits: number[] = [];
+    const marketContext = new MarketContextStore();
+    marketContext.set("NIFTY", { spot: 25_000, vix: 13, t: tick0 });
+    marketContext.set("SENSEX", { spot: 82_000, vix: 13, t: tick0 });
+    const runner = new AgentRunner({
+      account: { spec: ACCOUNTS.agent, cfg: agentCfg, repo: scoped },
+      mainRepo: base,
+      settings: { ...SETTINGS, mode: "shadow" },
+      storage: { get: async <T,>(k: string) => (kept.has(k) ? (structuredClone(kept.get(k)) as T) : undefined), put: async <T,>(k: string, v: T) => void kept.set(k, structuredClone(v)) },
+      agentDo: {
+        submitBar: async (input) => {
+          clock.advance(100);
+          submits.push(input.barCloseMs);
+          return { accepted: true, reason: null };
+        },
+        takeDecisions: async () => {
+          clock.advance(100);
+          return null;
+        },
+        recordExecution: async () => {
+          clock.advance(100);
+        },
+      },
+      feed: {
+        getOptionFlowAsOf: async () => {
+          const start = clock.now();
+          await Promise.resolve();
+          clock.set(Math.max(clock.now(), start + 300));
+          return null;
+        },
+      },
+      quotes: null,
+      instruments: { expiries: async () => [], resolve: async () => null, strikes: async () => [] },
+      marketContext,
+      alerts: { send: async () => true },
+      logger: silentLogger,
+      calendar,
+      clock,
+      newId: sequentialIds("ag"),
+    });
+    vi.mocked(latestClosedBarMs).mockReturnValue({ barCloseMs: BAR, complete: ["NIFTY", "SENSEX"] });
+    // Main holds a position: its cycle and two 10 s exit polls bring TE to 24 s past the tick's start.
+    clock.set(tick0 + 24_000);
+    const budget = agentStepBudgetMs(tick0, clock.now());
+    expect(budget).toBe(AGENT_STEP.minMs);
+    await runner.step(report({ t: clock.now() }), calendar, false, clock.now() + budget);
+    expect(submits).toEqual([BAR]);
+  });
+});
+
+describe("the risk the AgentDO keeps", () => {
+  it("is sent while paused too, at most once a minute", async () => {
+    const h = setup();
+    await h.runner.setPaused(true, "ops");
+    await h.runner.step(report(), calendar, false, LATER);
+    expect(h.agentDo.records.map((r) => [r.decisions.length, r.risk.t])).toEqual([[0, T0]]);
+    h.clock.advance(30_000);
+    await h.runner.step(report(), calendar, false, LATER + 30_000);
+    expect(h.agentDo.records).toHaveLength(1);
+    h.clock.advance(30_000);
+    await h.runner.step(report(), calendar, false, LATER + 60_000);
+    expect(h.agentDo.records).toHaveLength(2);
+    expect(h.agentDo.takes).toEqual([]);
+  });
+
+  it("drops the halt at once after a re-arm, also in the evening when no step runs", async () => {
+    const h = setup({ hot: { date: DAY, peakEquity: 500_000, ddHalt: true } });
+    await seedDrawdown(h.agentRepo);
+    await h.agentRepo.settings.update({ killSwitch: true, killReason: "max drawdown 15% reached: re-arm on the Agent page" }, "engine");
+    h.clock.set(istAt(DAY, "18:30"));
+    const res = await h.runner.rearm("dashboard");
+    expect(res).toEqual({ ok: true, message: "Agent re-armed: kill switch off; peak equity restarts at ₹420000" });
+    const latest = h.agentDo.records.at(-1)!;
+    expect(latest).toMatchObject({ t: istAt(DAY, "18:30"), decisions: [], exits: [], trades: [] });
+    expect(latest.risk).toMatchObject({ t: istAt(DAY, "18:30"), ddHalt: false, killSwitch: false, killReason: null, peakEquity: 420_000, equity: 420_000, ddPct: 0 });
+    expect(h.hot().lastRisk).toEqual(latest.risk);
+  });
+
+  it("re-arms even when the AgentDO does not answer; the next step's risk row corrects the page", async () => {
+    const h = setup({ hot: { date: DAY, peakEquity: 500_000, ddHalt: true } });
+    await seedDrawdown(h.agentRepo);
+    h.agentDo.record = async () => {
+      throw new Error("AgentDO restarting");
+    };
+    expect((await h.runner.rearm("dashboard")).ok).toBe(true);
+    expect(h.hot()).toMatchObject({ ddHalt: false, peakEquity: 420_000 });
+    expect(h.hot().lastRisk).toMatchObject({ ddHalt: false, killSwitch: false });
+  });
+});
+
+describe("clearing the kill switch without a halt", () => {
+  it("keeps measuring the drawdown from the old peak", async () => {
+    // 12% down from the peak, and the agent's kill switch on (main's was engaged and reset earlier).
+    const h = setup({ hot: { date: DAY, peakEquity: 500_000, ddHalt: false } });
+    await seedDrawdown(h.agentRepo, -60_000);
+    await h.agentRepo.settings.update({ killSwitch: true, killReason: "main kill switch engaged at 10:00" }, "engine");
+    const res = await h.runner.rearm("dashboard");
+    expect(res).toEqual({ ok: true, message: "Agent re-armed: kill switch off; drawdown still measured from ₹500000" });
+    expect((await h.agentRepo.settings.get()).killSwitch).toBe(false);
+    expect(h.hot().peakEquity).toBe(500_000);
+    expect(h.agentDo.records.at(-1)!.risk).toMatchObject({ peakEquity: 500_000, equity: 440_000, ddPct: 12, ddHalt: false, killSwitch: false });
+    expect(h.alerts).toContain("🤖 Agent (paper experiment): ✅ kill switch cleared by dashboard; drawdown still measured from ₹500000");
+  });
+});
+
+describe("Telegram's words for the model's orders", () => {
+  it("names the model's call and the option bought, and an exit's contract and plain reason", async () => {
+    const h = setup();
+    await h.agentRepo.positions.save(position({ id: "pos-1" }));
+    h.agentDo.batches = [
+      batch({
+        decisions: [
+          decision({ id: "d-long", direction: "LONG", directionConfidence: 0.85, setupQuality: 3, finalistId: "gen:NIFTY" }),
+          decision({ id: "d-short", index: "SENSEX", direction: "SHORT", directionConfidence: 0.82, setupQuality: 2, finalistId: "gen:SENSEX" }),
+        ],
+      }),
+    ];
+    vi.mocked(executeAgentBatch).mockImplementationOnce(async (_deps, b, x) => {
+      const exec = (action: "ENTERED" | "ENTRY_PENDING", sym: string, lots: number) => ({
+        t: x.nowMs,
+        gate: { fired: true, lines: [], codeToxic: [], codeRisk: "SAFE" as const, effectiveRisk: "SAFE" as const },
+        action,
+        detail: "test",
+        planId: "p",
+        positionId: null,
+        tradingSymbol: sym,
+        edge: null,
+        sizing: { p: 0.6, b: 1, kelly: 0.2, quarterKelly: 0.05, riskPct: 1, lots, riskRupees: 5_000, limitedBy: "the 1% cap" },
+      });
+      return {
+        barCloseMs: b.barCloseMs,
+        t: x.nowMs,
+        decisions: [
+          { decisionId: "d-long", execution: exec("ENTERED", "NIFTY26O2725100CE", 2) },
+          { decisionId: "d-short", execution: exec("ENTRY_PENDING", "SENSEX26O2382000PE", 1) },
+        ],
+        exits: [{ positionId: "pos-1", decisionId: "d-long", reason: "AGENT_REDUCE" as const, status: "FILLED" }],
+        trades: [],
+        risk: risk(x.nowMs),
+      };
+    });
+    await h.runner.step(report(), calendar, false, LATER);
+    expect(h.alerts).toEqual([
+      "🤖 Agent (paper experiment): ENTRY NIFTY26O2725100CE 2 lots (filled) on the model's Up call (bought a call): confidence 0.85, setup 3, gen:NIFTY",
+      "🤖 Agent (paper experiment): ENTRY SENSEX26O2382000PE 1 lot (order sent) on the model's Down call (bought a put): confidence 0.82, setup 2, gen:SENSEX",
+      "🤖 Agent (paper experiment): EXIT NIFTY26O2725000CE on the model's call: the model asked to cut risk (filled)",
+    ]);
   });
 });

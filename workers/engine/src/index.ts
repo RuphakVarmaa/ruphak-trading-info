@@ -182,6 +182,8 @@ async function handleFetch(req: Request, env: Env): Promise<Response> {
   if (url.pathname.startsWith("/ops/")) {
     if (!env.ADMIN_TOKEN || !timingSafeEqual(bearer(req), env.ADMIN_TOKEN)) return Response.json({ ok: false, error: "unauthorized" }, { status: 401 });
     if (req.method !== "POST") return Response.json({ ok: false, error: "use POST" }, { status: 405 });
+    // The options agent's routes need its account in ACCOUNTS, as EngineAdmin's do: neither DO is called otherwise.
+    if (url.pathname.startsWith("/ops/agent-") && !agentEnabled(env)) return Response.json({ ok: false, error: "the agent account is not enabled (ACCOUNTS)" }, { status: 409 });
     const rt = makeRuntime(env, "ops");
     try {
       switch (url.pathname) {
@@ -235,7 +237,7 @@ async function handleFetch(req: Request, env: Env): Promise<Response> {
           // The API's token count of a snapshot alone against the local estimate (the newest stored ones and the worst case).
           return Response.json(await agentDo(env).countTokens());
         case "/ops/agent-revert": {
-          // The built-in guidance becomes active again. Only outside the session.
+          // The built-in guidance becomes active again. Not during the session, nor until that day's review and replay finish.
           const res = await agentDo(env).revertInstruction("ops");
           return Response.json(res, { status: res.ok ? 200 : 409 });
         }

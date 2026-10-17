@@ -40,7 +40,7 @@ import type { FeedSnapshot } from "../../../src/engine/market/upstoxFeed";
 import { UpstoxLive } from "../../../src/engine/market/upstoxLive";
 import { timingSafeEqual } from "../../../src/engine/util/hash";
 import { getBacktest, startBacktest } from "./backtestRunner";
-import { accountRuntime, accountViews, agentEnabled, agentSettings, enabledAccounts, makeRuntime } from "./runtime";
+import { accountRuntime, accountViews, agentEnabled, agentSettings, enabledAccounts, logSkippedAccount, makeRuntime } from "./runtime";
 
 /**
  * Admin failures cross Workers RPC as plain Errors, so the code travels as a message prefix
@@ -81,7 +81,8 @@ export class EngineAdmin extends WorkerEntrypoint<Env> implements EngineApi {
     const rt = makeRuntime(this.env, "admin");
     const id = this.account(account);
     const a = accountRuntime(rt, id);
-    const views = accountViews(rt, enabledAccounts(this.env));
+    // An account whose config fails is left out of the switcher (and logged); the other accounts' pages still load.
+    const views = accountViews(rt, enabledAccounts(this.env), logSkippedAccount(rt.logger));
     return new ReadModel({
       repo: a.repo,
       cfg: a.cfg,
@@ -228,9 +229,9 @@ export class EngineAdmin extends WorkerEntrypoint<Env> implements EngineApi {
     const now = Date.now();
     const d = date === undefined || date === null || date === "" ? istDate(now) : String(date);
     if (!/^\d{4}-\d{2}-\d{2}$/.test(d)) throw new AdminError("BAD_REQUEST", "date must be YYYY-MM-DD");
-    const settings = agentSettings(this.env);
-    if (!agentEnabled(this.env)) return emptyAgentView(now, settings, false, null);
     const rt = makeRuntime(this.env, "admin");
+    const settings = agentSettings(this.env, rt.logger);
+    if (!agentEnabled(this.env)) return emptyAgentView(now, settings, false, null);
     const [account] = accountViews(rt, ["agent"]);
     const [view, agent, main] = await Promise.all([this.agentDo().view(d, account) as Promise<AgentView>, accountRuntime(rt, "agent").repo.settings.get(), rt.repo.settings.get()]);
     return withAccountSettings(view, agent, main);
@@ -277,7 +278,10 @@ export class EngineAdmin extends WorkerEntrypoint<Env> implements EngineApi {
     return startBacktest(this.env, this.ctx, params, cleanActor(actor));
   }
 
-  /** Approves or rejects the nightly review's candidate guidance (the approval gate; approval only outside the session). */
+  /**
+   * Approves or rejects the nightly review's candidate guidance (the approval gate). Approval is refused during the
+   * session and from the close until that day's review and replay finish; the refusal comes back as a CONFLICT.
+   */
   async setAgentCandidate(token: string, candidateId: string, decision: "approve" | "reject", actor: string): Promise<AgentView> {
     this.requireAdmin(token);
     const id = String(candidateId ?? "");
