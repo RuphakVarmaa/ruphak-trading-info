@@ -49,7 +49,26 @@ describe("gateWords", () => {
     expect(gateWords({ gate: "confidence", passed: false, detail: "0.72 is not above 0.80" })).toBe("Blocked: The model's confidence is not above 80% (0.72 is not above 0.80)");
     expect(gateWords({ gate: "setup_quality", passed: true, detail: "3 of 3" })).toBe("Passed: The model rated the setup at least 2 out of 3 (3 of 3)");
     expect(gateWords({ gate: "fresh", passed: false, detail: "" })).toBe("Blocked: The decision is too old to act on (more than 4 minutes after the candle closed)");
-    expect(gateWords({ gate: "kelly", passed: false, detail: "p=0.48, b=1.00" })).toMatch(/^Blocked: No measured edge yet, so the size is zero \(p=0\.48/);
+    expect(gateWords({ gate: "kelly", passed: false, detail: "p=0.48, b=1.00" })).toBe("Blocked: Size zero: confident past calls have not cleared break-even yet (p=0.48, b=1.00)");
+  });
+
+  it("never says or implies the agent has, found or measured an edge (D6)", () => {
+    expect(gateWords({ gate: "kelly", passed: true, detail: "p 0.540, b 1.00: risk 0.20% of equity, measured on about 312 graded calls" })).toBe(
+      "Passed: Small size allowed: confident past calls moved enough to pay often enough to clear break-even (in-sample; not proof of an edge) (p 0.540, b 1.00: risk 0.20% of equity, measured on about 312 graded calls)",
+    );
+    for (const passed of [true, false]) {
+      // "edge" appears only in the negation.
+      const words = gateWords({ gate: "kelly", passed, detail: "" });
+      expect(words.replace("not proof of an edge", "")).not.toMatch(/edge/i);
+    }
+  });
+
+  it("words the features line, and the kill-switch line with the operator's pause (S3, S4)", () => {
+    expect(gateWords({ gate: "features", passed: false, detail: "main's tick computed no market features for this index; the agent never fetches its own" })).toBe(
+      "Blocked: Main's tick computed no market features for this index, so no entry (main's tick computed no market features for this index; the agent never fetches its own)",
+    );
+    expect(gateWords({ gate: "kill_switch", passed: false, detail: "the operator paused the agent" })).toBe("Blocked: A kill switch, the drawdown halt or the operator's pause is on (the operator paused the agent)");
+    expect(gateWords({ gate: "kill_switch", passed: true, detail: "off" })).toBe("Passed: No kill switch, drawdown halt or pause is on (off)");
   });
 
   it("marks information lines and keeps unknown checks readable", () => {
@@ -201,7 +220,8 @@ describe("buildAgentView", () => {
     });
     expect(d.action).toBe("ENTERED");
     expect(d.edge).toEqual({ passed: false, detail: "Move this option needs vs the move the index usually makes: needs 0.31%, usually 0.18%" });
-    expect(d.sizing).toEqual({ p: 0.58, b: 1, kelly: 0.16, riskPct: 1, lots: 1 });
+    // A trace stored before n existed, on a decision with no hint: n unknown.
+    expect(d.sizing).toEqual({ p: 0.58, b: 1, kelly: 0.16, riskPct: 1, lots: 1, n: null });
     expect(d.outcome).toEqual({ status: "PENDING", ret30Pct: null });
     expect(nifty.decisions[1].gate?.summary).toBe("Blocked: The model's confidence is not above 80% (0.72 is not above 0.80)");
     expect(nifty.position).toEqual({ side: "LONG", tradingSymbol: "NIFTY26O2325000CE", lots: 1, pnlPct: 4.2, finalistId: "gen:NIFTY" });
@@ -256,6 +276,62 @@ describe("buildAgentView", () => {
     expect(active.candidate?.inUse).toBe(true);
     const replaced = buildAgentView(input({ candidate: s.candidate({ status: "APPROVED" }) }));
     expect(replaced.candidate?.inUse).toBe(false);
+  });
+
+  it("gives the sizing the number of graded calls behind p: the trace's, else the decision's hint (D6)", () => {
+    const sizing = { p: 0.58, b: 1, kelly: 0.16, quarterKelly: 0.04, riskPct: 1, lots: 1, riskRupees: 2_925, limitedBy: "risk budget" };
+    const traced = s.decision({ id: "d-n", barCloseMs: T, finalistId: "gen:NIFTY", execution: s.execution({ sizing: { ...sizing, n: 312.4 } }) });
+    const hinted = s.decision({ id: "d-n", barCloseMs: T, finalistId: "gen:NIFTY", sizing: { p: 0.58, mode: "pooled", n: 64, mean: 0.6 }, execution: s.execution({ sizing }) });
+    for (const [d, n] of [[traced, 312.4], [hinted, 64]] as const) {
+      const v = buildAgentView(input({ batches: [s.batch(T, { decisions: [{ ...d, execution: null }] })], decisions: [d] }));
+      expect(v.indices[0].decisions[0].sizing?.n).toBe(n);
+    }
+  });
+
+  it("shows a resting entry that filled as a position, and one still resting as none (D16)", () => {
+    const pending = s.decision({
+      id: "d-p", barCloseMs: T, finalistId: "gen:NIFTY", direction: "LONG",
+      execution: s.execution({ action: "ENTRY_PENDING", positionId: "pos-9", tradingSymbol: "NIFTY26O2325000CE", sizing: { p: 0.58, b: 1, kelly: 0.16, quarterKelly: 0.04, riskPct: 1, lots: 2, riskRupees: 5_000, limitedBy: "risk budget" } }),
+    });
+    const base = { batches: [s.batch(T, { decisions: [{ ...pending, execution: null }] })], decisions: [pending], risk: s.risk({ t: T + 6 * MINUTE_MS, openPositions: 1 }) };
+    const later = (pos: "L" | "S" | "-") => s.bar({ barCloseMs: T + 5 * MINUTE_MS, snapshot: snap({ bk: { pos, lots: pos === "-" ? 0 : 2, pnl: pos === "-" ? null : 1.5, dd: 0, dl: 0 } }) });
+    const filled = buildAgentView(input({ ...base, nowMs: T + 6 * MINUTE_MS, bars: [s.bar({ barCloseMs: T, snapshot: snap({ bk: { pos: "-", lots: 0, pnl: null, dd: 0, dl: 0 } }) }), later("L")] }));
+    expect(filled.indices[0].position).toEqual({ side: "LONG", tradingSymbol: "NIFTY26O2325000CE", lots: 2, pnlPct: 1.5, finalistId: "gen:NIFTY" });
+    // Still resting (the book holds nothing), or the book holds the other side: no position from this entry.
+    for (const pos of ["-", "S"] as const) {
+      const v = buildAgentView(input({ ...base, nowMs: T + 6 * MINUTE_MS, bars: [later(pos)] }));
+      expect(v.indices[0].position).toBeNull();
+    }
+    // A snapshot from the decision's own candle (before the order) proves nothing.
+    const same = buildAgentView(input({ ...base, bars: [s.bar({ barCloseMs: T, snapshot: snap() })] }));
+    expect(same.indices[0].position).toBeNull();
+  });
+
+  it("shows the 15:05 candle with the 15:05 decisions after the last decision, and says CLOSED from 15:09 (D1, late2)", () => {
+    const at = (hhmm: string) => istAt(DAY, hhmm);
+    const close = (ms: number) => 25_000 + (ms - at("09:15")) / (5 * MINUTE_MS);
+    const bars = ["15:00", "15:05", "15:10", "15:15", "15:20", "15:25"].map((hhmm) =>
+      s.bar({ barCloseMs: at(hhmm), close: close(at(hhmm)), snapshot: snap({ c: close(at(hhmm)) }), tokensEst: at(hhmm) <= at("15:05") ? 290 : 300 }),
+    );
+    const decided = (hhmm: string) => s.decision({ id: `d-${hhmm}`, barCloseMs: at(hhmm), finalistId: "gen:NIFTY", execution: s.execution() });
+    const batches = ["15:00", "15:05"].map((hhmm) => s.batch(at(hhmm), { decisions: [{ ...decided(hhmm), execution: null }] }));
+    for (const now of ["15:26", "17:00"]) {
+      const v = buildAgentView(input({ nowMs: at(now), bars, batches, decisions: ["15:00", "15:05"].map(decided) }));
+      expect(v.status.state).toBe("CLOSED");
+      const card = v.indices[0];
+      expect(card.decisions.map((d) => d.barAt)).toEqual([istIso(at("15:05"))]);
+      expect(card).toMatchObject({ barAt: istIso(at("15:05")), close: close(at("15:05")), snapshotTokensEst: 290 });
+      expect(card.snapshot?.find((f) => f.key === "c")?.value).toBe(close(at("15:05")).toLocaleString("en-IN"));
+    }
+    // With no batch, the newest candle a decision could be made on.
+    const none = buildAgentView(input({ nowMs: at("15:26"), bars, batches: [] }));
+    expect(none.indices[0]).toMatchObject({ barAt: istIso(at("15:05")), close: close(at("15:05")) });
+    // The 15:05 candle stored, its batch not yet written: RUNNING until 15:09, then CLOSED.
+    const waiting = { bars: bars.slice(0, 2), batches: batches.slice(0, 1) };
+    expect(buildAgentView(input({ nowMs: at("15:06"), ...waiting })).status.state).toBe("RUNNING");
+    expect(buildAgentView(input({ nowMs: at("15:09") + 1, ...waiting })).status.state).toBe("CLOSED");
+    // A grading-only candle after 15:05 never reads as a job running.
+    expect(buildAgentView(input({ nowMs: at("15:08"), bars: bars.slice(0, 3), batches })).status.state).toBe("WAITING");
   });
 
   it("reports a failed newest batch, a pending bar, the cost cap and a closed session", () => {

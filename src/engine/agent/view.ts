@@ -18,7 +18,7 @@ import type {
   AgentView,
 } from "../api-types";
 import { defaultCalendar, type TradingCalendar } from "../calendar/calendar";
-import { istDate, istIso } from "../clock";
+import { istAt, istDate, istIso } from "../clock";
 import type { EngineSettings, IndexId } from "../types";
 import { AGENT_HONESTY, AGENT_LIMITS, AGENT_POLICY } from "./constants";
 import { instructionVersion } from "./prompt";
@@ -126,13 +126,17 @@ const GATE_WORDS: Record<string, { pass: string; fail: string }> = {
   risk_state: { pass: "The account's risk is in the safe zone", fail: "The account's risk is not in the safe zone" },
   entry_mode: { pass: "New entries are allowed now", fail: "New entries are paused" },
   time_budget: { pass: "There was time left in this step", fail: "There was no time left in this step; the next one tries again" },
-  kelly: { pass: "Sizing found a measured edge, so the size is above zero", fail: "No measured edge yet, so the size is zero" },
+  kelly: {
+    pass: "Small size allowed: confident past calls moved enough to pay often enough to clear break-even (in-sample; not proof of an edge)",
+    fail: "Size zero: confident past calls have not cleared break-even yet",
+  },
+  features: { pass: "Main's tick computed the market features for this index", fail: "Main's tick computed no market features for this index, so no entry" },
   plan: { pass: "The engine's own entry checks passed (time window, data, quote, spread, limits)", fail: "The engine's own entry checks blocked it" },
   kelly_cap: { pass: "The trade risks no more than the sizing allows", fail: "Even one lot would risk more than the sizing allows" },
   quote_toxic: { pass: "The live option price is real and has buyers and sellers", fail: "The live option price is not usable" },
   idea_contract: { pass: "The plan uses the idea's own contract", fail: "The plan did not use the idea's own contract" },
   idea_band: { pass: "The price is inside the brief's buy zone", fail: "The price is above the brief's buy zone" },
-  kill_switch: { pass: "No kill switch or drawdown halt is on", fail: "A kill switch or the drawdown halt is on" },
+  kill_switch: { pass: "No kill switch, drawdown halt or pause is on", fail: "A kill switch, the drawdown halt or the operator's pause is on" },
   order: { pass: "The paper order was accepted", fail: "The paper order was not accepted" },
 };
 
@@ -256,7 +260,7 @@ function decisionView(d: DecisionRecord): AgentDecisionView {
     action: e?.action ?? null,
     actionDetail: e?.detail ?? null,
     edge: e?.edge ? { passed: e.edge.passed, detail: e.edge.rows.map((r) => `${r.label}: ${r.detail}`).join("; ") } : null,
-    sizing: e?.sizing ? { p: e.sizing.p, b: e.sizing.b, kelly: e.sizing.kelly, riskPct: e.sizing.riskPct, lots: e.sizing.lots } : null,
+    sizing: e?.sizing ? { p: e.sizing.p, b: e.sizing.b, kelly: e.sizing.kelly, riskPct: e.sizing.riskPct, lots: e.sizing.lots, n: e.sizing.n ?? d.sizing?.n ?? null } : null,
     outcome: d.outcome ? { status: d.outcome.status, ret30Pct: d.outcome.ret30Pct } : { status: "PENDING", ret30Pct: null },
   };
 }
@@ -278,14 +282,27 @@ function finalistView(f: Finalist): AgentFinalistView {
 
 const latest = <T>(rows: readonly T[], at: (r: T) => number): T | null => rows.reduce<T | null>((best, r) => (best === null || at(r) > at(best) ? r : best), null);
 
-/** Positions the agent entered that have no closed trade yet, per index (from the decisions' executions). */
-function openEntries(decisions: readonly DecisionRecord[], trades: readonly AgentTradeRecord[], risk: AgentRiskSnapshot | null): Map<IndexId, DecisionRecord> {
+/**
+ * Positions the agent entered that have no closed trade yet, per index (from the decisions' executions). An entry
+ * that rested (ENTRY_PENDING) counts once it filled: the index's newest stored snapshot after the decision's candle
+ * shows the book holding that side (a call for LONG, a put for SHORT).
+ */
+function openEntries(decisions: readonly DecisionRecord[], trades: readonly AgentTradeRecord[], risk: AgentRiskSnapshot | null, bars: readonly StoredBar[]): Map<IndexId, DecisionRecord> {
   const closed = new Set(trades.map((t) => t.positionId));
   const out = new Map<IndexId, DecisionRecord>();
   if (risk && risk.openPositions === 0) return out;
+  const filled = (d: DecisionRecord) => {
+    const after = latest(
+      bars.filter((b) => b.index === d.index && b.barCloseMs > d.barCloseMs && b.snapshot !== null),
+      (b) => b.barCloseMs,
+    );
+    const held = d.direction === "LONG" ? "L" : d.direction === "SHORT" ? "S" : null;
+    return held !== null && after?.snapshot?.bk.pos === held;
+  };
   for (const d of decisions) {
     const e = d.execution;
-    if (!e || e.action !== "ENTERED" || !e.positionId || closed.has(e.positionId)) continue;
+    if (!e || !e.positionId || closed.has(e.positionId)) continue;
+    if (e.action !== "ENTERED" && !(e.action === "ENTRY_PENDING" && filled(d))) continue;
     const cur = out.get(d.index);
     if (!cur || cur.barCloseMs < d.barCloseMs) out.set(d.index, d);
   }
@@ -293,25 +310,32 @@ function openEntries(decisions: readonly DecisionRecord[], trades: readonly Agen
 }
 
 function indexCard(index: IndexId, a: AgentViewInput, okBatches: readonly ReflexBatch[], byId: Map<string, DecisionRecord>, open: Map<IndexId, DecisionRecord>): AgentIndexCardView {
-  const bar = latest(
-    a.bars.filter((b) => b.index === index),
-    (b) => b.barCloseMs,
-  );
+  const mine = a.bars.filter((b) => b.index === index);
   // The newest batch with decisions on this index; the stored rows carry what the code did with them.
   const batch = latest(
     okBatches.filter((b) => b.decisions.some((d) => d.index === index)),
     (b) => b.barCloseMs,
   );
+  // The candle the card shows is the one its decisions were made on; with none, the newest one a decision could be
+  // made on (closing by 15:05). The candles after 15:05 are stored for grading only.
+  const shown = batch
+    ? (mine.find((b) => b.barCloseMs === batch.barCloseMs) ?? null)
+    : latest(
+        mine.filter((b) => b.barCloseMs <= istAt(a.date, AGENT_POLICY.reflexLastBarIst)),
+        (b) => b.barCloseMs,
+      );
+  const shownMs = batch ? batch.barCloseMs : (shown?.barCloseMs ?? null);
   const decisions = (batch?.decisions ?? []).filter((d) => d.index === index).map((d) => decisionView(byId.get(d.id) ?? d));
   const entry = open.get(index);
   const side = entry && entry.direction !== "NEUTRAL" ? entry.direction : null;
-  const bk = bar?.snapshot?.bk;
+  // The position's book is the newest one stored, whatever candle the card shows.
+  const bk = latest(mine, (b) => b.barCloseMs)?.snapshot?.bk;
   return {
     index,
-    barAt: bar ? istIso(bar.barCloseMs) : null,
-    close: bar ? bar.close : null,
-    snapshot: bar?.snapshot ? snapshotFields(bar.snapshot) : null,
-    snapshotTokensEst: bar?.tokensEst ?? null,
+    barAt: shownMs !== null ? istIso(shownMs) : null,
+    close: shown ? shown.close : null,
+    snapshot: shown?.snapshot ? snapshotFields(shown.snapshot) : null,
+    snapshotTokensEst: shown?.tokensEst ?? null,
     decisions,
     position:
       entry && side && entry.execution
@@ -480,19 +504,29 @@ function costView(date: string, calls: readonly CallRecord[], capUsd: number, ba
   };
 }
 
+/**
+ * The agent's state now. CLOSED outside the session and from 15:09 IST (the last decision candle, 15:05, plus the
+ * age a decision may still be acted on). RUNNING only while a candle a decision is made on (closing by 15:05) is
+ * stored with no batch yet: the candles after it are stored for grading only and never run a job.
+ */
 function statusOf(a: AgentViewInput, newestBatch: ReflexBatch | null, cost: AgentCostView): AgentView["status"] {
   const newestBar = latest(a.bars, (b) => b.barCloseMs);
   const lastBarMs = Math.max(newestBatch?.barCloseMs ?? -Infinity, newestBar?.barCloseMs ?? -Infinity);
   const lastBarAt = Number.isFinite(lastBarMs) ? istIso(lastBarMs) : null;
   const failed = newestBatch?.status === "FAILED" ? (newestBatch.error ?? "the model call failed") : null;
   const today = a.date === istDate(a.nowMs);
+  const lastDecisionBarMs = istAt(a.date, AGENT_POLICY.reflexLastBarIst);
+  const newestDecisionBar = latest(
+    a.bars.filter((b) => b.barCloseMs <= lastDecisionBarMs),
+    (b) => b.barCloseMs,
+  );
   let state: AgentView["status"]["state"];
   if (!a.enabled || a.settings.mode === "off") state = "OFF";
   else if (today && cost.capReached) state = "COST_CAP";
-  else if (!today || a.calendar.sessionPhase(a.nowMs) !== "OPEN") state = "CLOSED";
+  else if (!today || a.calendar.sessionPhase(a.nowMs) !== "OPEN" || a.nowMs > lastDecisionBarMs + AGENT_POLICY.maxDecisionAgeMs) state = "CLOSED";
   else if (failed) state = "ERROR";
-  // A stored bar newer than the newest batch: its reflex job has not finished.
-  else if (newestBar && (!newestBatch || newestBar.barCloseMs > newestBatch.barCloseMs)) state = "RUNNING";
+  // A stored decision candle newer than the newest batch: its reflex job has not finished.
+  else if (newestDecisionBar && (!newestBatch || newestDecisionBar.barCloseMs > newestBatch.barCloseMs)) state = "RUNNING";
   else state = "WAITING";
   return { state, lastBarAt, lastError: failed, paused: a.paused };
 }
@@ -504,7 +538,7 @@ export function buildAgentView(a: AgentViewInput): AgentView {
   const okBatches = a.batches.filter((b) => b.status === "OK");
   const newestBatch = latest(a.batches, (b) => b.barCloseMs);
   const finalistsFrom = latest(okBatches, (b) => b.barCloseMs) ?? newestBatch;
-  const open = openEntries(a.decisions, a.trades, a.risk);
+  const open = openEntries(a.decisions, a.trades, a.risk, a.bars);
   const cost = costView(a.date, a.calls, a.settings.dailyUsdCap, a.batches);
   return {
     mode: a.settings.mode,

@@ -5,7 +5,7 @@ import { fnv1aHex } from "../util/hash";
 import { AGENT_DEFAULTS } from "./config";
 import { CHARS_PER_TOKEN_BOUND, PROSE_CHARS_PER_TOKEN, REVIEW_CALL, USER_MESSAGE_TOKEN_LIMIT } from "./constants";
 import { MODEL_PRICES } from "./cost";
-import { FINALIST_TEXT, compileFinalists } from "./finalists";
+import { FINALIST_TEXT, compileFinalists, genericFinalist } from "./finalists";
 import {
   BUILTIN_GUIDANCE,
   ESCALATION_SYSTEM,
@@ -197,6 +197,10 @@ describe("the reflex user message", () => {
     });
     expect(msg.brief).toEqual(brief);
     expect(JSON.parse(reflexUser(input(), [generic("NIFTY")], null)).brief).toBeNull();
+    // A finalist's label is for people only: the model never reads it (D18).
+    const real = genericFinalist("NIFTY");
+    expect(real.label).toBe("NIFTY, either side (generic call)");
+    expect(reflexUser(input(), [real], null)).toBe(reflexUser(input(), [{ ...real, label: "anything else" }], null));
   });
 
   it("leaves out an index without a snapshot, and its finalists", () => {
