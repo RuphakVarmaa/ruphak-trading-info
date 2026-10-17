@@ -1,11 +1,15 @@
 import { describe, expect, it } from "vitest";
-import type { AgentCalibrationView, AgentGateLineView } from "@/engine/api-types";
+import type { AgentCalibrationView, AgentGateLineView, AgentRiskView } from "@/engine/api-types";
 import {
+  aboutCalls,
   actionWords,
   breakEvenP,
   brierVerdict,
+  candidateStatusWords,
   dayTime,
+  decidedOnWords,
   directionWords,
+  ENTRY_STOP,
   gateGroups,
   gateHeadline,
   guidanceDiff,
@@ -16,6 +20,12 @@ import {
   normalQuantile,
   outcomeWords,
   pct,
+  rearmWords,
+  replayCoverageWords,
+  replayScoredWords,
+  replayStopWords,
+  reviewNotice,
+  riskHeadline,
   riskWords,
   sizingOutlook,
   sizingOutlookWords,
@@ -24,6 +34,27 @@ import {
   stateWords,
   usd,
 } from "./agentText";
+
+/** Nothing may say or imply that the agent has, found or measured an edge: once the allowed negations are gone, no "edge" is left. */
+const claimsEdge = (s: string) => /\bedge\b/i.test(s.replace(/not proof of an edge/gi, "").replace(/no edge for option buyers/gi, ""));
+
+const RISK: AgentRiskView = {
+  asOf: "2026-10-16T11:41:55+05:30",
+  equity: 500_000,
+  peakEquity: 500_000,
+  drawdownPct: 0,
+  maxDrawdownPct: 15,
+  dayLossPct: 0,
+  dailyLossCapPct: 3,
+  openPositions: 0,
+  maxOpenPositions: 2,
+  maxLotsPerPosition: 3,
+  killSwitch: false,
+  killReason: null,
+  mainKillSwitch: false,
+  drawdownHalt: false,
+  codeRiskState: "SAFE",
+};
 
 const line = (gate: string, passed: boolean | null, words = gate): AgentGateLineView => ({ gate, passed, words });
 
@@ -44,9 +75,9 @@ const cal = (o: Partial<AgentCalibrationView>): Pick<AgentCalibrationView, "sizi
 });
 
 describe("words for the model's call and the code's action", () => {
-  it("says which option each direction buys", () => {
-    expect(directionWords("LONG")).toBe("Up: buy a call (CE)");
-    expect(directionWords("SHORT")).toBe("Down: buy a put (PE)");
+  it("says which option the agent would buy for each direction, never as an instruction to the reader", () => {
+    expect(directionWords("LONG")).toBe("Up: the agent would buy a call (CE)");
+    expect(directionWords("SHORT")).toBe("Down: the agent would buy a put (PE)");
     expect(directionWords("NEUTRAL")).toBe("No direction: no trade");
   });
 
@@ -116,20 +147,48 @@ describe("the code's gate in words", () => {
 });
 
 describe("sizing in words", () => {
-  it("says there is no measured edge when Kelly sizes nothing", () => {
-    const w = sizingWords({ p: 0.43, b: 1, kelly: -0.14, riskPct: 0, lots: 0 });
-    expect(w.headline).toBe("No measured edge yet: no trade");
+  it("at size zero says past calls have not cleared break-even, on how many calls, and never claims an edge", () => {
+    const w = sizingWords({ p: 0.43, b: 1, kelly: -0.14, riskPct: 0, lots: 0, n: 21.4 });
+    expect(w.headline).toBe("Size zero: confident past calls have not cleared break-even (measured on about 21 calls)");
+    expect(w.size).toBeNull();
     expect(w.detail).toMatch(/never the model's own confidence/);
     expect(w.detail).toMatch(/needs p above 0\.50/);
+    for (const s of [w.headline, w.detail]) expect(claimsEdge(s)).toBe(false);
+    // The number behind p unknown (an older record): no count.
+    expect(sizingWords({ p: 0.43, b: 1, kelly: -0.14, riskPct: 0, lots: 0 }).headline).toBe("Size zero: confident past calls have not cleared break-even");
   });
 
-  it("shows the quarter-Kelly risk and the 1% cap", () => {
-    const capped = sizingWords({ p: 0.56, b: 1, kelly: 0.12, riskPct: 1, lots: 1 });
-    expect(capped.headline).toBe("Risk 1.00% of equity → 1 lot");
+  it("with no graded calls of the decision's kind, says so, and that p is only the starting estimate", () => {
+    const w = sizingWords({ p: 0.458, b: 1, kelly: -0.08, riskPct: 0, lots: 0, n: 0 });
+    expect(w.headline).toBe("Size zero: no graded calls of this kind yet");
+    expect(w.detail).toMatch(/with no graded calls of this kind yet, only the cautious starting estimate/);
+  });
+
+  it("above zero allows a small size, says it is in-sample and not proof of an edge, then the risk and the lots", () => {
+    const capped = sizingWords({ p: 0.56, b: 1, kelly: 0.12, riskPct: 1, lots: 1, n: 412 });
+    expect(capped.headline).toBe(
+      "Small size allowed: confident past calls moved enough to pay often enough to clear break-even (measured on about 412 calls, in-sample; not proof of an edge)",
+    );
+    expect(capped.size).toBe("Risk 1.00% of equity → 1 lot");
     expect(capped.detail).toMatch(/A quarter of it is 3\.00% of equity, capped at 1% a trade: 1 lot\./);
+    expect(claimsEdge(capped.headline)).toBe(false);
+    expect(sizingWords({ p: 0.56, b: 1, kelly: 0.12, riskPct: 1, lots: 2 }).headline).toMatch(/break-even \(in-sample; not proof of an edge\)$/);
     const small = sizingWords({ p: 0.505, b: 1, kelly: 0.01, riskPct: 0.25, lots: 0 });
     expect(small.detail).toMatch(/0\.25% of equity: 0 lots: one lot would risk more than that/);
     expect(small.detail).not.toMatch(/capped/);
+  });
+
+  it("when the quarter-Kelly cap blocks the trade (0 lots), the size row says 0 lots and why, never 1 lot", () => {
+    // The kelly_cap block of the dashboard review's probe (kellycap.test.ts): the engine now records 0 lots.
+    const w = sizingWords({ p: 0.53, b: 1, kelly: 0.06, riskPct: 0.15, lots: 0, n: 300 });
+    expect(w.size).toBe("Risk 0.15% of equity → 0 lots: one lot would risk more than that");
+    expect(w.size).not.toMatch(/→ 1 lot/);
+  });
+
+  it("rounds the overlap-weighted count, and says at least one call once any counts", () => {
+    expect(aboutCalls(0)).toBe("about 0 calls");
+    expect(aboutCalls(0.4)).toBe("about 1 call");
+    expect(aboutCalls(20.6)).toBe("about 21 calls");
   });
 
   it("knows the break-even chance for a payoff ratio", () => {
@@ -210,5 +269,101 @@ describe("calibration", () => {
     expect(sizingOutlookWords(none, null)[0]).toMatch(/until there are graded calls/);
     // A measured b above 1 lowers the chance Kelly needs.
     expect(sizingOutlook(cal({ sizingP: 0.45, sizingN: 50, payoffB: 1.5, payoffTrades: 40 })).needP).toBeCloseTo(0.4, 10);
+  });
+});
+
+describe("the nightly review and its candidate", () => {
+  it("shows a review waiting for its retry, or skipped, calmly; only a failed one is an error", () => {
+    expect(reviewNotice({ status: "PENDING", error: "the 5-minute bar archive is not complete yet; trying again" })).toEqual({
+      tone: "warn",
+      words: "Waiting: the 5-minute bar archive is not complete yet; trying again",
+    });
+    expect(reviewNotice({ status: "SKIPPED", error: "nothing to review: no decision was in force and no trade was made on 2026-10-19; the day was graded and scored" })).toEqual({
+      tone: "neutral",
+      words: "Skipped: nothing to review: no decision was in force and no trade was made on 2026-10-19; the day was graded and scored",
+    });
+    expect(reviewNotice({ status: "FAILED", error: "TIMEOUT: no answer" })).toEqual({ tone: "error", words: "The review failed: TIMEOUT: no answer" });
+    expect(reviewNotice({ status: "DONE", error: null })).toBeNull();
+  });
+
+  it("says an approved candidate is in use only while its text is the active one", () => {
+    expect(candidateStatusWords("APPROVED", true)).toBe("Approved: in use");
+    expect(candidateStatusWords("APPROVED", false)).toBe("Approved earlier; no longer in use");
+    // A view that does not say: an approval is taken as in use.
+    expect(candidateStatusWords("APPROVED")).toBe("Approved: in use");
+    expect(candidateStatusWords("PENDING", false)).toBe("Waiting for your decision");
+  });
+
+  it("says how many of the day's candles the replay judged again", () => {
+    expect(replayCoverageWords({ bars: 60, barsTotal: 75 })).toBe("60 of the day's 75 candles were judged again with each text, on identical inputs.");
+    // An older replay without barsTotal: what it judged is all that is known.
+    expect(replayCoverageWords({ bars: 75 })).toBe("75 of the day's 75 candles were judged again with each text, on identical inputs.");
+    expect(replayCoverageWords({ bars: 1, barsTotal: 1 })).toBe("1 of the day's 1 candle was judged again with each text, on identical inputs.");
+  });
+
+  it("scores the replay on the calls every run labelled, with each run's own count, and flags too few to compare", () => {
+    const base = { graded: 5, gradedCandidate: 5, gradedCurrent: 10, gradedLive: 10, gradedCommon: 5 };
+    // The probe's case (probe-replay.test.ts): the proposed text says no direction on the 5 hard calls.
+    expect(replayScoredWords(base)).toBe("Scored on 5 calls that all three runs labelled (proposed 5, current 10, live 10): too few to compare.");
+    expect(replayScoredWords({ ...base, graded: 58, gradedCandidate: 58, gradedCurrent: 66, gradedLive: 64, gradedCommon: 58 })).toBe(
+      "Scored on 58 calls that all three runs labelled (proposed 58, current 66, live 64).",
+    );
+    // An older replay scored each run on its own calls: it says so instead of claiming the same calls.
+    expect(replayScoredWords({ graded: 64 })).toBe(
+      "Scored on 64 graded calls of the proposed text; this older replay scored each run on its own calls, so the three scores are not over the same calls.",
+    );
+  });
+
+  it("names why an incomplete replay stopped, and blames the cost cap only when it was the cost cap", () => {
+    expect(replayStopWords({ complete: true, bars: 75, stopReason: null })).toBeNull();
+    expect(replayStopWords({ complete: false, bars: 40, stopReason: "cost_cap" })).toBe("The replay stopped early at the cost cap, so it covers only part of the day.");
+    expect(replayStopWords({ complete: false, bars: 40, stopReason: "interrupted" })).toBe("The replay was interrupted (the agent restarted), so it covers only part of the day.");
+    expect(replayStopWords({ complete: false, bars: 0, stopReason: "no_key" })).toBe("The replay could not run (no API key), so no candle was judged again.");
+    expect(replayStopWords({ complete: false, bars: 40 })).toBe("The replay stopped early, so it covers only part of the day.");
+    for (const r of ["interrupted", "no_key", undefined] as const) expect(replayStopWords({ complete: false, bars: 40, stopReason: r })).not.toMatch(/cost cap/);
+  });
+});
+
+describe("the risk headline and re-arm", () => {
+  it("takes the entry stops from the code's limits: 1.5% day loss, 10% drawdown, 5 entries a day", () => {
+    expect(ENTRY_STOP).toEqual({ dayLossPct: 1.5, drawdownPct: 10, entriesToday: 5 });
+  });
+
+  it("is green only when nothing stops entries, in the order the code checks", () => {
+    expect(riskHeadline(RISK)).toEqual({ tone: "ok", words: "Within every limit: new entries are allowed when a decision passes every check." });
+    // The dashboard review's render.test.ts: a 3.2% day loss (cap 3%) and a 1.6% one (near the limit) are not "within every limit".
+    const capped = riskHeadline({ ...RISK, dayLossPct: 3.2, codeRiskState: "REDUCE" });
+    expect(capped.tone).toBe("stopped");
+    expect(capped.words).toBe("Stopped for today: today's loss 3.20% reached the 3% cap; positions closed, no new entries until the next session.");
+    const near = riskHeadline({ ...RISK, dayLossPct: 1.6, codeRiskState: "NEAR_LIMIT" });
+    expect(near.tone).toBe("blocked");
+    expect(near.words).toBe(
+      "No new entries now: the code's risk state is Near a limit; entries need Safe (day loss under 1.5%, drawdown under 10%, fewer than 2 positions open and fewer than 5 entries today).",
+    );
+    expect(riskHeadline({ ...RISK, drawdownPct: 15.18, drawdownHalt: true, killSwitch: true, codeRiskState: "REDUCE" }).words).toBe(
+      "Halted: the account fell 15.18% from its peak (the limit is 15%). No new entries until you re-arm.",
+    );
+    expect(riskHeadline({ ...RISK, killSwitch: true, killReason: "main kill switch engaged at 11:30", dayLossPct: 3.2 }).words).toBe("Kill switch on: main kill switch engaged at 11:30. No new entries.");
+  });
+
+  it("re-arms after a halt (the peak restarts), clears a kill switch alone (the peak stays), and is off while main's switch is on", () => {
+    const halted = rearmWords({ ...RISK, drawdownHalt: true, killSwitch: true });
+    expect(halted).toMatchObject({ label: "Re-arm the agent", enabled: true, confirmLabel: "Re-arm", peakRestarts: true });
+    const kill = rearmWords({ ...RISK, killSwitch: true, peakEquity: 568_000 });
+    expect(kill).toMatchObject({ label: "Clear the kill switch", enabled: true, confirmLabel: "Clear it", peakRestarts: false });
+    expect(kill.note).toBe("Clears the agent's kill switch; the drawdown is still measured from its peak of ₹5,68,000 (admin token needed).");
+    const mainOn = rearmWords({ ...RISK, killSwitch: true, mainKillSwitch: true });
+    expect(mainOn).toMatchObject({ enabled: false, note: "Reset main's kill switch first: the engine refuses until then." });
+    expect(rearmWords({ ...RISK, drawdownHalt: true, killSwitch: true, mainKillSwitch: true }).enabled).toBe(false);
+    expect(rearmWords(RISK)).toMatchObject({ label: "Re-arm the agent", enabled: false, note: "Nothing to re-arm: no halt and the kill switch is off." });
+  });
+});
+
+describe("which candle a decision is from", () => {
+  it("names the decision's candle only when the card heads with another one", () => {
+    expect(decidedOnWords("2026-10-16T15:05:00+05:30", "2026-10-16T15:25:00+05:30")).toBe("Decided on the 15:05 candle");
+    // The same instant written another way is the same candle.
+    expect(decidedOnWords("2026-10-16T15:05:00+05:30", "2026-10-16T09:35:00.000Z")).toBeNull();
+    expect(decidedOnWords("2026-10-16T15:05:00+05:30", null)).toBe("Decided on the 15:05 candle");
   });
 });

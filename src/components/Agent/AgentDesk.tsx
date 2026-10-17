@@ -33,8 +33,13 @@ import {
 const AGENT_URL = "/api/engine/agent";
 const CANDIDATE_URL = "/api/engine/admin/agent/candidate";
 const REARM_URL = "/api/engine/admin/agent/rearm";
-const POLL_ACTIVE_MS = 15_000;
-const POLL_IDLE_MS = 120_000;
+export const POLL_ACTIVE_MS = 15_000;
+export const POLL_IDLE_MS = 120_000;
+
+/** The poll interval: quick while candles are judged, and while no view has loaded yet; slow otherwise. */
+export function pollEveryMs(hasView: boolean, active: boolean): number {
+  return !hasView || active ? POLL_ACTIVE_MS : POLL_IDLE_MS;
+}
 
 type Source = "engine" | "mock" | null;
 
@@ -65,13 +70,13 @@ export default function AgentDesk({ initial, initialSource }: { initial: AgentVi
     }
   }, []);
 
-  // Every 15 s while candles are being judged, every 2 minutes otherwise, at once without data; a tab that
-  // comes back into view refreshes at once.
+  // Every 15 s while candles are being judged or while there is no view yet (a failed first load retries soon),
+  // every 2 minutes otherwise, at once without data; a tab that comes back into view refreshes at once.
   useEffect(() => {
     let stopped = false;
     let running = false;
     let timer: ReturnType<typeof setTimeout> | undefined;
-    const every = active ? POLL_ACTIVE_MS : POLL_IDLE_MS;
+    const every = pollEveryMs(hasView, active);
     const tick = async () => {
       // One poll at a time: a tick already in flight schedules the next one itself.
       if (running) return;
