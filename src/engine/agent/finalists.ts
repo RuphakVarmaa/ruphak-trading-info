@@ -39,7 +39,7 @@ export function genericFinalist(index: IndexId): Finalist {
     id: `gen:${index}`,
     kind: "GENERIC",
     index,
-    label: `${index}: the best long or short now`,
+    label: `${index}, either side (generic call)`,
     side: null,
     contract: null,
     entryHigh: null,

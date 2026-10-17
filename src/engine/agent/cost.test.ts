@@ -39,14 +39,32 @@ describe("the price table", () => {
       expect(isPricedModel(m)).toBe(true);
       expect(priceFor(m)).toMatchObject({ inputPerM: 5, outputPerM: 25, cacheReadPerM: 0.5, cacheWrite5mPerM: 6.25, cacheWrite1hPerM: 10 });
     }
-    expect(Object.keys(MODEL_PRICES).sort()).toEqual([REFLEX, DEEP, ...FALLBACKS].sort());
     expect(servingModels(DEEP)).toEqual([DEEP, ...FALLBACKS]);
     expect(servingModels(REFLEX)).toEqual([REFLEX]);
   });
 
+  it("has a row for every model the settings may name, each of its fallbacks priced too (M4)", () => {
+    // The defaults and their fallbacks, the dearest deep model, and a mid-priced model with its own fallback.
+    expect(Object.keys(MODEL_PRICES)).toHaveLength(7);
+    for (const [model, p] of Object.entries(MODEL_PRICES)) {
+      expect(isPricedModel(model)).toBe(true);
+      for (const f of p.fallbackModels ?? []) expect(isPricedModel(f)).toBe(true);
+    }
+    // Rates from the skill's model table: input / output / cache read / 5-minute write / 1-hour write, $ per million.
+    const rates = Object.values(MODEL_PRICES).map((p) => [p.inputPerM, p.outputPerM, p.cacheReadPerM, p.cacheWrite5mPerM, p.cacheWrite1hPerM].join(" / "));
+    expect(rates.filter((r) => r === "10 / 50 / 0.25 / 12.5 / 20")).toHaveLength(1);
+    expect(rates.filter((r) => r === "2 / 10 / 0.2 / 2.5 / 4")).toHaveLength(2);
+    const dearest = Object.values(MODEL_PRICES).find((p) => p.inputPerM === 10)!;
+    expect(dearest.fallbackModels).toEqual(FALLBACKS);
+    const mid = Object.entries(MODEL_PRICES).filter(([, p]) => p.inputPerM === 2);
+    expect(mid.map(([, p]) => (p.fallbackModels ?? []).length)).toEqual([1, 0]);
+    expect(mid[0][1].fallbackModels).toEqual([mid[1][0]]);
+  });
+
   it("prices an unknown model at the highest rate of every kind, and a dated snapshot at its own row", () => {
     expect(isPricedModel(UNKNOWN)).toBe(false);
-    expect(priceFor(UNKNOWN)).toEqual({ inputPerM: 5, outputPerM: 25, cacheReadPerM: 0.5, cacheWrite5mPerM: 6.25, cacheWrite1hPerM: 10 });
+    // The dearest row's input, output and write rates; the highest cache read is another row's.
+    expect(priceFor(UNKNOWN)).toEqual({ inputPerM: 10, outputPerM: 50, cacheReadPerM: 0.5, cacheWrite5mPerM: 12.5, cacheWrite1hPerM: 20 });
     for (const m of Object.keys(MODEL_PRICES)) {
       const p = priceFor(m);
       expect(priceFor(UNKNOWN).outputPerM).toBeGreaterThanOrEqual(p.outputPerM);
@@ -78,8 +96,8 @@ describe("callCostUsd", () => {
   });
 
   it("never under-counts an unknown model and ignores nonsense token counts", () => {
-    expect(callCostUsd(u({ inputTokens: 1_000_000 }), UNKNOWN)).toBe(5);
-    expect(callCostUsd(u({ outputTokens: 1_000_000 }), UNKNOWN)).toBe(25);
+    expect(callCostUsd(u({ inputTokens: 1_000_000 }), UNKNOWN)).toBe(10);
+    expect(callCostUsd(u({ outputTokens: 1_000_000 }), UNKNOWN)).toBe(50);
     expect(callCostUsd(u({ inputTokens: -5, outputTokens: Number.NaN }), DEEP)).toBe(0);
   });
 });
@@ -115,9 +133,39 @@ describe("the worst case", () => {
     // 6,000 input at $10 + 8,000 output at $25 = $0.26 an attempt (the fallback rows), not $0.208 (the deep model's own).
     expect(worstCaseUsd(DEEP, 6_000, 8_000)).toBe(0.52);
     expect(worstCaseUsd(DEEP, 6_000, 8_000)).toBeGreaterThan(2 * (6_000 * 8 + 8_000 * 20) / 1e6);
-    // The streamed review: 20,000 input, 32,000 output.
-    expect(worstCaseUsd(DEEP, 20_000, 32_000)).toBe(2);
-    expect(worstCaseUsd(UNKNOWN, 6_000, 8_000)).toBe(0.52);
+    // An unknown model at the table's top rates: 6,000 × $20 + 8,000 × $50 = $0.52 an attempt.
+    expect(worstCaseUsd(UNKNOWN, 6_000, 8_000)).toBe(1.04);
+  });
+
+  it("prices a PromptSize's system block at the 1-hour write rate and its user message at the input rate (M1)", () => {
+    // The review: a 2,600-token system block, a 28,000-token user message, 16,000 output, at the fallback rows'
+    // rates ($10 write, $5 input, $25 output): $0.026 + $0.14 + $0.40 = $0.566 an attempt.
+    expect(worstCaseUsd(DEEP, { systemTokens: 2_600, userTokens: 28_000 }, 16_000)).toBe(1.132);
+    expect(worstCaseUsd(DEEP, { systemTokens: 2_600, userTokens: 28_000 }, 16_000, 1)).toBe(0.566);
+    // Priced as one number, the same 30,600 tokens would all be writes: $0.706 an attempt.
+    expect(worstCaseUsd(DEEP, 30_600, 16_000, 1)).toBe(0.706);
+    // A user message is never dearer than a system block of the same size.
+    for (const model of [REFLEX, DEEP, UNKNOWN]) {
+      expect(worstCaseUsd(model, { systemTokens: 1_000, userTokens: 9_000 }, 2_000)).toBeLessThanOrEqual(worstCaseUsd(model, 10_000, 2_000));
+    }
+    // The long card is chosen by the whole prompt: 50K + 60K = 110K tokens, so $1.00 write, $0.50 input, $2.50 output.
+    expect(worstCaseUsd(REFLEX, { systemTokens: 50_000, userTokens: 60_000 }, 1_000, 1)).toBe(0.0825);
+    // Not a number: NaN, which capAllows refuses.
+    expect(capAllows(0, worstCaseUsd(DEEP, { systemTokens: 2_600, userTokens: Number.NaN }, 16_000), 3)).toBe(false);
+  });
+
+  it("prices a single token count exactly as before: every token at the dearer of input and a 1-hour write", () => {
+    for (const model of [...Object.keys(MODEL_PRICES), UNKNOWN]) {
+      for (const [n, max, attempts] of [
+        [6_000, 4_096, 2],
+        [9_000, 8_000, 1],
+        [200_000, 1_000, 2],
+      ] as const) {
+        expect(worstCaseUsd(model, n, max, attempts)).toBe(worstCaseUsd(model, { systemTokens: n, userTokens: 0 }, max, attempts));
+      }
+    }
+    expect(worstCaseUsd(REFLEX, 6_000, REFLEX_CALL.maxTokens)).toBe(0.006496);
+    expect(worstCaseUsd(DEEP, 6_000, 8_000)).toBe(0.52);
   });
 
   it("uses the long card for a long prompt", () => {

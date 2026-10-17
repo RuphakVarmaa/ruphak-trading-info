@@ -14,6 +14,7 @@ import {
   toGraded,
   toGradedNeutral,
 } from "./calibration";
+import { agentRiskPct } from "./kelly";
 import type { DecisionRecord, GradedDecision, GradedNeutral } from "./types";
 
 const V = "core-1/abcd1234";
@@ -200,16 +201,30 @@ describe("overlap weights (#15)", () => {
     expect(total(w)).toBeCloseTo(1, 12);
   });
 
-  it("does not count windows that only touch, other indices, or a different direction as the same call", () => {
+  it("does not count windows that only touch as overlapping, nor another index or direction as the same call", () => {
     const apart = [row({ id: "a" }), row({ id: "b", barCloseMs: T0 + 30 * MINUTE_MS })];
     expect(overlapWeights(apart, V).map((x) => x.w)).toEqual([1, 1]);
     const indices = [row({ id: "a" }), row({ id: "b", index: "SENSEX" })];
-    expect(overlapWeights(indices, V).map((x) => x.w)).toEqual([1, 1]);
+    expect(overlapWeights(indices, V)).toHaveLength(2);
     const sides = [row({ id: "a" }), row({ id: "b", direction: "SHORT" })];
     expect(overlapWeights(sides, V).map((x) => x.w)).toEqual([0.5, 0.5]);
     // A middle candle overlaps five on each side.
     const run = Array.from({ length: 11 }, (_, i) => row({ id: `g${i}`, barCloseMs: T0 + i * 5 * MINUTE_MS }));
     expect(overlapWeights(run, V)[5].w).toBeCloseTo(1 / 11, 15);
+  });
+
+  it("counts NIFTY and SENSEX as one market: their windows overlap each other (C3)", () => {
+    // A call on each index at one bar: one observation, not two.
+    const pair = [row({ id: "n" }), row({ id: "s", index: "SENSEX" })];
+    expect(overlapWeights(pair, V).map((x) => x.w)).toEqual([0.5, 0.5]);
+    // A SENSEX call 10 minutes after a NIFTY one overlaps it too; one 30 minutes later only touches it.
+    const near = [row({ id: "n" }), row({ id: "s", index: "SENSEX", barCloseMs: T0 + 10 * MINUTE_MS })];
+    expect(overlapWeights(near, V).map((x) => x.w)).toEqual([0.5, 0.5]);
+    const apart = [row({ id: "n" }), row({ id: "s", index: "SENSEX", barCloseMs: T0 + 30 * MINUTE_MS })];
+    expect(overlapWeights(apart, V).map((x) => x.w)).toEqual([1, 1]);
+    // Six consecutive candles on each index: 12 rows that weigh 1 in all.
+    const run = (["NIFTY", "SENSEX"] as const).flatMap((index) => Array.from({ length: 6 }, (_, i) => row({ id: `${index}${i}`, index, barCloseMs: T0 + i * 5 * MINUTE_MS })));
+    expect(total(overlapWeights(run, V))).toBeCloseTo(1, 12);
   });
 
   it("weighs other instruction versions at half, keeping the active version's row of an identical pair", () => {
@@ -245,6 +260,45 @@ describe("sizingProbability", () => {
     expect(sizingProbability(0.85, [...rows, ...noise], V)).toEqual(h);
   });
 
+  it("sizes an escalation on the escalations' own record, never the reflex's (C2)", () => {
+    const reflex = spaced(300, { paid: (i) => i % 4 !== 0 });
+    const escalations = spaced(40, { paid: (i) => i % 2 === 0, from: 5_000 }).map((r) => ({ ...r, source: "ESCALATION" as const }));
+    const all = [...reflex, ...escalations];
+    // With no graded escalation, the prior only: n = 0 (agentCycle then takes no trade).
+    const none = sizingProbability(0.88, reflex, V, "ESCALATION");
+    expect(none).toMatchObject({ mode: "pooled", n: 0, mean: 0.5 });
+    expect(none.p).toBeCloseTo(0.4578886359060713, 12);
+    // A rich reflex record would clear Kelly; it never sizes an escalation.
+    expect(agentRiskPct(sizingProbability(0.88, reflex, V).p, 1).riskPct).toBeGreaterThan(0);
+    const e = sizingProbability(0.88, all, V, "ESCALATION");
+    expect(e).toEqual(sizingProbability(0.88, escalations.map((r) => ({ ...r, source: "REFLEX" as const })), V));
+    expect(e.n).toBe(40);
+    expect(e.p).toBeCloseTo(betaQuantile(0.2, 20 + 50, 20 + 50), 12);
+    // The reflex's own sizing ignores the escalations, as before.
+    expect(sizingProbability(0.88, all, V)).toEqual(sizingProbability(0.88, reflex, V));
+  });
+
+  it("counts a call on each index at one bar once: no trade from evidence counted twice (probe-crossindex)", () => {
+    // 40 sessions, a confident LONG on NIFTY and on SENSEX at 10:00 and 13:00, 55% paid, the same label on both.
+    const rows: GradedDecision[] = [];
+    let k = 0;
+    for (let d = 0; d < 40; d++) {
+      const date = addDays("2026-07-01", d);
+      for (const hhmm of ["10:00", "13:00"]) {
+        const paid = k % 20 < 11;
+        for (const index of ["NIFTY", "SENSEX"] as const) {
+          rows.push(row({ id: `${index}${k}`, date, barCloseMs: istAt(date, hhmm), index, directionConfidence: 0.85, y: paid ? 1 : 0, paid }));
+        }
+        k++;
+      }
+    }
+    const both = sizingProbability(0.85, rows, V);
+    const oneIndex = sizingProbability(0.85, rows.filter((r) => r.index === "NIFTY"), V);
+    expect(both.n).toBeCloseTo(80, 9);
+    expect(both.p).toBeCloseTo(oneIndex.p, 12);
+    expect(agentRiskPct(both.p, 1).riskPct).toBe(0);
+  });
+
   it("counts 6 overlapping calls as 1", () => {
     const six = Array.from({ length: 6 }, (_, i) => row({ id: `g${i}`, barCloseMs: T0 + i * 5 * MINUTE_MS }));
     const h = sizingProbability(0.85, six, V);
@@ -272,6 +326,28 @@ describe("sizingProbability", () => {
     expect(sizingProbability(0.75, [...low, ...high], V).mode).toBe("pooled");
     // 299 calls in all: pooled.
     expect(sizingProbability(0.85, [...low, ...high.slice(1)], V).mode).toBe("pooled");
+  });
+
+  it("counts each window once for the switch to buckets, whatever bucket it fell in (C4, probe-bucketswitch)", () => {
+    // 5 sessions of one index, a call on every candle with the confidence cycling through the six buckets: each bucket
+    // holds calls 30 minutes apart (weight 1 each, about 58 per bucket), but the windows themselves overlap.
+    const confs = [0.45, 0.55, 0.65, 0.75, 0.85, 0.95];
+    const rows: GradedDecision[] = [];
+    let k = 0;
+    for (let d = 0; d < 5; d++) {
+      const date = addDays("2026-10-19", d);
+      for (let i = 0; i < 70; i++) {
+        const paid = (k * 7) % 10 < 6;
+        rows.push(row({ id: `r${k}`, date, barCloseMs: istAt(date, "09:20") + i * 5 * MINUTE_MS, directionConfidence: confs[i % 6], y: paid ? 1 : 0, paid }));
+        k++;
+      }
+    }
+    const joint = overlapWeights(rows, V).reduce((s, x) => s + x.w, 0);
+    expect(joint).toBeLessThan(60);
+    const h = sizingProbability(0.85, rows, V);
+    expect(h.mode).toBe("pooled");
+    // Sizing stays pooled: the same p as on the confident calls alone (probe-bucketswitch2).
+    expect(h).toEqual(sizingProbability(0.85, rows.filter((r) => r.directionConfidence > 0.8), V));
   });
 
   it("makes the bucket values non-decreasing in confidence", () => {
@@ -353,5 +429,13 @@ describe("graded rows from decisions", () => {
       expect(toGraded({ ...base, outcome: { status, y: null, ret30Pct: null, paid: null, source: null, gradedMs: 1 } })).toBeNull();
     }
     expect(toGraded({ ...base, outcome: null })).toBeNull();
+  });
+
+  it("never scores a code-made row (C8)", () => {
+    expect(toGraded({ ...base, codeMade: true })).toBeNull();
+    const n = { ...base, direction: "NEUTRAL" as const, directionConfidence: 0.5, codeMade: true, outcome: { status: "NEUTRAL" as const, y: 1 as const, ret30Pct: 0.02, paid: null, source: "STORED" as const, gradedMs: 1 } };
+    expect(toGradedNeutral(n)).toBeNull();
+    expect(toGradedNeutral({ ...n, codeMade: false })).toMatchObject({ id: "d1", y: 1 });
+    expect(toGraded({ ...base, codeMade: false })).not.toBeNull();
   });
 });

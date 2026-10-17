@@ -25,7 +25,22 @@ import { validateBatch } from "./validate";
 export type { BriefContext };
 
 export interface ReflexRequest { input: ReflexInput; finalists: Finalist[]; brief: BriefContext | null; guidance: string; signal?: AbortSignal }
-export interface ReflexResponse { status: CallStatus; decisions: ReflexDecision[]; dropped: string[]; usage: LlmUsage | null; model: string; latencyMs: number; error: string | null }
+export interface ReflexResponse {
+  status: CallStatus;
+  decisions: ReflexDecision[];
+  dropped: string[];
+  usage: LlmUsage | null;
+  model: string;
+  latencyMs: number;
+  error: string | null;
+  /**
+   * HTTP attempts of this call that may have been billed beyond the usage reported: those that got no response (a
+   * timeout, an abort, a dropped connection) and 200 answers whose body or stream broke before the message was read.
+   * An attempt answered with an error status bills nothing. Undefined when unknown (the cost ledger then books the
+   * call's whole worst case).
+   */
+  possiblyBilledAttempts?: number;
+}
 export interface ReflexJudge { readonly kind: "claude" | "fake"; readonly model: string; judge(req: ReflexRequest): Promise<ReflexResponse> }
 
 export interface DeepRequest<T> {
@@ -51,13 +66,62 @@ export interface DeepResponse<T> {
   error: string | null;
   /** Each attempt with the model that ran it, when the response lists them (cost.ts responseCostUsd prices them one by one). */
   iterations?: UsageIteration[] | null;
+  /** As ReflexResponse.possiblyBilledAttempts. */
+  possiblyBilledAttempts?: number;
 }
-export interface DeepJudge { readonly model: string; structured<T>(req: DeepRequest<T>): Promise<DeepResponse<T>> }
+export interface DeepJudge {
+  readonly model: string;
+  structured<T>(req: DeepRequest<T>): Promise<DeepResponse<T>>;
+  /** The API's token count of a user message sent alone (free; no model call); null when it cannot be had. */
+  countTokens?(user: string): Promise<number | null>;
+}
 
 export interface ClaudeJudgeOptions { apiKey: string; model: string; fetch?: typeof fetch; now?: () => number }
 
 /** Escalations and the review retry once, as the reflex does. */
 export const DEEP_MAX_RETRIES = REVIEW_CALL.maxRetries;
+/** A token count gets this long, with no retry; the review then sizes its prompt from the local estimate. */
+export const COUNT_TOKENS_TIMEOUT_MS = 10_000;
+
+/**
+ * Counts the HTTP attempts a judge's client makes during one call, through the fetch the client is given. Calls on
+ * one judge never overlap (the AgentDO runs one job at a time); if two ever do, neither can say what it sent.
+ */
+class AttemptMeter {
+  private attempts = 0;
+  private errorStatus = 0;
+  private active = 0;
+  private overlapped = false;
+
+  constructor(private readonly base: typeof fetch | undefined) {}
+
+  /** The client's fetch: every request it sends is one attempt; one answered with a status of 400 or more billed nothing. */
+  readonly fetch = (async (input: Parameters<typeof fetch>[0], init?: Parameters<typeof fetch>[1]) => {
+    this.attempts++;
+    const res = await (this.base ? this.base(input, init) : globalThis.fetch(input, init));
+    if (res.status >= 400) this.errorStatus++;
+    return res;
+  }) as typeof fetch;
+
+  /** Starts one call; the function it returns ends it and gives the attempts that may have been billed beyond the usage read. */
+  begin(): (messageRead: boolean) => number | undefined {
+    if (this.active > 0) this.overlapped = true;
+    else {
+      this.attempts = 0;
+      this.errorStatus = 0;
+      this.overlapped = false;
+    }
+    this.active++;
+    let ended = false;
+    return (messageRead) => {
+      if (!ended) {
+        ended = true;
+        this.active--;
+      }
+      return this.overlapped ? undefined : Math.max(0, this.attempts - this.errorStatus - (messageRead ? 1 : 0));
+    };
+  }
+}
 
 /** Default deadline of a deep call: every attempt's timeout and 10 s more (ESCALATION.abortMs follows the same rule). */
 export function deepAbortMs(timeoutMs: number): number {
@@ -201,15 +265,18 @@ export class ClaudeReflexJudge implements ReflexJudge {
   readonly model: string;
   private readonly client: Anthropic;
   private readonly now: () => number;
+  private readonly meter: AttemptMeter;
 
   constructor(o: ClaudeJudgeOptions) {
     this.model = o.model;
     this.now = o.now ?? Date.now;
-    this.client = new Anthropic({ apiKey: o.apiKey, timeout: REFLEX_CALL.timeoutMs, maxRetries: REFLEX_CALL.maxRetries, ...(o.fetch ? { fetch: o.fetch } : {}) });
+    this.meter = new AttemptMeter(o.fetch);
+    this.client = new Anthropic({ apiKey: o.apiKey, timeout: REFLEX_CALL.timeoutMs, maxRetries: REFLEX_CALL.maxRetries, fetch: this.meter.fetch });
   }
 
   async judge(req: ReflexRequest): Promise<ReflexResponse> {
-    const none = { decisions: [] as ReflexDecision[], dropped: [] as string[] };
+    // possiblyBilledAttempts 0: no request was sent.
+    const none = { decisions: [] as ReflexDecision[], dropped: [] as string[], possiblyBilledAttempts: 0 };
     // Only finalists on an index with a snapshot are asked about, and only their answers count.
     let finalists: Finalist[];
     try {
@@ -221,6 +288,7 @@ export class ClaudeReflexJudge implements ReflexJudge {
     const started = this.now();
     const elapsed = () => Math.max(0, this.now() - started);
     const deadline = callDeadline(REFLEX_CALL.abortMs, req.signal);
+    const end = this.meter.begin();
     let msg: Anthropic.Message;
     try {
       msg = await this.client.messages.create(
@@ -235,21 +303,22 @@ export class ClaudeReflexJudge implements ReflexJudge {
       );
     } catch (err) {
       const f = failure(err, deadline, { abortMs: REFLEX_CALL.abortMs, timeoutMs: REFLEX_CALL.timeoutMs, maxRetries: REFLEX_CALL.maxRetries });
-      return { ...none, status: f.status, usage: null, model: this.model, latencyMs: elapsed(), error: f.error };
+      return { ...none, status: f.status, usage: null, model: this.model, latencyMs: elapsed(), error: f.error, possiblyBilledAttempts: end(false) };
     } finally {
       deadline.clear();
     }
+    const billed = { possiblyBilledAttempts: end(true) };
     const latencyMs = elapsed();
     const usage = llmUsage(msg.usage);
     const answer: Answer = { model: msg.model || this.model, stopReason: msg.stop_reason ?? null, refusalCategory: msg.stop_details?.category ?? null, content: msg.content };
     const stop = stopFailure(answer);
-    if (stop) return { ...none, status: stop.status, usage, model: answer.model, latencyMs, error: stop.error };
+    if (stop) return { ...none, ...billed, status: stop.status, usage, model: answer.model, latencyMs, error: stop.error };
     const read = readAnswer(answer.content, (raw) => {
       const v = validateBatch(raw, finalists);
       return v.ok ? { ok: true, value: v } : v;
     });
-    if (!read.ok) return { ...none, status: "PARSE_ERROR", usage, model: answer.model, latencyMs, error: read.error };
-    return { status: "OK", decisions: read.value.decisions, dropped: read.value.dropped, usage, model: answer.model, latencyMs, error: null };
+    if (!read.ok) return { ...none, ...billed, status: "PARSE_ERROR", usage, model: answer.model, latencyMs, error: read.error };
+    return { status: "OK", decisions: read.value.decisions, dropped: read.value.dropped, usage, model: answer.model, latencyMs, error: null, ...billed };
   }
 }
 
@@ -260,12 +329,27 @@ export class ClaudeReflexJudge implements ReflexJudge {
 export class ClaudeDeepJudge implements DeepJudge {
   readonly model: string;
   private readonly client: Anthropic;
+  /** Token counts go through their own client, so they are never counted as a call's attempts. */
+  private readonly counter: Anthropic;
   private readonly now: () => number;
+  private readonly meter: AttemptMeter;
 
   constructor(o: ClaudeJudgeOptions) {
     this.model = o.model;
     this.now = o.now ?? Date.now;
-    this.client = new Anthropic({ apiKey: o.apiKey, maxRetries: DEEP_MAX_RETRIES, ...(o.fetch ? { fetch: o.fetch } : {}) });
+    this.meter = new AttemptMeter(o.fetch);
+    this.client = new Anthropic({ apiKey: o.apiKey, maxRetries: DEEP_MAX_RETRIES, fetch: this.meter.fetch });
+    this.counter = new Anthropic({ apiKey: o.apiKey, maxRetries: 0, timeout: COUNT_TOKENS_TIMEOUT_MS, ...(o.fetch ? { fetch: o.fetch } : {}) });
+  }
+
+  /** The API's count of `user` sent alone to this model (POST /v1/messages/count_tokens: free); null on any failure. */
+  async countTokens(user: string): Promise<number | null> {
+    try {
+      const r = await this.counter.messages.countTokens({ model: this.model, messages: [{ role: "user", content: user }] }, { timeout: COUNT_TOKENS_TIMEOUT_MS, maxRetries: 0 });
+      return Number.isFinite(r.input_tokens) && r.input_tokens > 0 ? r.input_tokens : null;
+    } catch {
+      return null;
+    }
   }
 
   async structured<T>(req: DeepRequest<T>): Promise<DeepResponse<T>> {
@@ -274,6 +358,7 @@ export class ClaudeDeepJudge implements DeepJudge {
     const fallbacks = FALLBACK_MODELS.has(this.model);
     const abortMs = req.abortMs ?? deepAbortMs(req.timeoutMs);
     const deadline = callDeadline(abortMs, req.signal);
+    const end = this.meter.begin();
     let answer: Answer;
     let top: LlmUsage;
     let iterations: UsageIteration[] | null;
@@ -304,11 +389,11 @@ export class ClaudeDeepJudge implements DeepJudge {
       iterations = iterationsOf(msg.usage?.iterations, this.model);
     } catch (err) {
       const f = failure(err, deadline, { abortMs, timeoutMs: req.timeoutMs, maxRetries: DEEP_MAX_RETRIES });
-      return { status: f.status, parsed: null, usage: null, model: this.model, latencyMs: elapsed(), error: f.error, iterations: null };
+      return { status: f.status, parsed: null, usage: null, model: this.model, latencyMs: elapsed(), error: f.error, iterations: null, possiblyBilledAttempts: end(false) };
     } finally {
       deadline.clear();
     }
-    const base = { usage: totalUsage(top, iterations), model: answer.model, latencyMs: elapsed(), iterations };
+    const base = { usage: totalUsage(top, iterations), model: answer.model, latencyMs: elapsed(), iterations, possiblyBilledAttempts: end(true) };
     const stop = stopFailure(answer);
     if (stop) return { ...base, status: stop.status, parsed: null, error: stop.error };
     const read = readAnswer<T>(answer.content, (raw) => {

@@ -99,9 +99,9 @@ export class MemoryAgentStore implements AgentStore {
     }
   }
 
-  /** Graded rows in date, then bar order. */
+  /** Graded rows in date, then bar order; a code-made row (codeMade) is never one: it is not a forecast. */
   private gradedRows(fromDate: string): DecisionRecord[] {
-    const rows = [...this._decisions.values()].filter((d) => d.date >= fromDate && d.outcome !== null && (d.outcome.y === 0 || d.outcome.y === 1));
+    const rows = [...this._decisions.values()].filter((d) => d.date >= fromDate && d.codeMade !== true && d.outcome !== null && (d.outcome.y === 0 || d.outcome.y === 1));
     return sorted(rows, (a, b) => a.date.localeCompare(b.date) || a.barCloseMs - b.barCloseMs);
   }
 
@@ -236,6 +236,10 @@ export class MemoryAgentStore implements AgentStore {
   async activeInstruction(): Promise<InstructionRecord | null> {
     for (const i of this._instructions.values()) if (i.active) return clone(i);
     return null;
+  }
+
+  async instruction(version: string): Promise<InstructionRecord | null> {
+    return clone(this._instructions.get(version) ?? null);
   }
 
   async setActiveInstruction(version: string): Promise<void> {

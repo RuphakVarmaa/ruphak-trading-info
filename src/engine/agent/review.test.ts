@@ -88,9 +88,9 @@ describe("candidateFrom", () => {
   });
   const make = (guidance: string | null) => candidateFrom(out(guidance), base, DAY, 1_234, () => "cand-1");
 
-  it("returns a SCORING candidate from the review's proposal", () => {
+  it("returns a SCORING candidate from the review's proposal, keeping the text it was written against (D7)", () => {
     expect(make("\r\n- Prefer NEUTRAL when ADX is below 20.\r\n- Wait for the flow to agree.\u0007  ")).toEqual({
-      id: "cand-1", date: DAY, createdMs: 1_234, baseVersion: "core-1/aaaa1111",
+      id: "cand-1", date: DAY, createdMs: 1_234, baseVersion: "core-1/aaaa1111", baseGuidance: base.guidance,
       guidance: "- Prefer NEUTRAL when ADX is below 20.\n- Wait for the flow to agree.",
       rationale: "The reflex chased late moves.", wouldBeWrongIf: "Brier worsens over five sessions.",
       status: "SCORING", replay: null, decidedMs: null, decidedBy: null,
@@ -181,14 +181,42 @@ describe("replayScore", () => {
     complete: false,
   });
 
-  it("scores both replayed arms and the live record on the same candles", () => {
-    // Candidate: LONG 0.9 hit (+0.1%), LONG 0.7 missed (−0.04%); the 10:10 call has no 10:40 close.
-    expect(result.brierCandidate).toBeCloseTo((0.01 + 0.49) / 2, 12);
-    expect(result.graded).toBe(2);
-    // Current text replayed: SHORT 0.85 missed, SHORT 0.82 hit.
-    expect(result.brierCurrentReplayed).toBeCloseTo((0.7225 + 0.0324) / 2, 12);
-    // Live reflex rows only (the escalation's SHORT 0.99 is left out): LONG 0.6 hit, SENSEX LONG 0.7 hit.
-    expect(result.brierCurrentLive).toBeCloseTo((0.16 + 0.09) / 2, 12);
+  it("scores the three runs on exactly the calls all three labelled, and reports each run's own count (C5)", () => {
+    // Each run's labelled calls. Candidate: NIFTY 10:00 LONG 0.9 hit (+0.1%), NIFTY 10:05 LONG 0.7 missed (−0.04%);
+    // the 10:10 call has no 10:40 close. Current text replayed: NIFTY 10:00 SHORT 0.85 missed, 10:05 SHORT 0.82 hit.
+    // Live reflex rows only (the escalation's SHORT 0.99 is left out): NIFTY 10:00 LONG 0.6 hit, SENSEX 10:05 LONG 0.7 hit.
+    expect(result).toMatchObject({ gradedCandidate: 2, gradedCurrent: 2, gradedLive: 2 });
+    // Only NIFTY at 10:00 is labelled by all three (live has no NIFTY call at 10:05).
+    expect(result.gradedCommon).toBe(1);
+    expect(result.graded).toBe(1);
+    expect(result.brierCandidate).toBeCloseTo(0.01, 12);
+    expect(result.brierCurrentReplayed).toBeCloseTo(0.7225, 12);
+    expect(result.brierCurrentLive).toBeCloseTo(0.16, 12);
+  });
+
+  it("never lets a text win by answering NEUTRAL on the hard calls (the probe of review C5)", () => {
+    // 10 candles: on 5 easy ones the index rises 0.1% (a LONG hits); on 5 hard ones it falls 0.1% (a LONG misses).
+    const easy = ["09:30", "09:35", "09:40", "09:45", "09:50"];
+    const hard = ["11:30", "11:35", "11:40", "11:45", "11:50"];
+    const m = new Map<number, number>();
+    for (const t of [...easy, ...hard]) m.set(at(t), 25_000);
+    for (const t of ["10:00", "10:05", "10:10", "10:15", "10:20"]) m.set(at(t), 25_025);
+    for (const t of ["12:00", "12:05", "12:10", "12:15", "12:20"]) m.set(at(t), 24_975);
+    const days: ReplayBar[] = [...easy, ...hard].map((t) => ({ barCloseMs: at(t), snapshots: {}, finalists: [gN] }));
+    // The current text (replayed, and live) says LONG 0.7 everywhere; the candidate says the same on the easy candles
+    // and NEUTRAL on the hard ones.
+    const current = days.map(() => [call("gen:NIFTY", "LONG", 0.7)]);
+    const candidate = days.map((_, i) => (i < 5 ? [call("gen:NIFTY", "LONG", 0.7)] : [call("gen:NIFTY", "NEUTRAL", 0.7)]));
+    const liveRows = days.map((b) => [decision({ barCloseMs: b.barCloseMs, direction: "LONG", directionConfidence: 0.7 })]);
+    const r = replayScore({ bars: days, candidate, currentReplayed: current, current: liveRows, closes: new Map([["NIFTY", m]]), calendar: cal, nowMs: at("16:20"), costUsd: 0, complete: true });
+    // Scored on the 5 calls every run labelled, the two texts are identical: no win by abstaining.
+    expect(r).toMatchObject({ gradedCandidate: 5, gradedCurrent: 10, gradedLive: 10, gradedCommon: 5, graded: 5 });
+    expect(r.brierCandidate).toBeCloseTo(0.09, 12);
+    expect(r.brierCurrentReplayed).toBeCloseTo(0.09, 12);
+    expect(r.brierCurrentLive).toBeCloseTo(0.09, 12);
+    // A failed call (no answer) drops its candle from the comparison too.
+    const failed = replayScore({ bars: days, candidate: candidate.map((x, i) => (i === 0 ? [] : x)), currentReplayed: current, current: liveRows, closes: new Map([["NIFTY", m]]), calendar: cal, nowMs: at("16:20"), costUsd: 0, complete: true });
+    expect(failed).toMatchObject({ gradedCandidate: 4, gradedCommon: 4 });
   });
 
   it("counts the calls that pass the model side of the gate and their hit rate", () => {
@@ -204,6 +232,7 @@ describe("replayScore", () => {
     expect(empty).toEqual({
       bars: 0, graded: 0, brierCandidate: null, brierCurrentReplayed: null, brierCurrentLive: null, firesCandidate: 0, firesCurrent: 0,
       hitRateCandidate: null, hitRateCurrent: null, costUsd: 0, complete: true, cursorBarMs: null, label: "in-sample, not proof",
+      gradedCandidate: 0, gradedCurrent: 0, gradedLive: 0, gradedCommon: 0,
     });
   });
 });

@@ -112,7 +112,7 @@ export interface CallRecord {
 export interface SizingHint {
   p: number;
   mode: "pooled" | "buckets";
-  /** Effective (weighted) number of graded decisions behind p. */
+  /** Effective (weighted) number of graded decisions of the decision's own source behind p; 0 means the prior alone (no trade). */
   n: number;
   /** The posterior mean of the paid rate, before the quantile. */
   mean: number;
@@ -120,7 +120,11 @@ export interface SizingHint {
 export interface GateLine { gate: string; passed: boolean | null; detail: string }
 export interface GateVerdict { fired: boolean; lines: GateLine[]; codeToxic: string[]; codeRisk: AgentRiskLevel; effectiveRisk: AgentRiskLevel }
 export interface EdgeVerdict { passed: boolean; rows: GateResult[] }
-export interface SizingTrace { p: number; b: number; kelly: number; quarterKelly: number; riskPct: number; lots: number; riskRupees: number; limitedBy: string }
+export interface SizingTrace {
+  p: number; b: number; kelly: number; quarterKelly: number; riskPct: number; lots: number; riskRupees: number; limitedBy: string;
+  /** The effective (overlap-weighted) number of graded calls behind p (the decision's SizingHint.n); null when unknown. */
+  n?: number | null;
+}
 export interface DecisionExecution {
   t: number; gate: GateVerdict; action: AgentAction; detail: string;
   planId: string | null; positionId: string | null; tradingSymbol: string | null;
@@ -145,6 +149,8 @@ export interface DecisionRecord extends ReflexDecision {
   sizing: SizingHint | null;
   execution: DecisionExecution | null;
   outcome: DecisionOutcome | null;
+  /** True when code, not a model, set this row's direction and confidence (the NEUTRAL 0.5 of a reflex/escalation disagreement). Never scored. */
+  codeMade?: boolean;
 }
 
 export type BatchStatus = "OK" | "FAILED" | "COST_CAP" | "OFF" | "NO_FINALISTS" | "STALE";
@@ -202,12 +208,14 @@ export interface CalibrationSummary {
   byIndex: { index: IndexId; n: number; brier: number | null }[];
   byKind: { kind: AgentFinalistKind; n: number; brier: number | null }[];
   byVersion: { version: string; n: number; brier: number | null }[];
-  /** REFLEX and ESCALATION scored apart; only REFLEX rows feed sizing. */
+  /** REFLEX and ESCALATION scored apart. Each source's calls are sized on that source's graded rows only. */
   bySource: { source: AgentDecisionSource; n: number; brier: number | null }[];
   /** NEUTRAL decisions on their own Brier line (y = 1 when the index stayed within OUTCOME.neutralBandPct). */
   neutral: { n: number; brier: number | null; baselineBrier: number | null };
-  buckets: CalibrationBucket[]; sizingMode: "pooled" | "buckets"; sizingP: number | null;
-  /** Effective (weighted) number of graded decisions behind sizingP. */
+  buckets: CalibrationBucket[]; sizingMode: "pooled" | "buckets";
+  /** The probability a reflex call just above 0.80 would be sized on (an escalation is sized on its own record). */
+  sizingP: number | null;
+  /** Effective (weighted) number of graded reflex decisions behind sizingP; 0 means the prior alone (no trade). */
   sizingN: number;
   paidRate: number | null;
 }
@@ -215,6 +223,8 @@ export interface ReviewRecord {
   date: string; status: "PENDING" | "RUNNING" | "DONE" | "FAILED" | "SKIPPED"; dueMs: number;
   startedMs: number | null; doneMs: number | null; model: string | null; callId: string | null;
   report: ReviewOut | null; calibration: CalibrationSummary | null; error: string | null;
+  /** Set when the review could not read the text the session ran with and read the active one instead. */
+  note?: string | null;
 }
 /**
  * Both texts replayed fresh on identical inputs (stored snapshots, finalists and brief context). brierCurrentLive scores
@@ -226,11 +236,23 @@ export interface ReplayResult {
   brierCandidate: number | null; brierCurrentReplayed: number | null; brierCurrentLive: number | null;
   firesCandidate: number; firesCurrent: number; hitRateCandidate: number | null; hitRateCurrent: number | null;
   costUsd: number; complete: boolean; cursorBarMs: number | null; label: "in-sample, not proof";
+  /** The day's candles with an OK batch: what the replay set out to judge. Fallback: bars. */
+  barsTotal?: number;
+  /** Directional calls each run labelled HIT or MISS. Fallback for each: graded. */
+  gradedCandidate?: number;
+  gradedCurrent?: number;
+  gradedLive?: number;
+  /** Calls (candle and finalist) that all three runs labelled HIT or MISS; all three Brier scores are over exactly these. `graded` now equals this. */
+  gradedCommon?: number;
+  /** Why an incomplete replay stopped; null when complete. Absent on an incomplete replay: say "stopped early" with no cause. */
+  stopReason?: "cost_cap" | "interrupted" | "no_key" | null;
 }
 export interface CandidateRecord {
   id: string; date: string; createdMs: number; baseVersion: string; guidance: string; rationale: string; wouldBeWrongIf: string;
   status: "SCORING" | "PENDING" | "APPROVED" | "REJECTED" | "SUPERSEDED" | "FAILED";
   replay: ReplayResult | null; decidedMs: number | null; decidedBy: string | null;
+  /** The text the candidate was written against (baseVersion's): the text the reviewed session ran with. */
+  baseGuidance?: string;
 }
 export interface InstructionRecord { version: string; guidance: string; createdMs: number; source: "BUILTIN" | "CANDIDATE"; candidateId: string | null; active: boolean }
 /** A queued model job. It is marked RUNNING before its call; a RUNNING job found after a restart becomes FAILED, never re-run. */
@@ -262,9 +284,9 @@ export interface AgentStore {
   decisionsForBar(barCloseMs: number): Promise<DecisionRecord[]>;
   updateExecution(id: string, e: DecisionExecution): Promise<void>;
   updateOutcomes(rows: { id: string; outcome: DecisionOutcome }[]): Promise<void>;
-  /** Graded directional decisions (outcome HIT or MISS) dated on or after fromDate. */
+  /** Graded directional decisions (outcome HIT or MISS) dated on or after fromDate; never a codeMade row. */
   graded(fromDate: string): Promise<GradedDecision[]>;
-  /** Graded NEUTRAL decisions (outcome NEUTRAL with y set) dated on or after fromDate. */
+  /** Graded NEUTRAL decisions (outcome NEUTRAL with y set) dated on or after fromDate; never a codeMade row. */
   gradedNeutral(fromDate: string): Promise<GradedNeutral[]>;
   putCall(c: CallRecord): Promise<void>;
   calls(date: string): Promise<CallRecord[]>;
@@ -284,6 +306,8 @@ export interface AgentStore {
   latestCandidate(): Promise<CandidateRecord | null>;
   putInstruction(i: InstructionRecord): Promise<void>;
   activeInstruction(): Promise<InstructionRecord | null>;
+  /** The stored text of one guidance version, active or not; null when it was never stored. */
+  instruction?(version: string): Promise<InstructionRecord | null>;
   setActiveInstruction(version: string): Promise<void>;
   /** Inserts or replaces a job by id (also how a job is marked RUNNING). */
   putJob(j: AgentJob): Promise<void>;

@@ -33,7 +33,7 @@ function graded(n: number, hits: number, paid: number): GradedDecision[] {
 describe("agentRiskPct", () => {
   it("risks nothing at a coin flip with even payoffs", () => {
     expect(agentRiskPct(0.5, 1)).toMatchObject({ kelly: 0, quarterKelly: 0, riskPct: 0 });
-    expect(agentRiskPct(0.5, 1).reason).toBe("Kelly ≤ 0: no measured edge yet (p=0.5, b=1)");
+    expect(agentRiskPct(0.5, 1).reason).toBe("Kelly ≤ 0: past calls have not cleared break-even (p=0.5, b=1)");
   });
 
   it("takes a quarter of full Kelly and caps it at 1% of equity", () => {

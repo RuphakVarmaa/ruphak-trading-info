@@ -44,7 +44,7 @@ export function agentRiskPct(p: number, b: number): { kelly: number; quarterKell
     return { kelly: 0, quarterKelly: 0, riskPct: 0, reason: `no trade: unusable sizing inputs (p=${num(p)}, b=${num(b)})` };
   }
   const kelly = kellyFraction(p, b, -1);
-  if (!(kelly > KELLY_FLOOR)) return { kelly, quarterKelly: 0, riskPct: 0, reason: `Kelly ≤ 0: no measured edge yet (p=${num(p)}, b=${num(b)})` };
+  if (!(kelly > KELLY_FLOOR)) return { kelly, quarterKelly: 0, riskPct: 0, reason: `Kelly ≤ 0: past calls have not cleared break-even (p=${num(p)}, b=${num(b)})` };
   const quarterKelly = AGENT_LIMITS.kellyFraction * kelly;
   const uncapped = quarterKelly * 100;
   const cap = AGENT_LIMITS.maxRiskPctPerTrade;

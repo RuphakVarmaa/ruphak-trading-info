@@ -71,7 +71,7 @@ describe("compileFinalists", () => {
   it("always has one generic finalist per index, first and in order, and nothing else without a brief", () => {
     const fs = compileFinalists({ indices: ["NIFTY", "SENSEX"], nowMs: T, brief: null });
     expect(fs).toEqual([genericFinalist("NIFTY"), genericFinalist("SENSEX")]);
-    expect(fs[0]).toMatchObject({ id: "gen:NIFTY", kind: "GENERIC", side: null, contract: null, entryHigh: null, briefId: null, why: [] });
+    expect(fs[0]).toMatchObject({ id: "gen:NIFTY", kind: "GENERIC", label: "NIFTY, either side (generic call)", side: null, contract: null, entryHigh: null, briefId: null, why: [] });
     expect(ids(compileFinalists({ indices: ["SENSEX", "SENSEX"], nowMs: T, brief: null }))).toEqual(["gen:SENSEX"]);
   });
 

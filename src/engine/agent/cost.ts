@@ -30,6 +30,11 @@ export const MODEL_PRICES: Record<string, ModelPrice> = {
   "claude-opus-5-5": { inputPerM: 4, outputPerM: 20, cacheReadPerM: 0.2, cacheWrite5mPerM: 5, cacheWrite1hPerM: 8, fallbackModels: ["claude-opus-5", "claude-opus-4-8"] },
   "claude-opus-5": { inputPerM: 5, outputPerM: 25, cacheReadPerM: 0.5, cacheWrite5mPerM: 6.25, cacheWrite1hPerM: 10, fallbackModels: ["claude-opus-4-8"] },
   "claude-opus-4-8": { inputPerM: 5, outputPerM: 25, cacheReadPerM: 0.5, cacheWrite5mPerM: 6.25, cacheWrite1hPerM: 10 },
+  // Cache reads 0.025× input; a refusal can fall back to either listed model.
+  "claude-fable-5-1": { inputPerM: 10, outputPerM: 50, cacheReadPerM: 0.25, cacheWrite5mPerM: 12.5, cacheWrite1hPerM: 20, fallbackModels: ["claude-opus-5", "claude-opus-4-8"] },
+  // The default fallback retries its cyber and frontier_llm declines on the listed model.
+  "claude-sonnet-5-5": { inputPerM: 2, outputPerM: 10, cacheReadPerM: 0.2, cacheWrite5mPerM: 2.5, cacheWrite1hPerM: 4, fallbackModels: ["claude-sonnet-5"] },
+  "claude-sonnet-5": { inputPerM: 2, outputPerM: 10, cacheReadPerM: 0.2, cacheWrite5mPerM: 2.5, cacheWrite1hPerM: 4 },
 };
 
 /** How much dearer the long card is than the normal one for a prompt of this size (1 when it does not apply). */
@@ -105,20 +110,37 @@ export function servingModels(model: string): string[] {
   return [model, ...(priceFor(model).fallbackModels ?? [])];
 }
 
-/** One attempt at its dearest: every input token at the dearest input rate (a 1-hour cache write), every output token used. */
-function attemptWorstUsd(p: ModelPrice, inputTokensEst: number, maxTokens: number): number {
-  const k = longFactor(p, inputTokensEst);
-  const inputRate = Math.max(p.inputPerM, p.cacheWrite1hPerM) * k;
+/**
+ * A prompt's size by block: the system block (the only one sent with cache_control, so it may be written to the cache)
+ * and the user message (never cached, so always billed at the plain input rate).
+ */
+export interface PromptSize {
+  systemTokens: number;
+  userTokens: number;
+}
+
+/**
+ * One attempt at its dearest: the system block at the dearer of the input rate and a 1-hour cache write, the user
+ * message at the input rate, every output token used. The long card, when it applies, is chosen by the whole prompt.
+ */
+function attemptWorstUsd(p: ModelPrice, size: PromptSize, maxTokens: number): number {
+  // Not clamped: a size that is not a number makes the worst case NaN, which capAllows refuses (fail closed).
+  const k = longFactor(p, size.systemTokens + size.userTokens);
+  const cachedRate = Math.max(p.inputPerM, p.cacheWrite1hPerM) * k;
+  const inputRate = p.inputPerM * k;
   const outputRate = k === 1 ? p.outputPerM : (p.longOutputPerM ?? p.outputPerM * k);
-  return (inputTokensEst * inputRate + maxTokens * outputRate) / 1e6;
+  return (size.systemTokens * cachedRate + size.userTokens * inputRate + maxTokens * outputRate) / 1e6;
 }
 
 /**
  * The most one call can cost: `attempts` billed attempts (the first and its retries), each at the dearest model that
  * can serve the request. Two attempts also cover a refusal part-way through an answer followed by its fallback.
+ * `size` is either a PromptSize, or a single token count priced as if every token were a 1-hour cache write (the
+ * reflex, escalation and replay estimates).
  */
-export function worstCaseUsd(model: string, inputTokensEst: number, maxTokens: number, attempts: number = CALL_ATTEMPTS): number {
-  const one = Math.max(...servingModels(model).map((m) => attemptWorstUsd(priceFor(m), inputTokensEst, maxTokens)));
+export function worstCaseUsd(model: string, size: number | PromptSize, maxTokens: number, attempts: number = CALL_ATTEMPTS): number {
+  const blocks: PromptSize = typeof size === "number" ? { systemTokens: size, userTokens: 0 } : size;
+  const one = Math.max(...servingModels(model).map((m) => attemptWorstUsd(priceFor(m), blocks, maxTokens)));
   return round6(one * Math.max(1, Math.ceil(attempts)));
 }
 

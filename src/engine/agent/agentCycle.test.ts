@@ -173,12 +173,40 @@ describe("buildReflexInput", () => {
     expect(() => input(truncated(T), book({ t: T + 1 }))).toThrow(/after the bar close/);
   });
 
-  it("leaves out an incomplete index's snapshot but keeps its close for grading", () => {
+  it("leaves out an incomplete index's snapshot and its close: a partial close is never graded (C6)", () => {
     const i = input(truncated(T), book(), [], ["NIFTY"]);
     expect(Object.keys(i.snapshots)).toEqual(["NIFTY"]);
     expect(i.tokensEst.SENSEX).toBeUndefined();
-    expect(i.closes.SENSEX).toBe(fixtures.candles[MARKET_SYMBOLS.SENSEX].find((c) => c.t === T - 5 * MINUTE_MS)!.c);
-    expect(i.problems).toEqual(["SENSEX: the candle was not complete in time, so it has no snapshot"]);
+    expect(i.closes.SENSEX).toBeUndefined();
+    expect(i.closes.NIFTY).toBe(fixtures.candles[MARKET_SYMBOLS.NIFTY].find((c) => c.t === T - 5 * MINUTE_MS)!.c);
+    expect(i.problems).toEqual(["SENSEX: the candle was not complete in time, so it has no snapshot and no close"]);
+  });
+
+  it("stores no close for an index last seen mid-candle (probe-partialclose)", () => {
+    const D = "2026-10-19";
+    const at = (hhmm: string) => istAt(D, hhmm);
+    const flat = (t: number, c: number): Candle => ({ t, o: c, h: c, l: c, c, v: 0 });
+    const B = at("10:35");
+    const now = B + 125_000;
+    const m: MarketSnapshot = {
+      t: now,
+      candles: {
+        [MARKET_SYMBOLS.NIFTY]: [flat(at("10:25"), 25_000), flat(at("10:30"), 25_010), flat(at("10:35"), 25_012)],
+        // SENSEX's 10:30-10:35 candle was last fetched at 10:34:40: its close is a mid-minute price.
+        [MARKET_SYMBOLS.SENSEX]: [flat(at("10:25"), 82_000), flat(at("10:30"), 82_040)],
+      },
+      daily: {},
+      ltp: {},
+      dataAgeSec: 5,
+      dataAgeSecByIndex: { NIFTY: 5, SENSEX: (now - (B - 20_000)) / 1000 },
+      asOfMs: { [MARKET_SYMBOLS.NIFTY]: now - 5_000, [MARKET_SYMBOLS.SENSEX]: B - 20_000 },
+    };
+    const i = buildReflexInput({
+      barCloseMs: B, indices: ["NIFTY", "SENSEX"], complete: ["NIFTY"], market: m, calendar: createReplayDeps({ cfg: agentCfg, startMs: B, candles: {} }).calendar, cfg: agentCfg,
+      events: [], perf: [], flows: {}, book: { t: istMidnight(D), equity: 500_000, peakEquity: 500_000, ddPct: 0, dayLossPct: 0, positions: [] }, nowMs: now,
+    });
+    expect(i.closes).toEqual({ NIFTY: 25_010 });
+    expect(i.snapshots.SENSEX).toBeUndefined();
   });
 });
 
@@ -236,8 +264,9 @@ describe("executeAgentBatch", () => {
     const e = exec(r, "d-long");
     expect(e.action).toBe("ENTERED");
     expect(e.gate.fired).toBe(true);
-    expect(e.sizing).toMatchObject({ p: 0.6, b: 1, riskPct: 1 });
+    expect(e.sizing).toMatchObject({ p: 0.6, b: 1, riskPct: 1, n: 400 });
     expect(e.sizing!.lots).toBeGreaterThanOrEqual(1);
+    expect(line(e, "kelly")).toEqual({ gate: "kelly", passed: true, detail: "p 0.600, b 1.00: risk 1.00% of equity, measured on about 400 graded calls" });
     expect(line(e, "kelly_cap")?.passed).toBe(true);
     expect(line(e, "kill_switch")?.passed).toBe(true);
     expect(line(e, "quote_toxic")).toMatchObject({ passed: true, detail: expect.stringMatching(/^Live quote usable \(synthetic bid [\d.]+ \/ ask [\d.]+\)$/) });
@@ -261,11 +290,31 @@ describe("executeAgentBatch", () => {
 
   it("takes no trade when Kelly is not above zero (no measured edge yet)", async () => {
     const { agent, ctx } = await setup();
-    const r = await executeAgentBatch(agent, batchOf([fired({ sizing: { p: 0.5, mode: "pooled", n: 0, mean: 0.5 } })]), ctx());
+    const r = await executeAgentBatch(agent, batchOf([fired({ sizing: { p: 0.5, mode: "pooled", n: 120, mean: 0.52 } })]), ctx());
     const e = exec(r, "d-long");
     expect(e.action).toBe("NO_ENTRY");
-    expect(e.detail).toMatch(/^Kelly ≤ 0: no measured edge yet \(p=0\.500, b=1\.00\)/);
+    expect(e.detail).toBe("Kelly ≤ 0: past calls have not cleared break-even (p=0.500, b=1.00)");
+    expect(line(e, "kelly")).toEqual({ gate: "kelly", passed: false, detail: "p 0.500, b 1.00, Kelly 0.000" });
     expect(await agent.repo.orders.open("BACKTEST")).toEqual([]);
+  });
+
+  it("never sizes a trade on a probability with no graded call behind it, whatever b is (C2)", async () => {
+    const { agent, ctx } = await setup();
+    // The prior alone (an escalation with no graded escalation yet) and a payoff that would clear break-even.
+    const prior = { p: 0.4578886359060713, mode: "pooled" as const, n: 0, mean: 0.5 };
+    const r = await executeAgentBatch(agent, batchOf([fired({ source: "ESCALATION", sizing: prior })], { payoff: { b: 1.5, n: 40 } }), ctx());
+    const e = exec(r, "d-long");
+    expect(e.action).toBe("NO_ENTRY");
+    expect(e.detail).toBe("no graded calls of this kind yet: no trade");
+    expect(line(e, "kelly")).toEqual({ gate: "kelly", passed: false, detail: "no graded calls of this kind yet" });
+    expect(e.sizing).toMatchObject({ p: prior.p, b: 1.5, n: 0, riskPct: 0, lots: 0, riskRupees: 0 });
+    // Kelly alone would have sized it.
+    expect(e.sizing!.kelly).toBeGreaterThan(0);
+    expect(line(e, "plan")).toBeUndefined();
+    expect(await agent.repo.orders.between(0, Number.MAX_SAFE_INTEGER)).toEqual([]);
+    // A weight that is not a number fails closed too.
+    const nan = await executeAgentBatch(agent, batchOf([fired({ sizing: { ...prior, p: 0.6, n: Number.NaN } })], { payoff: { b: 1.5, n: 40 } }), ctx());
+    expect(exec(nan, "d-long").action).toBe("NO_ENTRY");
   });
 
   it("records why the code gate did not fire, with no order", async () => {
@@ -369,7 +418,9 @@ describe("executeAgentBatch", () => {
     expect(e.action).toBe("NO_ENTRY");
     expect(line(e, "plan")?.passed).toBe(true);
     expect(line(e, "kelly_cap")?.passed).toBe(false);
-    expect(line(e, "kelly_cap")?.detail).toBe(`₹${Math.round(e.sizing!.riskRupees).toLocaleString("en-IN")} at risk vs ₹${budget.toLocaleString("en-IN")} allowed`);
+    expect(line(e, "kelly_cap")?.detail).toMatch(new RegExp(`^₹[\\d,]+ at risk vs ₹${budget.toLocaleString("en-IN")} allowed$`));
+    // Nothing was bought, and the trace says so (kellycap): 0 lots, ₹0 at risk, the cap named.
+    expect(e.sizing).toMatchObject({ lots: 0, riskRupees: 0, limitedBy: expect.stringMatching(/^the quarter-Kelly budget: one lot risks ₹[\d,]+, more than the ₹[\d,]+ it allows$/) });
     expect(await agent.repo.positions.open("BACKTEST")).toEqual([]);
   });
 
@@ -406,6 +457,47 @@ describe("executeAgentBatch", () => {
     expect(r.exits.map((e) => [e.positionId, e.status])).toEqual([[pid, "FILLED"]]);
     expect(exec(r, "d-sensex").action).toBe("NOT_EXECUTED");
     expect(line(exec(r, "d-sensex"), "time_budget")?.passed).toBe(false);
+  });
+
+  it("never reads the market source itself: an index with no features from main's tick gets no entry (S3)", async () => {
+    const { agent, ctx, features } = await setup();
+    let marketCalls = 0;
+    const market = {
+      snapshot: async () => {
+        marketCalls++;
+        throw new Error("the agent read main's market source");
+      },
+    };
+    const r = await executeAgentBatch({ ...agent, market }, batchOf([fired()]), ctx({ features: { SENSEX: features.SENSEX } }));
+    const e = exec(r, "d-long");
+    expect(e.action).toBe("NO_ENTRY");
+    expect(e.detail).toBe("no market features: main's tick computed no market features for this index; the agent never fetches its own");
+    expect(line(e, "features")).toEqual({ gate: "features", passed: false, detail: "main's tick computed no market features for this index; the agent never fetches its own" });
+    // The sizing is kept in the record; nothing was planned or ordered.
+    expect(e.sizing).toMatchObject({ p: 0.6, b: 1, riskPct: 1, lots: 0 });
+    expect(line(e, "plan")).toBeUndefined();
+    expect(marketCalls).toBe(0);
+    expect(await agent.repo.orders.between(0, Number.MAX_SAFE_INTEGER)).toEqual([]);
+  });
+
+  it("stops the rest of a running batch when the operator pauses the agent (S4)", async () => {
+    const { agent, ctx } = await setup();
+    let reads = 0;
+    // Off for the first order, on from the second: the pause was pressed while the batch ran.
+    const paused = () => ++reads > 1;
+    const sensex = fired({ id: "d-sensex", index: "SENSEX", finalistId: "gen:SENSEX", directionConfidence: 0.85 });
+    const r = await executeAgentBatch(agent, batchOf([fired(), sensex]), ctx({ paused }));
+    expect(exec(r, "d-long").action).toBe("ENTERED");
+    const e = exec(r, "d-sensex");
+    expect(e.action).toBe("NO_ENTRY");
+    expect(e.detail).toBe("paused: the operator paused the agent");
+    expect(line(e, "kill_switch")).toEqual({ gate: "kill_switch", passed: false, detail: "the operator paused the agent" });
+    expect((await agent.repo.positions.open("BACKTEST")).map((p) => p.index)).toEqual(["NIFTY"]);
+    // Paused from the start: no entry at all.
+    const again = await setup();
+    const r2 = await executeAgentBatch(again.agent, batchOf([fired(), sensex]), again.ctx({ paused: () => true }));
+    expect([exec(r2, "d-long").action, exec(r2, "d-sensex").action]).toEqual(["NO_ENTRY", "NO_ENTRY"]);
+    expect(await again.agent.repo.positions.open("BACKTEST")).toEqual([]);
   });
 
   it("does not enter while main is degraded or the drawdown halt is on", async () => {

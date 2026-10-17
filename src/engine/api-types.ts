@@ -1239,7 +1239,15 @@ export interface AgentDecisionView {
   actionDetail: string | null;
   /** The measured-edge check this account skips, as it would have read. */
   edge: { passed: boolean; detail: string } | null;
-  sizing: { p: number; b: number; kelly: number; riskPct: number; lots: number } | null;
+  sizing: {
+    p: number;
+    b: number;
+    kelly: number;
+    riskPct: number;
+    lots: number;
+    /** Effective (overlap-weighted) number of graded calls behind p; null or absent when unknown. */
+    n?: number | null;
+  } | null;
   outcome: { status: "PENDING" | "HIT" | "MISS" | "NEUTRAL" | "CENSORED" | "MISSING"; ret30Pct: number | null };
 }
 
@@ -1310,18 +1318,22 @@ export interface AgentCalibrationView {
   baselineBrier: number | null;
   byIndex: { index: IndexId; n: number; brier: number | null }[];
   byKind: { kind: AgentFinalistKind; n: number; brier: number | null }[];
-  /** Reflex and escalation calls scored apart; only reflex calls feed sizing. */
+  /** Reflex and escalation calls scored apart. Each is sized on its own kind's graded calls only. */
   bySource: { source: AgentDecisionSource; n: number; brier: number | null }[];
   /** NEUTRAL calls on their own line: right when the index stayed within 0.15% either way over 30 minutes. Never used for sizing. */
   neutral: { n: number; brier: number | null; baselineBrier: number | null };
   buckets: AgentCalibrationBucketView[];
   sizingMode: "pooled" | "buckets";
   /**
-   * The probability sizing uses for a confidence above 0.80 now: a cautious (20th percentile) estimate of the
-   * chance of a move of at least 0.15% in the called direction, from graded reflex calls; never the model's own number.
+   * The probability sizing uses for a reflex call with confidence above 0.80 now: a cautious (20th percentile)
+   * estimate of the chance of a move of at least 0.15% in the called direction, from graded reflex calls; never the
+   * model's own number. An escalation is sized the same way on graded escalations.
    */
   sizingP: number | null;
-  /** Effective number of graded calls behind sizingP, after overlapping 30-minute windows are counted once. */
+  /**
+   * Effective number of graded calls behind sizingP, after overlapping 30-minute windows (on either index) are counted
+   * once. 0 means the prior alone, and no trade.
+   */
   sizingN: number;
   /** The payoff ratio b sizing uses (capped at 1 until enough agent trades have closed). */
   payoffB: number;
@@ -1357,6 +1369,10 @@ export interface AgentCandidateView {
   baseVersion: string;
   guidance: string;
   currentGuidance: string;
+  /** The text the candidate was written against: the text the reviewed session ran with. The diff's "before". Fallback: currentGuidance. */
+  baseGuidance?: string;
+  /** APPROVED, and its text is the active one now. Fallback: status === "APPROVED". */
+  inUse?: boolean;
   rationale: string;
   wouldBeWrongIf: string;
   /**
@@ -1374,6 +1390,16 @@ export interface AgentCandidateView {
     firesCurrent: number;
     complete: boolean;
     label: "in-sample, not proof";
+    /** The day's candles with an OK batch: what the replay set out to judge. Fallback: bars. */
+    barsTotal?: number;
+    /** Directional calls each run labelled HIT or MISS. Fallback for each: graded. */
+    gradedCandidate?: number;
+    gradedCurrent?: number;
+    gradedLive?: number;
+    /** Calls (candle and finalist) that all three runs labelled HIT or MISS; all three Brier scores are over exactly these. `graded` now equals this. */
+    gradedCommon?: number;
+    /** Why an incomplete replay stopped; null when complete. Absent on an incomplete replay: say "stopped early" with no cause. */
+    stopReason?: "cost_cap" | "interrupted" | "no_key" | null;
   } | null;
   decidedAt: string | null;
   decidedBy: string | null;

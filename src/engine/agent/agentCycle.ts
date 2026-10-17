@@ -11,7 +11,6 @@ import type { TradingCalendar } from "../calendar/calendar";
 import { istDate, istMidnight } from "../clock";
 import type { EngineConfig } from "../config";
 import { BAR_5M_MS } from "../market/candles";
-import { computeFeatures } from "../market/features";
 import { submitEntry, submitExit } from "../pipeline/execution";
 import { runPositionCycle, type PositionReport } from "../pipeline/positionCycle";
 import { practiceConfig } from "../pipeline/practiceCycle";
@@ -86,9 +85,11 @@ export interface BuildInputArgs {
 }
 
 /**
- * One closed bar for the AgentDO: a snapshot per complete index and each index's bar close (for grading, also when
- * its snapshot is missing). Built only from data timestamped at or before the close, so the result (apart from
- * builtMs) is the same with or without later data present (snapshot.leak.test.ts, agentCycle.test.ts).
+ * One closed bar for the AgentDO: a snapshot and the bar close (for grading) per complete index. An index whose
+ * candle was not complete in time gets neither: its last observed price may be from mid-candle, and a partial close
+ * would grade the decisions around it on the wrong price. Built only from data timestamped at or before the close, so
+ * the result (apart from builtMs) is the same with or without later data present (snapshot.leak.test.ts,
+ * agentCycle.test.ts).
  */
 export function buildReflexInput(a: BuildInputArgs): ReflexInput {
   const T = a.barCloseMs;
@@ -101,13 +102,13 @@ export function buildReflexInput(a: BuildInputArgs): ReflexInput {
   const closes: ReflexInput["closes"] = {};
   const problems: string[] = [];
   for (const index of a.indices) {
+    if (!a.complete.includes(index)) {
+      problems.push(`${index}: the candle was not complete in time, so it has no snapshot and no close`);
+      continue;
+    }
     const bars = market.candles[MARKET_SYMBOLS[index]] ?? [];
     const last = bars[bars.length - 1];
     if (last && last.t === T - BAR_5M_MS) closes[index] = last.c;
-    if (!a.complete.includes(index)) {
-      problems.push(`${index}: the candle was not complete in time, so it has no snapshot`);
-      continue;
-    }
     try {
       const s = buildIndexSnapshot({ index, barCloseMs: T, market, calendar: a.calendar, cfg: a.cfg, events, perf: a.perf, flow: a.flows[index] ?? null, book: a.book });
       snapshots[index] = s;
@@ -229,6 +230,7 @@ export interface ExecuteContext {
   mode: "shadow" | "paper";
   nowMs: number;
   calendar: TradingCalendar;
+  /** Main's tick's market features per index. An index without them gets no entry: the agent never reads the market source itself. */
   features: Partial<Record<IndexId, MarketFeatures>>;
   pressure: Partial<Record<IndexId, EventPressure>>;
   convictions: Partial<Record<IndexId, Conviction>>;
@@ -247,9 +249,12 @@ export interface ExecuteContext {
   acceptSyntheticQuotes?: boolean;
   /** Milliseconds left in the runner's time budget; once ≤ 0 the remaining entries are not executed. Exits always run. */
   timeLeftMs?: () => number;
+  /** The operator's pause, read with the kill switches right before each order: true stops the batch's remaining entries (its exits already ran). */
+  paused?: () => boolean;
 }
 
 const KIND_ORDER: Record<Finalist["kind"], number> = { IDEA: 0, GENERIC: 1 };
+const OPERATOR_PAUSE = "the operator paused the agent";
 const MODE_EXIT: Record<ExecuteContext["mode"], AgentAction> = { paper: "EXITED", shadow: "SHADOW_EXIT" };
 const rupees = (x: number) => `₹${Math.round(x).toLocaleString("en-IN")}`;
 const sameContract = (a: OptionContract, b: NonNullable<Finalist["contract"]>) => a.expiry === b.expiry && a.strike === b.strike && a.type === b.type;
@@ -430,15 +435,28 @@ async function tryEntry(
     return out(v, lines, "NO_ENTRY", "no sizing probability: no trade");
   }
   const k = agentRiskPct(p, b);
-  const sizing: SizingTrace = { p, b, kelly: k.kelly, quarterKelly: k.quarterKelly, riskPct: k.riskPct, lots: 0, riskRupees: 0, limitedBy: k.reason };
+  const n = d.sizing?.n ?? null;
+  const sizing: SizingTrace = { p, b, kelly: k.kelly, quarterKelly: k.quarterKelly, riskPct: k.riskPct, lots: 0, riskRupees: 0, limitedBy: k.reason, n };
+  // A probability with no graded call behind it is the prior alone: it never sizes a trade, whatever b is.
+  if (!(n !== null && n > 0)) {
+    const none = "no graded calls of this kind yet";
+    lines.push({ gate: "kelly", passed: false, detail: none });
+    return out(v, lines, "NO_ENTRY", `${none}: no trade`, { sizing: { ...sizing, riskPct: 0, limitedBy: none } });
+  }
   if (!(k.riskPct > 0)) {
     lines.push({ gate: "kelly", passed: false, detail: `p ${p.toFixed(3)}, b ${b.toFixed(2)}, Kelly ${k.kelly.toFixed(3)}` });
-    return out(v, lines, "NO_ENTRY", `Kelly ≤ 0: no measured edge yet (p=${p.toFixed(3)}, b=${b.toFixed(2)})`, { sizing });
+    return out(v, lines, "NO_ENTRY", `Kelly ≤ 0: past calls have not cleared break-even (p=${p.toFixed(3)}, b=${b.toFixed(2)})`, { sizing });
   }
-  lines.push({ gate: "kelly", passed: true, detail: `p ${p.toFixed(3)}, b ${b.toFixed(2)}: risk ${k.riskPct.toFixed(2)}% of equity` });
+  lines.push({ gate: "kelly", passed: true, detail: `p ${p.toFixed(3)}, b ${b.toFixed(2)}: risk ${k.riskPct.toFixed(2)}% of equity, measured on about ${Math.round(n)} graded calls` });
 
-  // The engine's planner with the agent's pinned config, every gate but the measured-edge checks.
-  const f = x.features[index] ?? computeFeatures(index, await deps.market.snapshot(now), x.calendar, deps.cfg);
+  // The engine's planner with the agent's pinned config, every gate but the measured-edge checks. The features are
+  // main's tick's: the agent never reads the market source itself (it is main's, with main's request budget).
+  const f = x.features[index];
+  if (!f) {
+    const detail = "main's tick computed no market features for this index; the agent never fetches its own";
+    lines.push({ gate: "features", passed: false, detail });
+    return out(v, lines, "NO_ENTRY", `no market features: ${detail}`, { sizing });
+  }
   const conviction = agentConviction(x.convictions[index] ?? neutralConviction(index, now, deps.cfg), direction);
   const ideaContract = finalist.kind === "IDEA" ? finalist.contract : null;
   // An idea is bought on its own contract (the planner's pickContract); a generic call on the ATM one.
@@ -471,7 +489,13 @@ async function tryEntry(
   const budget = (risk.capitalRupees * k.riskPct) / 100;
   const capOk = plan.riskRupees <= budget + 0.5;
   lines.push({ gate: "kelly_cap", passed: capOk, detail: `${rupees(plan.riskRupees)} at risk vs ${rupees(budget)} allowed` });
-  if (!capOk) return out(v, lines, "NO_ENTRY", `one lot risks ${rupees(plan.riskRupees)}, more than the ${rupees(budget)} quarter Kelly allows`, more);
+  if (!capOk) {
+    // Nothing is bought: the trace says 0 lots and ₹0 at risk (the line above keeps what one lot would have risked).
+    sizing.lots = 0;
+    sizing.riskRupees = 0;
+    sizing.limitedBy = `the quarter-Kelly budget: one lot risks ${rupees(plan.riskRupees)}, more than the ${rupees(budget)} it allows`;
+    return out(v, lines, "NO_ENTRY", `one lot risks ${rupees(plan.riskRupees)}, more than the ${rupees(budget)} quarter Kelly allows`, more);
+  }
 
   const q = await deps.optionQuotes.quote(plan.contract, { t: now, spot: f.spot, vix: f.vix });
   // policy.ts: quote_toxic blocks (no quote, a model price, no depth); one_sided_book is information only (#27, D4).
@@ -497,11 +521,20 @@ async function tryEntry(
   }
   const withEdge = { ...more, edge };
 
-  // The kill switches (main's and the agent's), the drawdown halt and the mode, read again right before the order.
+  // The kill switches (main's and the agent's), the drawdown halt and the operator's pause, read again right before
+  // the order: a pause pressed while a batch runs stops its remaining entries.
   const [main, agent] = await Promise.all([x.mainSettings(), deps.repo.settings.get()]);
-  const stop = main.killSwitch ? `main kill switch on${main.killReason ? `: ${main.killReason}` : ""}` : agent.killSwitch ? `agent kill switch on${agent.killReason ? `: ${agent.killReason}` : ""}` : x.ddHalt ? "the 15% drawdown halt is on" : null;
+  const stop = main.killSwitch
+    ? `main kill switch on${main.killReason ? `: ${main.killReason}` : ""}`
+    : agent.killSwitch
+      ? `agent kill switch on${agent.killReason ? `: ${agent.killReason}` : ""}`
+      : x.ddHalt
+        ? "the 15% drawdown halt is on"
+        : x.paused?.()
+          ? OPERATOR_PAUSE
+          : null;
   lines.push({ gate: "kill_switch", passed: stop === null, detail: stop ?? "off" });
-  if (stop) return out(v, lines, "NO_ENTRY", `kill switch: ${stop}`, withEdge);
+  if (stop) return out(v, lines, "NO_ENTRY", stop === OPERATOR_PAUSE ? `paused: ${stop}` : `kill switch: ${stop}`, withEdge);
 
   if (x.mode !== "paper") {
     // Shadow: no order, no position, no trade. Hold the slot in memory so the batch's other decisions see it.
