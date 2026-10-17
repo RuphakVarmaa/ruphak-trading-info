@@ -191,6 +191,11 @@ export interface AgentTradeRecord {
 export interface AgentRiskSnapshot {
   t: number; date: string; equity: number; peakEquity: number; ddPct: number; dayLossPct: number; openPositions: number;
   killSwitch: boolean; killReason: string | null; mainKillSwitch: boolean; ddHalt: boolean; codeRisk: AgentRiskLevel;
+  /**
+   * The week's realized loss in percent of the capital (0 in profit) and today's losing trades in a row: at their caps
+   * the planner's weekly_loss and loss_streak gates refuse every entry. Absent from snapshots stored before they were kept.
+   */
+  weekLossPct?: number; lossStreak?: number;
 }
 export interface ExecutionRecord {
   barCloseMs: number; t: number;

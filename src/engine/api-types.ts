@@ -1298,6 +1298,12 @@ export interface AgentRiskView {
   /** True from a 15% drawdown halt until the operator re-arms. */
   drawdownHalt: boolean;
   codeRiskState: AgentRiskLevel;
+  /** The week's realized loss in percent of the capital; null when the snapshot predates it. At the cap no entry is made. */
+  weekLossPct: number | null;
+  weeklyLossCapPct: number;
+  /** Today's losing trades in a row; null when the snapshot predates it. At the cap no entry is made for the day. */
+  lossStreak: number | null;
+  maxLossStreak: number;
 }
 
 export interface AgentCalibrationBucketView {

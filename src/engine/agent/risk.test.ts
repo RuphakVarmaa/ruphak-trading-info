@@ -3,6 +3,7 @@ import { accountConfig } from "../accounts";
 import { istAt } from "../clock";
 import { DEFAULT_CONFIG, makeConfig, maxOpenTotal, type EngineConfig } from "../config";
 import { newLedger } from "../pipeline/riskState";
+import { riskGates } from "../risk/limits";
 import { defaultSettings } from "../settings";
 import type { Position, RiskState } from "../types";
 import { AGENT_LIMITS } from "./constants";
@@ -73,6 +74,27 @@ describe("riskSnapshotFrom", () => {
     const s = riskSnapshotFrom(riskState(), null, { killSwitch: true, killReason: "max drawdown", mainKillSwitch: true, ddHalt: true, nowMs: NOW });
     expect(s).toMatchObject({ killSwitch: true, killReason: "max drawdown", mainKillSwitch: true, ddHalt: true });
   });
+
+  it("carries the week's realized loss and today's losing streak, at the caps where the planner's gates refuse every entry", () => {
+    const cfg = accountConfig(DEFAULT_CONFIG, "agent");
+    for (const [weekRealized, streak] of [
+      [-29_999, 2],
+      [-30_000, 3],
+      [12_000, 0],
+    ] as const) {
+      const r = riskState();
+      r.weekRealized = weekRealized;
+      r.day.consecutiveLosses = streak;
+      const s = riskSnapshotFrom(r, null, flags);
+      expect(s.weekLossPct).toBeCloseTo(Math.max(0, -weekRealized) / 5_000, 10);
+      expect(s.lossStreak).toBe(streak);
+      const gates = riskGates("NIFTY", "BULL", r, cfg);
+      expect(gates.find((g) => g.gate === "weekly_loss")?.passed, `${weekRealized}`).toBe((s.weekLossPct ?? 0) < AGENT_LIMITS.weeklyLossCapPct);
+      expect(gates.find((g) => g.gate === "loss_streak")?.passed, `${streak}`).toBe((s.lossStreak ?? 0) < AGENT_LIMITS.maxLossStreak);
+      // Neither is part of the code's risk state (the model's snapshot and the gate's risk line read that).
+      expect(s.codeRisk).toBe("SAFE");
+    }
+  });
 });
 
 describe("drawdownBreached", () => {
@@ -96,6 +118,7 @@ describe("AGENT_LIMITS", () => {
     expect(cfg.capitalRupees).toBe(AGENT_LIMITS.capitalRupees);
     expect(cfg.risk.dailyLossCapPct).toBe(AGENT_LIMITS.dailyLossCapPct);
     expect(cfg.risk.weeklyLossCapPct).toBe(AGENT_LIMITS.weeklyLossCapPct);
+    expect(cfg.risk.maxConsecutiveLossesPerDay).toBe(AGENT_LIMITS.maxLossStreak);
     expect(maxOpenTotal(cfg)).toBe(AGENT_LIMITS.maxOpenTotal);
     expect(cfg.sizing.maxOpenPerIndex).toBe(AGENT_LIMITS.maxOpenPerIndex);
     expect(cfg.sizing.maxLots).toBe(AGENT_LIMITS.maxLotsPerPosition);

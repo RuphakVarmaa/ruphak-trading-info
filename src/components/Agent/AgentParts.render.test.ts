@@ -169,6 +169,10 @@ describe("Agent parts render on the server", () => {
         mainKillSwitch: false,
         drawdownHalt: false,
         codeRiskState: "SAFE",
+        weekLossPct: null,
+        weeklyLossCapPct: 6,
+        lossStreak: null,
+        maxLossStreak: 3,
       },
       calibration: {
         asOf: null,
@@ -253,6 +257,45 @@ describe("the risk panel matches the code's blocks (dashboard review M3, L8)", (
       expect(head(disabled), mode).toBe("✓ Within every limit, but the agent's paper account is not switched on in this engine: nothing runs, so no entry is made.");
       for (const t of [paused, capped, disabled]) expect(t, mode).not.toMatch(/new entries are allowed|would allow new entries/);
     }
+  });
+
+  it("says no entry is made after a candle that could not be judged and outside the judging hours, on the desk", () => {
+    const desk = (view: AgentView) => text(html(createElement(AgentDesk, { initial: view, initialSource: "mock" })));
+    const head = (t: string) => /✓ Within every limit[^.]*\./.exec(t)?.[0];
+    for (const mode of ["paper", "shadow"] as const) {
+      const running = new MockAgent(() => istAt("2026-10-16", "11:42:05"), { mode }).view();
+      const error = desk({ ...running, status: { ...running.status, state: "ERROR", lastError: "NO_KEY: no API key, so no model call" } });
+      expect(head(error), mode).toBe("✓ Within every limit, but the newest candle could not be judged: no entry is made until a candle is judged again.");
+      const evening = desk(new MockAgent(() => istAt("2026-10-16", "18:00"), { mode }).view());
+      const saturday = desk(new MockAgent(() => istAt("2026-10-17", "11:42:05"), { mode }).view());
+      const settings = { mode, reflexModel: "r", escalationModel: "d", reviewModel: "d", dailyUsdCap: 3, escalationsPerDay: 8 };
+      const engine = desk(emptyAgentView(istAt("2026-10-19", "16:30"), settings, true, null));
+      for (const t of [evening, saturday, engine]) expect(/✓ Within every limit\. Candles are judged from 09:20 to 15:05 IST on trading days; none is judged now, so no entry is made\./.test(t), mode).toBe(true);
+      for (const t of [error, evening, saturday, engine]) expect(t, mode).not.toMatch(/new entries are allowed|would allow new entries/);
+    }
+  });
+
+  it("says no new entries while main's kill switch is on and the agent's is not yet (a kill of main squaring off), on the panel and the desk", () => {
+    const t = text(riskPanel({ ...base(), mainKillSwitch: true }));
+    expect(t).toContain("✗ Main's kill switch is on: no new entries (the agent's own kill switch follows it).");
+    expect(t).not.toContain("Within every limit");
+    for (const mode of ["paper", "shadow"] as const) {
+      const view = new MockAgent(() => istAt("2026-10-16", "11:42:05"), { mode }).view(undefined, null, { killSwitch: false, killReason: null, mainKillSwitch: true });
+      const desk = text(html(createElement(AgentDesk, { initial: view, initialSource: "mock" })));
+      expect(desk, mode).toContain("✗ Main's kill switch is on: no new entries (the agent's own kill switch follows it).");
+      expect(desk, mode).not.toMatch(/new entries are allowed|would allow new entries/);
+    }
+  });
+
+  it("shows the week's realized loss against its cap and today's losing streak, and stops at either", () => {
+    const t = text(riskPanel({ ...base(), weekLossPct: 2.4, lossStreak: 1 }));
+    expect(t).toContain("This week's realized loss 2.40% of 6%");
+    expect(t).toContain("At 6% the code stops new entries until Monday; open positions keep their exits.");
+    expect(t).toContain("Losing trades in a row today 1 of 3");
+    expect(text(riskPanel({ ...base(), weekLossPct: 6.1 }))).toContain("✗ Stopped for this week: the week's realized loss 6.10% reached the 6% cap; no new entries until Monday.");
+    expect(text(riskPanel({ ...base(), lossStreak: 3 }))).toContain("✗ Stopped for today: 3 losing trades in a row (the limit is 3); no new entries until the next session.");
+    // A snapshot from before they were kept.
+    expect(text(riskPanel({ ...base(), weekLossPct: null, lossStreak: null }))).toContain("Losing trades in a row today —");
   });
 
   it("offers re-arm during a halt, 'clear the kill switch' when only the switch is on, and nothing while main's switch is on", () => {

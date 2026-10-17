@@ -405,17 +405,23 @@ const WITHIN_LIMITS: Record<AgentMode, string> = {
   off: "Within every limit. The agent is off: no candle is judged, so no entry is made.",
 };
 
-/** "Within every limit" while no candle is judged in any mode: the account is not switched on, paused, or past the day's model budget. */
+/**
+ * "Within every limit" while no candle is judged in any mode: the account is not switched on, paused, past the day's
+ * model budget, the newest candle could not be judged, or outside the hours candles are judged.
+ */
 const NOT_JUDGING = {
   disabled: "Within every limit, but the agent's paper account is not switched on in this engine: nothing runs, so no entry is made.",
   paused: "Within every limit, but the operator paused the agent: no candle is judged until it is resumed, so no entry is made.",
   costCap: "Within every limit, but today's model budget is used up: no candle is judged until tomorrow, so no entry is made.",
+  error: "Within every limit, but the newest candle could not be judged: no entry is made until a candle is judged again.",
+  closed: `Within every limit. Candles are judged from ${AGENT_POLICY.reflexFirstBarIst} to ${AGENT_POLICY.reflexLastBarIst} IST on trading days; none is judged now, so no entry is made.`,
 } as const;
 
 /**
- * The risk panel's headline: the first of the halt, the kill switch, the day's loss cap and a risk state that is not
- * Safe, as the code blocks entries on each; "within every limit" only when none applies, in the agent mode's words, or
- * with why no candle is judged now (not switched on, paused, or today's model budget used up).
+ * The risk panel's headline: the first of the halt, the agent's kill switch, main's kill switch, the day's loss cap,
+ * the week's loss cap, the day's losing streak and a risk state that is not Safe, as the code blocks entries on each;
+ * "within every limit" only when none applies, in the agent mode's words, or with why no candle is judged now (not
+ * switched on, paused, today's model budget used up, the newest candle not judged, or outside the judging hours).
  */
 export function riskHeadline(
   r: AgentRiskView,
@@ -424,11 +430,17 @@ export function riskHeadline(
 ): { tone: "stopped" | "blocked" | "ok"; words: string } {
   if (r.drawdownHalt) return { tone: "stopped", words: `Halted: the account fell ${pct(r.drawdownPct ?? 0)} from its peak (the limit is ${r.maxDrawdownPct}%). No new entries until you re-arm.` };
   if (r.killSwitch) return { tone: "stopped", words: `Kill switch on${r.killReason ? `: ${r.killReason}` : ""}. No new entries.` };
+  // A kill of main that squares off sets the agent's own switch only after main's square-off; the gate blocks on main's.
+  if (r.mainKillSwitch) return { tone: "stopped", words: "Main's kill switch is on: no new entries (the agent's own kill switch follows it)." };
   if (r.dayLossPct != null && r.dayLossPct >= r.dailyLossCapPct)
     return {
       tone: "stopped",
       words: `Stopped for today: today's loss ${pct(r.dayLossPct)} reached the ${r.dailyLossCapPct}% cap; positions closed, no new entries until the next session.`,
     };
+  if (r.weekLossPct != null && r.weekLossPct >= r.weeklyLossCapPct)
+    return { tone: "stopped", words: `Stopped for this week: the week's realized loss ${pct(r.weekLossPct)} reached the ${r.weeklyLossCapPct}% cap; no new entries until Monday.` };
+  if (r.lossStreak != null && r.lossStreak >= r.maxLossStreak)
+    return { tone: "stopped", words: `Stopped for today: ${r.lossStreak} losing trades in a row (the limit is ${r.maxLossStreak}); no new entries until the next session.` };
   if (r.codeRiskState !== "SAFE")
     return {
       tone: "blocked",
@@ -437,6 +449,8 @@ export function riskHeadline(
   if (!now.enabled) return { tone: "ok", words: NOT_JUDGING.disabled };
   if (mode !== "off" && now.status.paused) return { tone: "ok", words: NOT_JUDGING.paused };
   if (mode !== "off" && now.status.state === "COST_CAP") return { tone: "ok", words: NOT_JUDGING.costCap };
+  if (mode !== "off" && now.status.state === "ERROR") return { tone: "ok", words: NOT_JUDGING.error };
+  if (mode !== "off" && now.status.state === "CLOSED") return { tone: "ok", words: NOT_JUDGING.closed };
   return { tone: "ok", words: WITHIN_LIMITS[mode] };
 }
 

@@ -18,7 +18,7 @@ import type {
   AgentView,
 } from "../api-types";
 import { defaultCalendar, type TradingCalendar } from "../calendar/calendar";
-import { istAt, istDate, istIso } from "../clock";
+import { istAt, istDate, istIso, istWeekStart } from "../clock";
 import type { EngineSettings, IndexId } from "../types";
 import { AGENT_HONESTY, AGENT_LIMITS, AGENT_POLICY } from "./constants";
 import { instructionVersion } from "./prompt";
@@ -366,7 +366,10 @@ function escalationView(e: EscalationRecord, calls: ReadonlyMap<string, CallReco
   };
 }
 
-function riskView(r: AgentRiskSnapshot | null): AgentRiskView {
+function riskView(r: AgentRiskSnapshot | null, nowMs: number): AgentRiskView {
+  // The week's loss and the day's losing streak start again each week and each day: an older snapshot's are not now's.
+  const thisWeek = r !== null && istWeekStart(r.t) === istWeekStart(nowMs);
+  const today = r !== null && r.date === istDate(nowMs);
   return {
     asOf: r ? istIso(r.t) : null,
     equity: r?.equity ?? null,
@@ -383,6 +386,10 @@ function riskView(r: AgentRiskSnapshot | null): AgentRiskView {
     mainKillSwitch: r?.mainKillSwitch ?? false,
     drawdownHalt: r?.ddHalt ?? false,
     codeRiskState: r?.codeRisk ?? "SAFE",
+    weekLossPct: thisWeek && r.weekLossPct != null ? round(r.weekLossPct, 2) : null,
+    weeklyLossCapPct: AGENT_LIMITS.weeklyLossCapPct,
+    lossStreak: today && r.lossStreak != null ? r.lossStreak : null,
+    maxLossStreak: AGENT_LIMITS.maxLossStreak,
   };
 }
 
@@ -490,7 +497,9 @@ function costView(date: string, calls: readonly CallRecord[], capUsd: number, ba
     .filter((c) => c.kind === "REFLEX" && c.latencyMs !== null)
     .map((c) => c.latencyMs as number)
     .sort((x, y) => x - y);
-  const capHit = spent >= capUsd - 1e-9 || calls.some((c) => c.status === "SKIPPED_CAP") || batches.some((b) => b.status === "COST_CAP");
+  // The candles' own calls only: a review or a replay the cap skipped to keep the day's reflex reserve (one forced
+  // before the open, say) leaves every candle judged.
+  const capHit = spent >= capUsd - 1e-9 || calls.some((c) => c.status === "SKIPPED_CAP" && c.kind === "REFLEX") || batches.some((b) => b.status === "COST_CAP");
   return {
     date,
     spentUsd: round(spent, 6),
@@ -553,7 +562,7 @@ export function buildAgentView(a: AgentViewInput): AgentView {
     indices: AGENT_INDICES.map((index) => indexCard(index, a, okBatches, byId, open)),
     finalists: (finalistsFrom?.finalists ?? []).map(finalistView),
     escalations: a.escalations.map((e) => escalationView(e, callsById)),
-    risk: riskView(a.risk),
+    risk: riskView(a.risk, a.nowMs),
     calibration: calibrationView(a.calibration, a.payoff, a.trades),
     review: reviewView(a.review, a.reviewCostUsd),
     candidate: candidateView(a.candidate, a.baseGuidance, a.instruction?.version ?? null),

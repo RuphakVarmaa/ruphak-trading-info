@@ -726,6 +726,10 @@ export class MockAgent {
       mainKillSwitch: flags.mainKillSwitch,
       drawdownHalt: this.halted,
       codeRiskState: codeRisk,
+      weekLossPct: 0,
+      weeklyLossCapPct: L.weeklyLossCapPct,
+      lossStreak: 0,
+      maxLossStreak: L.maxLossStreak,
     };
   }
 

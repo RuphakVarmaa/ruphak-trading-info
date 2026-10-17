@@ -54,6 +54,10 @@ const RISK: AgentRiskView = {
   mainKillSwitch: false,
   drawdownHalt: false,
   codeRiskState: "SAFE",
+  weekLossPct: 0,
+  weeklyLossCapPct: 6,
+  lossStreak: 0,
+  maxLossStreak: 3,
 };
 /** The agent switched on, not paused, within the day's model budget: candles are judged in paper and shadow mode. */
 const JUDGING = { enabled: true, status: { state: "WAITING", paused: false } } as const;
@@ -395,6 +399,42 @@ describe("the risk headline and re-arm", () => {
     // Off judges no candle whether paused or not; a block still comes first.
     expect(riskHeadline(RISK, "off", { enabled: true, status: { state: "OFF", paused: true } }).words).toBe("Within every limit. The agent is off: no candle is judged, so no entry is made.");
     expect(riskHeadline({ ...RISK, killSwitch: true, killReason: "manual" }, "paper", { enabled: true, status: { state: "RUNNING", paused: true } }).words).toBe("Kill switch on: manual. No new entries.");
+  });
+
+  it("never says entries are (or would be) allowed after the newest candle failed or outside the hours candles are judged", () => {
+    for (const mode of ["paper", "shadow"] as const) {
+      expect(riskHeadline(RISK, mode, { enabled: true, status: { state: "ERROR", paused: false } })).toEqual({
+        tone: "ok",
+        words: "Within every limit, but the newest candle could not be judged: no entry is made until a candle is judged again.",
+      });
+      expect(riskHeadline(RISK, mode, { enabled: true, status: { state: "CLOSED", paused: false } })).toEqual({
+        tone: "ok",
+        words: "Within every limit. Candles are judged from 09:20 to 15:05 IST on trading days; none is judged now, so no entry is made.",
+      });
+    }
+    expect(riskHeadline({ ...RISK, killSwitch: true, killReason: "manual" }, "paper", { enabled: true, status: { state: "CLOSED", paused: false } }).words).toBe("Kill switch on: manual. No new entries.");
+  });
+
+  it("says no new entries while main's kill switch is on and the agent's is not yet, as the gate blocks on main's", () => {
+    for (const mode of ["paper", "shadow", "off"] as const) {
+      expect(riskHeadline({ ...RISK, mainKillSwitch: true }, mode, JUDGING)).toEqual({ tone: "stopped", words: "Main's kill switch is on: no new entries (the agent's own kill switch follows it)." });
+    }
+    // The halt and the agent's own switch come first, in the gate's order.
+    expect(riskHeadline({ ...RISK, mainKillSwitch: true, killSwitch: true, killReason: "main kill switch: owner" }, "paper", JUDGING).words).toBe("Kill switch on: main kill switch: owner. No new entries.");
+  });
+
+  it("says when the week's loss cap or today's losing streak stops entries, and nothing of either when they are unknown", () => {
+    expect(riskHeadline({ ...RISK, weekLossPct: 6 }, "paper", JUDGING)).toEqual({
+      tone: "stopped",
+      words: "Stopped for this week: the week's realized loss 6.00% reached the 6% cap; no new entries until Monday.",
+    });
+    expect(riskHeadline({ ...RISK, weekLossPct: 5.99 }, "paper", JUDGING).tone).toBe("ok");
+    expect(riskHeadline({ ...RISK, lossStreak: 3 }, "shadow", JUDGING)).toEqual({
+      tone: "stopped",
+      words: "Stopped for today: 3 losing trades in a row (the limit is 3); no new entries until the next session.",
+    });
+    expect(riskHeadline({ ...RISK, lossStreak: 2 }, "paper", JUDGING).tone).toBe("ok");
+    expect(riskHeadline({ ...RISK, weekLossPct: null, lossStreak: null }, "paper", JUDGING).words).toBe("Within every limit: new entries are allowed when a decision passes every check.");
   });
 
   it("re-arms after a halt (the peak restarts), clears a kill switch alone (the peak stays), and is off while main's switch is on", () => {

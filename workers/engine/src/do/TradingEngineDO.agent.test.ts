@@ -57,6 +57,7 @@ interface Te {
   runTick(): Promise<number>;
   agentStep(report: CycleReport, calendar: TradingCalendar, degraded: boolean, tickStartMs: number): Promise<void>;
   setKillSwitch(req: KillReq, actor: string, account?: string): Promise<AdminResult>;
+  onNewScores(count: number): Promise<void>;
   endOfDay(): Promise<AdminResult>;
   statusText(): Promise<string>;
 }
@@ -79,8 +80,11 @@ function makeTe(fields: Record<string, unknown> = {}): Te {
     agent: null,
     agentAlerts: { send: async () => true },
     agentPreempt: null,
+    agentStepping: false,
     agentHold: 0,
     agentKillsDue: 0,
+    agentKillOwed: false,
+    allResets: 0,
     liveData: "yahoo",
     paperQuotes: null,
     writeHeartbeat: async () => {},
@@ -438,6 +442,152 @@ describe("kills that square off: main first, the agent after", () => {
       expect(m.hold, second).toBe(0);
     }
   });
+
+  /**
+   * Kill-switch calls (`steps`, times from the first) with main holding a LIVE position and an alarm tick in flight
+   * (22 s of main's work, so each square-off tick runs 22 s). `fail`: main's switch write or its kill audit insert fails
+   * for the kill by that actor, or the relay panic's first read of main's LIVE positions fails.
+   */
+  async function overlap(
+    steps: { at: number; target: string; engaged?: boolean; squareOff: boolean; actor: string }[],
+    fail: { write?: string; audit?: string; panicRead?: boolean } = {},
+  ) {
+    const repo = new InMemoryRepository(DEFAULT_CONFIG, Date.now());
+    await repo.positions.save({ id: "live-1", mode: "LIVE", status: "OPEN", index: "NIFTY", contract: { tradingSymbol: "NIFTY-LIVE" } } as unknown as Position);
+    const update = repo.settings.update.bind(repo.settings);
+    repo.settings.update = async (patch, by) => {
+      if (patch.killSwitch === true && by === fail.write) throw new Error("D1: main settings write failed");
+      return update(patch, by);
+    };
+    const append = repo.audit.append.bind(repo.audit);
+    repo.audit.append = async (e) => {
+      if (e.action === "kill" && e.actor === fail.audit) throw new Error("D1: kill audit insert failed");
+      return append(e);
+    };
+    const open = repo.positions.open.bind(repo.positions);
+    let liveReads = 0;
+    repo.positions.open = async (mode) => {
+      if (fail.panicRead && mode === "LIVE" && liveReads++ === 0) throw new Error("D1: LIVE positions read failed");
+      return open(mode);
+    };
+    const panics: number[] = [];
+    const { agent, calls } = hangingAgent();
+    const te = makeTe({
+      rt: { logger: silentLogger, repo, calendar: cal, cfg: DEFAULT_CONFIG },
+      relay: {
+        panic: async () => {
+          panics.push(Date.now());
+          return { status: 200, body: "ok" };
+        },
+      },
+      agentEnabled: true,
+      agent,
+      tick: fakeTick(22_000, []),
+    });
+    void te.runTick();
+    await vi.advanceTimersByTimeAsync(1_000);
+    const t0 = Date.now();
+    const results: Promise<AdminResult | Error>[] = [];
+    for (const s of steps) {
+      await vi.advanceTimersByTimeAsync(t0 + s.at - Date.now());
+      results.push(
+        te.setKillSwitch({ engaged: s.engaged ?? true, squareOff: s.squareOff, reason: s.actor }, s.actor, s.target).then(
+          (res) => res,
+          (err: unknown) => err as Error,
+        ),
+      );
+    }
+    await vi.advanceTimersByTimeAsync(240_000);
+    return {
+      res: await Promise.all(results),
+      panics: panics.map((at) => at - t0),
+      // The agent's kill switch set (a reset of every account resets it too: left out here).
+      agentKills: calls.kills.filter((k) => k.req.engaged).map((k) => ({ at: k.at - t0, req: k.req })),
+      hold: te.agentHold,
+      due: te.agentKillsDue,
+      mainKill: (await repo.settings.get()).killSwitch,
+    };
+  }
+
+  it("a kill of main that squares off and fails at its switch write or kill audit row while another squares off leaves the agent's switch to that one, after its panic", async () => {
+    for (const first of ["main", "all"]) {
+      for (const failAt of ["write", "audit"] as const) {
+        const at = `${first} with a square-off, then main with one failing at its ${failAt}`;
+        const m = await overlap(
+          [
+            { at: 0, target: first, squareOff: true, actor: "telegram" },
+            { at: 100, target: "main", squareOff: true, actor: "dashboard" },
+          ],
+          { [failAt]: "dashboard" },
+        );
+        expect(m.res[1], at).toBeInstanceOf(Error);
+        expect(m.panics, at).toHaveLength(1);
+        // Once, after the first kill's square-off tick and panic, with the agent's own exits (it was set 0.1 s in).
+        expect(m.agentKills, at).toHaveLength(1);
+        expect(m.agentKills[0].at, at).toBeGreaterThanOrEqual(m.panics[0]);
+        expect(m.agentKills[0].req, at).toMatchObject({ engaged: true, squareOff: true });
+        expect([m.hold, m.due], at).toEqual([0, 0]);
+      }
+    }
+  });
+
+  it("a kill that squares off and fails at its panic while a later one squares off leaves the agent's switch to the later one, after its panic", async () => {
+    for (const first of ["main", "all"]) {
+      for (const second of ["main", "all"]) {
+        const at = `${first} failing at its panic, then ${second} during its square-off tick`;
+        const m = await overlap(
+          [
+            { at: 0, target: first, squareOff: true, actor: "telegram" },
+            { at: 30_000, target: second, squareOff: true, actor: "dashboard" },
+          ],
+          { panicRead: true },
+        );
+        expect(m.res[0], at).toEqual(new Error("D1: LIVE positions read failed"));
+        expect(m.res[1], at).toMatchObject({ ok: true });
+        // The later kill's panic, after its own square-off tick (43 s to 65 s).
+        expect(m.panics, at).toEqual([65_000]);
+        // Once, after that panic (it was set at 43 s, as the first kill failed).
+        expect(m.agentKills, at).toHaveLength(1);
+        expect(m.agentKills[0].at, at).toBe(65_000);
+        expect([m.hold, m.due], at).toEqual([0, 0]);
+      }
+    }
+  });
+
+  it("a kill that squares off and fails at its panic still sets the agent's switch on its way out after a reset of main during it", async () => {
+    for (const first of ["main", "all"]) {
+      for (const withLater of [false, true]) {
+        const at = `${first} failing at its panic, main reset at 30 s${withLater ? ", a kill of main without a square-off at 1 s" : ""}`;
+        const steps: Parameters<typeof overlap>[0] = [{ at: 0, target: first, squareOff: true, actor: "telegram" }];
+        if (withLater) steps.push({ at: 1_000, target: "main", squareOff: false, actor: "dashboard" });
+        steps.push({ at: 30_000, target: "main", engaged: false, squareOff: false, actor: "owner" });
+        const m = await overlap(steps, { panicRead: true });
+        expect(m.mainKill, at).toBe(false);
+        // On its way out at 43 s, without the agent's own exits: the reset of main did not leave the agent trading.
+        expect(m.agentKills, at).toEqual([{ at: 43_000, req: { engaged: true, squareOff: false, reason: "main kill switch: telegram" } }]);
+        expect([m.hold, m.due], at).toEqual([0, 0]);
+      }
+    }
+  });
+
+  it("a reset of every account during a kill that squares off leaves the agent reset, unless a kill after the reset owes its switch", async () => {
+    for (const first of ["main", "all"]) {
+      const kill = { at: 0, target: first, squareOff: true, actor: "telegram" };
+      const reset = { at: 100, target: "all", engaged: false, squareOff: false, actor: "owner" };
+      const m = await overlap([kill, reset]);
+      expect(m.mainKill, first).toBe(false);
+      expect(m.panics, first).toHaveLength(1);
+      // The kill no longer sets the agent's switch after its panic (it did, leaving main reset and the agent killed).
+      expect(m.agentKills, first).toEqual([]);
+      if (first === "all") expect(m.res[0], first).toMatchObject({ message: expect.stringContaining("Agent kill switch not set: every account was reset after this kill came in") });
+      // A kill of main without a square-off after the reset leaves the agent's switch to the running kill: after its panic.
+      const again = await overlap([kill, reset, { at: 2_000, target: "main", squareOff: false, actor: "dashboard" }]);
+      expect(again.mainKill, first).toBe(true);
+      expect(again.agentKills, first).toHaveLength(1);
+      expect(again.agentKills[0].at, first).toBeGreaterThanOrEqual(again.panics[0]);
+      expect([again.hold, again.due], first).toEqual([0, 0]);
+    }
+  });
 });
 
 describe("the agent's budget and main's next alarm", () => {
@@ -470,6 +620,43 @@ describe("the agent's budget and main's next alarm", () => {
     // 26 s: the step gets the 2.5 s left before the alarm's margin (it was +31 s).
     expect(await nextAlarm(true, 26_000)).toEqual({ inMs: 30_000, steps: 1 });
     expect(await nextAlarm(true, 20_000)).toEqual({ inMs: 30_000, steps: 1 });
+  });
+
+  /** New event scores `scoresAfterMs` into an alarm tick whose own work takes 2 s: main's next alarm, from the scores. */
+  async function alarmAfterScores(agentOn: boolean, scoresAfterMs: number): Promise<{ inMs: number; steps: number }> {
+    // One alarm, as Durable Object storage keeps it: none is pending while the alarm's own tick runs.
+    let pending: number | null = null;
+    const { agent, calls } = hangingAgent();
+    const te = makeTe({
+      agentEnabled: agentOn,
+      agent: agentOn ? agent : null,
+      ctx: {
+        storage: {
+          setAlarm: async (ms: number) => {
+            pending = ms;
+          },
+          put: async () => {},
+          getAlarm: async () => pending,
+        },
+      },
+      tick: fakeTick(2_000, []),
+    });
+    const tick = te.runTick();
+    await vi.advanceTimersByTimeAsync(scoresAfterMs);
+    const scoresAt = Date.now();
+    const scores = te.onNewScores(3);
+    await vi.advanceTimersByTimeAsync(60_000);
+    await Promise.all([tick, scores]);
+    return { inMs: (pending ?? Number.NaN) - scoresAt, steps: calls.steps };
+  }
+
+  it("new event scores while the agent's step runs: main's tick comes 2 s after them, as without the agent", async () => {
+    for (const after of [2_500, 4_000, 9_000]) {
+      expect((await alarmAfterScores(false, after)).inMs, `${after} ms`).toBe(2_000);
+      // The step runs from 2 s; TE stops waiting for it (it carries on), so the tick sets main's next alarm first (the
+      // tick's own alarm, 30 s after its start, replaced the 2 s one when the step ended).
+      expect(await alarmAfterScores(true, after), `${after} ms`).toEqual({ inMs: 2_000, steps: 1 });
+    }
   });
 });
 
@@ -564,6 +751,58 @@ describe("main's kill switch and the agent's", () => {
     expect((await base.settings.get()).killSwitch).toBe(false);
     // Resetting main never resets the agent's.
     expect((await agentRepo.settings.get()).killSwitch).toBe(true);
+  });
+
+  it("a kill of main without a square-off that fails after main's switch is written still engages the agent's at once", async () => {
+    for (const failAt of ["audit", "alert"] as const) {
+      let now = istAt("2026-10-19", "10:00");
+      const clock = { now: () => now, sleep: async () => {} };
+      const base = new InMemoryRepository(DEFAULT_CONFIG, now);
+      const append = base.audit.append.bind(base.audit);
+      // Main's own kill row (the agent's carry "…@agent").
+      base.audit.append = async (e) => {
+        if (failAt === "audit" && e.action === "kill" && e.actor === "owner") throw new Error("D1: kill audit insert failed");
+        return append(e);
+      };
+      const agentCfg = accountConfig(DEFAULT_CONFIG, "agent");
+      const agentRepo: Repository = accountRepository(base, "agent", agentCfg, () => now);
+      const kept = new Map<string, unknown>();
+      const runner = new AgentRunner({
+        account: { spec: ACCOUNTS.agent, cfg: agentCfg, repo: agentRepo },
+        mainRepo: base,
+        settings: { mode: "paper", reflexModel: "r", escalationModel: "d", reviewModel: "d", dailyUsdCap: 3, escalationsPerDay: 8 },
+        storage: { get: async <T,>(k: string) => (kept.has(k) ? (structuredClone(kept.get(k)) as T) : undefined), put: async <T,>(k: string, v: T) => void kept.set(k, structuredClone(v)) },
+        agentDo: { submitBar: async () => ({ accepted: true, reason: null }), takeDecisions: async () => null, recordExecution: async () => {} },
+        feed: { getOptionFlowAsOf: async () => null },
+        quotes: null,
+        instruments: { expiries: async () => [], resolve: async () => null, strikes: async () => [] },
+        marketContext: new MarketContextStore(),
+        alerts: { send: async () => true },
+        logger: silentLogger,
+        calendar: cal,
+        clock,
+      });
+      const te = makeTe({
+        rt: { logger: silentLogger, repo: base, calendar: cal, cfg: DEFAULT_CONFIG },
+        agentEnabled: true,
+        agent: runner,
+        alerts: {
+          send: async (text: string) => {
+            if (failAt === "alert" && text.startsWith("🛑 KILL SWITCH")) throw new Error("Telegram: KILL alert failed");
+            return true;
+          },
+        },
+      });
+      now += 5_000;
+      await expect(te.setKillSwitch({ engaged: true, squareOff: false, reason: "owner" }, "owner", "main"), failAt).rejects.toThrow();
+      expect((await base.settings.get()).killSwitch, failAt).toBe(true);
+      // Engaged with main's on its way out (it was left to the agent's next step, so a reset of main before it left the
+      // agent trading).
+      expect(await agentRepo.settings.get(), failAt).toMatchObject({ killSwitch: true, killReason: "main kill switch: owner" });
+      now += 2_000;
+      expect((await te.setKillSwitch({ engaged: false, squareOff: false, reason: "" }, "owner", "main")).ok, failAt).toBe(true);
+      expect((await agentRepo.settings.get()).killSwitch, failAt).toBe(true);
+    }
   });
 });
 

@@ -29,6 +29,8 @@ export const AGENT_LIMITS = {
   maxDrawdownPct: 15,
   dailyLossCapPct: 3,
   weeklyLossCapPct: 6,
+  /** Losing trades in a row in a day, after which no entry is made that day. */
+  maxLossStreak: 3,
   maxOpenTotal: 2,
   maxOpenPerIndex: 1,
   maxLotsPerPosition: 3,

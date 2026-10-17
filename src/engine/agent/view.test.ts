@@ -242,6 +242,15 @@ describe("buildAgentView", () => {
       },
     ]);
     expect(v.risk).toMatchObject({ asOf: istIso(T + 60_000), equity: 499_100, drawdownPct: 0.18, openPositions: 1, maxDrawdownPct: 15 });
+    // A snapshot from before the week's loss and the losing streak were kept: unknown, with the caps.
+    expect(v.risk).toMatchObject({ weekLossPct: null, weeklyLossCapPct: 6, lossStreak: null, maxLossStreak: 3 });
+    expect(buildAgentView(input({ risk: s.risk({ weekLossPct: 4.567, lossStreak: 2 }) })).risk).toMatchObject({ weekLossPct: 4.57, lossStreak: 2 });
+    // Last Friday's snapshot, read on Monday before the first step: neither is this week's or today's.
+    const friday = s.risk({ t: istAt("2026-10-16", "15:04"), date: "2026-10-16", weekLossPct: 6.2, lossStreak: 3 });
+    expect(buildAgentView(input({ risk: friday })).risk).toMatchObject({ weekLossPct: null, lossStreak: null });
+    // Wednesday's, read on Thursday: the same week's loss, not today's streak.
+    const wed = s.risk({ t: istAt("2026-10-21", "15:04"), date: "2026-10-21", weekLossPct: 6.2, lossStreak: 3 });
+    expect(buildAgentView(input({ date: "2026-10-22", nowMs: istAt("2026-10-22", "09:00"), risk: wed })).risk).toMatchObject({ weekLossPct: 6.2, lossStreak: null });
     expect(v.calibration).toMatchObject({ graded: 120, brier: 0.247, sizingP: 0.47, sizingN: 31.5, payoffB: 1, payoffMeasured: 1.4, payoffTrades: 4, paidRate: 0.28 });
     expect(v.calibration.buckets).toEqual([{ from: 0.9, to: 1, n: 12, statedMean: 0.92, hitRate: 0.5, paidRate: 0.25 }]);
     expect(v.calibration.trades).toEqual({ n: 2, wins: 1, netRupees: -400 });
@@ -342,6 +351,15 @@ describe("buildAgentView", () => {
     const capped = buildAgentView(input({ batches: [s.batch(T, { status: "COST_CAP" })], calls: [s.call({ costUsd: 3 })] }));
     expect(capped.status.state).toBe("COST_CAP");
     expect(capped.cost.capReached).toBe(true);
+    // A reflex call the cap skipped marks the day capped; a review or a replay it skipped to keep the day's reflex
+    // reserve (one forced before the open) does not: the candles after it are judged.
+    const skipped = (kind: "REFLEX" | "REVIEW" | "REPLAY") => s.call({ id: `skip-${kind}`, kind, status: "SKIPPED_CAP", costUsd: 0, latencyMs: null, usage: null, startedMs: istAt(DAY, "08:30") });
+    const reflexSkipped = buildAgentView(input({ batches: [s.batch(T)], calls: [skipped("REFLEX"), s.call({ costUsd: 0.001 })] }));
+    expect([reflexSkipped.status.state, reflexSkipped.cost.capReached]).toEqual(["COST_CAP", true]);
+    for (const kind of ["REVIEW", "REPLAY"] as const) {
+      const v = buildAgentView(input({ batches: [s.batch(T)], calls: [skipped(kind), s.call({ costUsd: 0.001 })] }));
+      expect([v.status.state, v.cost.capReached], kind).toEqual(["WAITING", false]);
+    }
     const evening = buildAgentView(input({ nowMs: istAt(DAY, "18:00"), batches: [s.batch(T)] }));
     expect(evening.status.state).toBe("CLOSED");
     const paused = buildAgentView(input({ paused: true }));

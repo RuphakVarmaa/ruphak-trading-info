@@ -22,6 +22,8 @@ const finite = (x: number) => (Number.isFinite(x) ? x : 0);
  * - openPositions counts open positions and entry orders still working (each holds a slot).
  * - codeRisk is the account-level code risk (no index context; trades a day from the agent's pinned config unless
  *   `maxTradesPerDay` is given).
+ * - weekLossPct is the week's realized loss and lossStreak today's losing trades in a row, as the planner's weekly_loss
+ *   and loss_streak gates read them (they are not part of codeRisk).
  */
 export function riskSnapshotFrom(
   r: RiskState,
@@ -51,6 +53,8 @@ export function riskSnapshotFrom(
     mainKillSwitch: flags.mainKillSwitch,
     ddHalt: flags.ddHalt,
     codeRisk: "SAFE",
+    weekLossPct: r.capitalRupees > 0 ? (Math.max(0, -finite(r.weekRealized)) / r.capitalRupees) * 100 : 0,
+    lossStreak: finite(d.consecutiveLosses),
   };
   const entriesToday = finite(r.entriesToday.NIFTY) + finite(r.entriesToday.SENSEX) + pending;
   snap.codeRisk = codeRiskState(snap, 0, entriesToday, flags.maxTradesPerDay ?? AGENT_MAX_TRADES_PER_DAY);

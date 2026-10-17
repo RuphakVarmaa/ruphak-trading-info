@@ -605,9 +605,17 @@ export function RiskPanel({
         value={`${pct(risk.dayLossPct)} of ${risk.dailyLossCapPct}%`}
         note={`New entries stop from ${ENTRY_STOP.dayLossPct}% of equity (the code's risk state leaves Safe). At ${risk.dailyLossCapPct}% the code closes positions and stops new entries for the day.`}
       />
+      <Meter
+        label="This week's realized loss"
+        used={risk.weekLossPct ?? 0}
+        cap={risk.weeklyLossCapPct}
+        value={`${pct(risk.weekLossPct)} of ${risk.weeklyLossCapPct}%`}
+        note={`At ${risk.weeklyLossCapPct}% the code stops new entries until Monday; open positions keep their exits.`}
+      />
       <div style={{ display: "flex", flexWrap: "wrap", gap: 8 }}>
         <Fact label="Equity" value={risk.equity == null ? "—" : fmtInr(risk.equity)} note={risk.peakEquity == null ? undefined : `peak ${fmtInr(risk.peakEquity)}`} />
         <Fact label="Open positions" value={`${risk.openPositions} of ${risk.maxOpenPositions}`} note={`at most 1 per index, ${risk.maxLotsPerPosition} lots each`} />
+        <Fact label="Losing trades in a row today" value={risk.lossStreak == null ? "—" : `${risk.lossStreak} of ${risk.maxLossStreak}`} note="at the limit, no new entries today" />
         <Fact label="The code's risk state" value={riskWords(risk.codeRiskState)} color={risk.codeRiskState === "SAFE" ? C.textStrong : risk.codeRiskState === "NEAR_LIMIT" ? C.orange : C.red} note="from drawdown, day loss and positions" />
       </div>
       <Bullets
