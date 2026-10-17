@@ -10,6 +10,9 @@
  * - main's waits stay 10 s and its next alarm stays 30 s after the tick's start;
  * - a kill that squares off still goes first: the agent's work in a wait stops, and main's square-off and the relay
  *   panic come exactly as early as without the agent.
+ * Main's own reads and writes take 60 ms and its Telegram alerts 300 ms, and production's two follower accounts are
+ * there, so a kill spends 0.4 s (main) to 1.5 s (every account) on its switches before the square-off starts. A wait or
+ * step that starts in that time must not set the agent's switch, close its position or send to the AgentDO first.
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -61,6 +64,9 @@ const RPC_MS = 100;
 const FLOW_MS = 300;
 /** Main's own exit polls after each wait. */
 const POLL_EXITS_MS = 1_000;
+/** Main's (and each follower's) D1 round trip and Telegram alert: a kill awaits both for each account before its square-off. */
+const MAIN_D1_MS = 60;
+const MAIN_ALERT_MS = 300;
 
 const sleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
 type KillReq = { engaged: boolean; squareOff: boolean; reason: string };
@@ -209,20 +215,27 @@ function harness(o: { mainWorkMs: number; agent?: boolean; agentDoHangs?: boolea
     newId: sequentialIds("ag"),
   });
   const cycleMs = o.mainWorkMs - 2 * (10_000 + POLL_EXITS_MS);
+  // Main's own reads and writes and its alerts take real time, so a kill's writes and alerts take real time too.
+  const mainRepo = slowRepo(base as unknown as Repository, MAIN_D1_MS);
+  const mainAlerts = { send: async () => (await sleep(MAIN_ALERT_MS), true) };
+  // Production's follower accounts: a kill of every account sets each one's switch, audit row and alert in turn.
+  const followers = (["small10k", "small5k"] as const).map((id) => {
+    const fcfg = accountConfig(cfg, id);
+    return { spec: ACCOUNTS[id], cfg: fcfg, repo: accountRepository(mainRepo, id, fcfg, () => Date.now()), alerts: mainAlerts, errors: 0, copy: {} };
+  });
   Object.assign(h.te, {
-    // Main's own reads and writes answer at once, so a kill's hold starts the moment the kill comes in.
-    rt: { logger: silentLogger, repo: base, calendar: cal, cfg },
+    rt: { logger: silentLogger, repo: mainRepo, calendar: cal, cfg },
     hot: { consecutiveErrors: 0, lastError: null, lastTickMs: null, lastOffHoursSnapshotMs: 0, lastReconcileMs: 0, reconcileMismatches: 0 },
     ticking: null,
     tickSoon: false,
-    followers: [],
+    followers,
     relay: {
       panic: async () => {
         h.panicAt = Date.now();
         return { status: 200, body: "ok" };
       },
     },
-    alerts: { send: async () => true },
+    alerts: mainAlerts,
     ctx: { storage: { setAlarm: async (ms: number) => void h.alarms.push(ms), put: async () => {}, getAlarm: async () => null } },
     agentEnabled: o.agent !== false,
     agentInitError: null,
@@ -317,51 +330,77 @@ describe("main at 26-28 s of tick work: the agent catches up in main's exit-poll
   }
 });
 
-describe("a kill that squares off during the agent's work in a wait", () => {
-  /** Telegram /kill ("all", or main) `afterMs` into the first wait of an alarm tick, with main holding a LIVE position. */
-  async function kill(o: { agent: boolean; target: "all" | "main"; afterMs: number }) {
-    const mainWorkMs = 26_000;
-    const h = harness({ mainWorkMs, agent: o.agent });
+describe("a kill that squares off, with main's own writes and alerts taking real time", () => {
+  /** Main's work in these ticks: its cycle and exits for 4 s, the waits from 4 s and from 15 s, the agent's step from 26 s. */
+  const MAIN_WORK_MS = 26_000;
+  const CYCLE_MS = MAIN_WORK_MS - 2 * (10_000 + POLL_EXITS_MS);
+
+  /**
+   * Telegram /kill ("all", or main) `atMs` after an alarm tick's start, with main holding a LIVE position and the agent a
+   * paper one. Times are from the kill.
+   */
+  async function kill(o: { agent: boolean; target: "all" | "main"; atMs: number }) {
+    const h = harness({ mainWorkMs: MAIN_WORK_MS, agent: o.agent });
     await h.base.positions.save({ id: "live-1", mode: "LIVE", status: "OPEN", index: "NIFTY", contract: { tradingSymbol: "NIFTY-LIVE" } } as unknown as Position);
+    await h.agentRepo.positions.save(agentPosition());
     void h.te.runTick();
-    await vi.advanceTimersByTimeAsync(mainWorkMs - 2 * (10_000 + POLL_EXITS_MS) + o.afterMs);
+    await vi.advanceTimersByTimeAsync(o.atMs);
     const killAt = Date.now();
     const killing = h.te.setKillSwitch({ engaged: true, squareOff: true, reason: "owner /kill" }, "telegram", o.target);
     await vi.advanceTimersByTimeAsync(120_000);
     expect((await killing).ok).toBe(true);
+    const from = (at: number) => at - killAt;
     return {
-      killAt,
-      squareOffStart: h.tickStarts[1] - killAt,
-      panic: (h.panicAt ?? Number.NaN) - killAt,
-      submits: h.submits,
-      records: h.records,
+      squareOffStart: from(h.tickStarts[1]),
+      panic: from(h.panicAt ?? Number.NaN),
+      // Bars and execution records that reached the AgentDO from the kill on.
+      sent: [...h.submits.map((s) => s.at), ...h.records].filter((at) => at >= killAt).map(from),
       hold: h.te.agentHold,
       preempt: h.te.agentPreempt,
       agentKill: (await h.agentRepo.settings.get()).killSwitch,
-      // When the agent's own kill switch went on (its audit rows carry the actor "…@agent"), from the kill.
-      agentKillRows: (await h.base.audit.recent(100)).filter((a) => a.action === "kill" && a.actor.endsWith("@agent")).map((a) => a.ts - killAt),
+      // When the agent's own kill switch went on (its audit rows carry the actor "…@agent"), and when its position closed.
+      agentKillRows: (await h.base.audit.recent(100)).filter((a) => a.action === "kill" && a.actor.endsWith("@agent")).map((a) => from(a.ts)),
+      agentExits: (await h.base.trades.recent(10, "PAPER@agent" as TradingMode)).map((t) => from(t.exitMs)),
     };
+  }
+
+  /**
+   * Main squares off and panics exactly as without the agent; the agent sends nothing to the AgentDO after the kill,
+   * and its switch, its kill audit rows and its exit all come after the panic.
+   */
+  async function expectMainFirst(target: "all" | "main", atMs: number): Promise<void> {
+    const without = await kill({ agent: false, target, atMs });
+    const withAgent = await kill({ agent: true, target, atMs });
+    const at = `${target}, kill at ${atMs} ms`;
+    expect(Number.isFinite(without.panic), at).toBe(true);
+    expect(withAgent.squareOffStart, at).toBe(without.squareOffStart);
+    expect(withAgent.panic, at).toBe(without.panic);
+    expect(withAgent.sent, at).toEqual([]);
+    expect(withAgent.hold, at).toBe(0);
+    expect(withAgent.preempt, at).toBeNull();
+    expect(withAgent.agentKill, at).toBe(true);
+    expect(withAgent.agentKillRows.length, at).toBeGreaterThan(0);
+    expect(withAgent.agentKillRows.filter((ms) => ms < withAgent.panic), at).toEqual([]);
+    expect(withAgent.agentExits, at).toHaveLength(1);
+    expect(withAgent.agentExits.filter((ms) => ms < withAgent.panic), at).toEqual([]);
   }
 
   for (const target of ["all", "main"] as const) {
     // Into its kill coupling and exits, its drawdown check, and its risk row and book: always before its bar.
     for (const afterMs of [30, 200, 400]) {
-      it(`${target}, ${afterMs} ms into the agent's work: main squares off and panics as without the agent; the agent starts nothing more`, async () => {
-        const without = await kill({ agent: false, target, afterMs });
-        const withAgent = await kill({ agent: true, target, afterMs });
-        expect(Number.isFinite(without.panic)).toBe(true);
-        expect(withAgent.squareOffStart).toBe(without.squareOffStart);
-        expect(withAgent.panic).toBe(without.panic);
-        // The wait's work stopped at its next check: no bar, and nothing sent to the AgentDO after the kill. The waits
-        // during the square-off ran the code exits only.
-        expect(withAgent.submits).toEqual([]);
-        expect(withAgent.records.filter((at) => at >= withAgent.killAt)).toEqual([]);
-        expect(withAgent.hold).toBe(0);
-        expect(withAgent.preempt).toBeNull();
-        // The agent's own switch follows main's square-off and panic, never before them.
-        expect(withAgent.agentKill).toBe(true);
-        expect(withAgent.agentKillRows.length).toBeGreaterThan(0);
-        expect(withAgent.agentKillRows.every((at) => at >= withAgent.panic)).toBe(true);
+      it(`${target}, ${afterMs} ms into the agent's work in a wait: main squares off and panics as without the agent; the agent starts nothing more`, async () => {
+        await expectMainFirst(target, CYCLE_MS + afterMs);
+      });
+    }
+    // A kill up to 1.6 s before a wait or the step starts lands while main's (and the followers') switches are being
+    // written and alerted: the agent is held from the kill's start, not from main's square-off.
+    for (const [name, startMs] of [
+      ["the first wait", CYCLE_MS],
+      ["the second wait", CYCLE_MS + 10_000 + POLL_EXITS_MS],
+      ["the agent's step", MAIN_WORK_MS],
+    ] as const) {
+      it(`${target}, a kill from 1.6 s before ${name} starts to 0.4 s after: main first, then the agent`, async () => {
+        for (let atMs = startMs - 1_600; atMs <= startMs + 400; atMs += 100) await expectMainFirst(target, atMs);
       });
     }
   }

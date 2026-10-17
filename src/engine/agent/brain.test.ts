@@ -268,14 +268,31 @@ describe("AgentBrain: bars and the reflex job", () => {
 
   it("is idempotent per bar: a resubmitted bar makes no second call", async () => {
     const h = harness();
+    const stored = input(bar(0)).snapshots;
     expect(await h.brain.submitBar(input(bar(0)))).toEqual({ accepted: true, reason: null });
-    expect(await h.brain.submitBar(input(bar(0)))).toEqual({ accepted: true, reason: "duplicate" });
+    expect(await h.brain.submitBar(input(bar(0)))).toEqual({ accepted: true, reason: "duplicate", snapshots: stored });
     await h.brain.runDue(h.clock.now(), h.clock.now() + 10 * MINUTE_MS);
-    expect(await h.brain.submitBar(input(bar(0)))).toEqual({ accepted: true, reason: "duplicate" });
+    expect(await h.brain.submitBar(input(bar(0)))).toEqual({ accepted: true, reason: "duplicate", snapshots: stored });
     await h.brain.runDue(h.clock.now(), h.clock.now() + 10 * MINUTE_MS);
     expect(h.reflex.calls).toHaveLength(1);
     expect((await h.store.decisions(DAY)).length).toBe(2);
   });
+
+  for (const firstHasOptions of [true, false]) {
+    it(`answers a resubmitted bar with the snapshots it stored first, the ones the model judges (first ${firstHasOptions ? "with" : "without"} its option block)`, async () => {
+      const h = harness();
+      // TE resubmits a bar whose first send timed out on its side; the second copy's flow read went the other way.
+      const withBlock = input(bar(0));
+      const withoutBlock = input(bar(0));
+      withoutBlock.snapshots.NIFTY = { ...withoutBlock.snapshots.NIFTY!, o: null };
+      const [first, second] = firstHasOptions ? [withBlock, withoutBlock] : [withoutBlock, withBlock];
+      expect(await h.brain.submitBar(first)).toEqual({ accepted: true, reason: null });
+      expect(await h.brain.submitBar(second)).toEqual({ accepted: true, reason: "duplicate", snapshots: first.snapshots });
+      await h.brain.runDue(h.clock.now(), h.clock.now() + 10 * MINUTE_MS);
+      expect(h.reflex.calls).toHaveLength(1);
+      expect(h.reflex.calls[0].input.snapshots).toEqual(first.snapshots);
+    });
+  }
 
   it("never runs an interrupted job again: a RUNNING job left by a crashed alarm becomes FAILED with no call", async () => {
     const h = harness();

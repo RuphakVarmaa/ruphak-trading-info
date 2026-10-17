@@ -82,6 +82,16 @@ export interface ReflexInput {
   problems: string[];
 }
 
+/**
+ * The AgentDO's answer to a submitted bar. A bar it already has is a "duplicate" and comes back with the snapshots it
+ * stored, the ones the model judges: a copy resubmitted after a timeout on TE's side can differ from them.
+ */
+export interface SubmitBarResult {
+  accepted: boolean;
+  reason: string | null;
+  snapshots?: ReflexInput["snapshots"];
+}
+
 export interface ReflexDecision {
   finalistId: string;
   regime: AgentRegime;

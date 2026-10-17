@@ -1,7 +1,8 @@
 /**
  * The AgentDO's own guards around approve and revert (AgentDO.ts), on node:sqlite in place of the Durable Object's
  * SQLite and with the Workers runtime module stubbed: refused during the session with the window that applies, and
- * outside it the brain's answer (its own refusals included) reaches the caller unchanged.
+ * outside it the brain's answer (its own refusals included) reaches the caller unchanged. A resubmitted bar comes back
+ * with the snapshots stored first.
  */
 import { DatabaseSync } from "node:sqlite";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -16,6 +17,7 @@ vi.mock("cloudflare:workers", () => ({
 }));
 
 import { AgentBrain } from "../../../../src/engine/agent/brain";
+import type { IndexSnapshot, ReflexInput } from "../../../../src/engine/agent/types";
 import type { AgentSql, AgentSqlValue } from "../agent/sqlAgentStore";
 import { AgentDO } from "./AgentDO";
 
@@ -82,5 +84,19 @@ describe("approve and revert on the AgentDO", () => {
     vi.setSystemTime(new Date("2026-10-19T06:30:00.000Z"));
     const dO = agentDo();
     expect(await dO.decideCandidate("cand-1", "reject", "dashboard")).toEqual({ ok: false, message: "no candidate cand-1" });
+  });
+});
+
+describe("a bar sent to the AgentDO twice", () => {
+  it("comes back the second time as a duplicate with the snapshots stored first, the ones the model judges", async () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(new Date("2026-10-19T04:35:40.000Z")); // Monday 10:05:40 IST
+    const dO = agentDo();
+    const T = Date.parse("2026-10-19T04:35:00.000Z"); // the 10:05 IST close
+    // TE's first send timed out on its side; its second copy's flow read failed, so that copy has no option block.
+    const first: ReflexInput = { barCloseMs: T, date: "2026-10-19", builtMs: T + 40_000, snapshots: { NIFTY: { c: 25_000, o: { oa: 30, cs: 0.6, ps: 0.7 } } as unknown as IndexSnapshot }, tokensEst: { NIFTY: 300 }, closes: { NIFTY: 25_000 }, problems: [] };
+    const second: ReflexInput = { ...first, builtMs: T + 50_000, snapshots: { NIFTY: { c: 25_000, o: null } as unknown as IndexSnapshot } };
+    expect(await dO.submitBar(first)).toEqual({ accepted: true, reason: null });
+    expect(await dO.submitBar(second)).toEqual({ accepted: true, reason: "duplicate", snapshots: first.snapshots });
   });
 });

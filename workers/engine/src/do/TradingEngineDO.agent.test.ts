@@ -45,6 +45,7 @@ type KillReq = { engaged: boolean; squareOff: boolean; reason: string };
 /** The members of TradingEngineDO these tests set or call (most are private in the class). */
 interface Te {
   hot: { consecutiveErrors: number; lastError: string | null };
+  agentHold: number;
   agent: unknown;
   agentInitError: string | null;
   agentAlerts: { send(text: string, o?: unknown): Promise<boolean> };
@@ -213,6 +214,41 @@ describe("kills that square off: main first, the agent after", () => {
 
   it("a kill while the agent's step runs: TE stops waiting for it at once (it was its whole 12 s budget)", async () => {
     expect(await squareOffDelay({ agent: true, mainWorkMs: 500 })).toBe(0);
+  });
+
+  /** A kill with main's own switch write watched: the agent's hold when it is written, and after the kill. */
+  async function holds(o: { target: "all" | "main"; squareOff: boolean; failWrite?: boolean }) {
+    const repo = new InMemoryRepository(DEFAULT_CONFIG, Date.now());
+    const atWrite: number[] = [];
+    const update = repo.settings.update.bind(repo.settings);
+    const { agent } = hangingAgent();
+    const te = makeTe({ rt: { logger: silentLogger, repo, calendar: cal, cfg: DEFAULT_CONFIG }, agentEnabled: true, agent, tick: fakeTick(1_000, []) });
+    repo.settings.update = async (patch, by) => {
+      atWrite.push(te.agentHold);
+      if (o.failWrite) throw new Error("D1 write failed");
+      return update(patch, by);
+    };
+    const killing = te.setKillSwitch({ engaged: true, squareOff: o.squareOff, reason: "owner /kill" }, "telegram", o.target).then(
+      (res) => res,
+      (err: unknown) => err as Error,
+    );
+    await vi.advanceTimersByTimeAsync(60_000);
+    return { res: await killing, atWrite, after: te.agentHold };
+  }
+
+  it("a kill that squares off holds the agent before main's switch is written, and always lets it go after", async () => {
+    for (const target of ["all", "main"] as const) {
+      expect(await holds({ target, squareOff: true })).toMatchObject({ atWrite: [1], after: 0 });
+      // Main's write fails: a kill of main fails with it, "all" carries on to the square-off; either way the hold ends.
+      const failed = await holds({ target, squareOff: true, failWrite: true });
+      expect(failed).toMatchObject({ atWrite: [1], after: 0 });
+      if (target === "main") expect(failed.res).toEqual(new Error("D1 write failed"));
+      else expect(failed.res).toMatchObject({ ok: false });
+    }
+  });
+
+  it("a kill without a square-off never holds the agent", async () => {
+    for (const target of ["all", "main"] as const) expect(await holds({ target, squareOff: false })).toMatchObject({ atWrite: [0], after: 0 });
   });
 
   it("a follower's square-off does not wait for a running agent step either", async () => {

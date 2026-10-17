@@ -15,13 +15,15 @@
  *  7. the book the next snapshots read, kept in a ring so a bar's snapshot sees the book as of its close;
  *  8. the latest closed bar's snapshots to the AgentDO, which calls the model on its own alarm: TE never waits.
  * Steps 1-4 always run, and step 6 sends the risk (and any closed trade) in every mode; in mode "off" and while
- * paused nothing else does. Every remote call checks the deadline first and has its own timeout, so a slow or silent
- * Durable Object costs the agent's step, never main's tick.
+ * paused nothing else does. Every call to another Durable Object checks the deadline first and has its own timeout,
+ * so a slow or silent Durable Object costs the agent's step, never main's tick. A Telegram alert is waited for at
+ * most ALERT_WAIT_MS (it is still sent, in order).
  *
  * pollStep() runs the same sequence without step 5 inside main's 10 s exit-poll waits (while main is positioned), each
- * part only while the wait has time. A bar the step had no budget left to submit, or a drawdown halt in a tick whose
- * step TE skipped, therefore waits at most one wait; only the decisions wait for a step. A kill that squares off main
- * stops it before its next part or remote call.
+ * part started only while the wait has time (a part already started, a drawdown halt above all, can finish after it).
+ * A bar the step had no budget left to submit, or a drawdown halt in a tick whose step TE skipped, therefore waits at
+ * most one wait; only the decisions wait for a step. A kill that squares off main stops it before its next part or
+ * call to another Durable Object.
  *
  * The runner never reads main's market data source: the features of main's own tick are the agent's only market
  * input, so the agent can never spend main's request budget or move main's cached prices.
@@ -47,6 +49,7 @@ import type {
   IndexSnapshot,
   ReflexBatch,
   ReflexInput,
+  SubmitBarResult,
 } from "../../../../src/engine/agent/types";
 import type { OptionFlowView } from "../../../../src/engine/api-types";
 import { FallbackOptionQuotes } from "../../../../src/engine/broker/groww";
@@ -64,7 +67,7 @@ import type { EngineSettings, IndexId } from "../../../../src/engine/types";
 
 /** The AgentDO methods the runner calls (a Durable Object stub in the Worker, a fake in tests). */
 export interface AgentDoPort {
-  submitBar(input: ReflexInput): Promise<{ accepted: boolean; reason: string | null }>;
+  submitBar(input: ReflexInput): Promise<SubmitBarResult>;
   takeDecisions(afterBarMs: number): Promise<ReflexBatch | null>;
   recordExecution(rec: ExecutionRecord): Promise<void>;
 }
@@ -128,7 +131,10 @@ export interface AgentHot {
   books: AgentBookState[];
   /** The latest risk snapshot (its book is the fallback when the ring has nothing at or before a bar close). */
   lastRisk: AgentRiskSnapshot | null;
-  /** Per day: the snapshots of the last bars submitted; the code gate reads its bar's own snapshot. */
+  /**
+   * Per day: the snapshots the AgentDO keeps for the last bars it accepted (for a duplicate, the copy it stored first);
+   * the code gate reads its bar's own snapshot.
+   */
   inputs: { barCloseMs: number; snapshots: Partial<Record<IndexId, IndexSnapshot>> }[];
   /** positionId -> the finalist and decision behind each open agent position. */
   positions: Record<string, AgentPositionTag>;
@@ -168,6 +174,10 @@ const ALERT_AFTER_ERRORS = 5;
 const STUCK_MS = 2 * MINUTE_MS;
 /** Without a batch or a closed trade, the risk still reaches the AgentDO at most this often. */
 const RISK_RECORD_EVERY_MS = MINUTE_MS;
+/** The runner waits at most this long for a Telegram alert (sendTelegram allows one 10 s); the send carries on. */
+const ALERT_WAIT_MS = 1_000;
+/** An alert waits at most this long for the one before it to go out, so a send that hangs never holds back the rest. */
+const ALERT_QUEUE_MS = 15_000;
 const INPUTS_KEPT = 3;
 /**
  * The runner's quotes are reused this long. With TE's exit polls the agent's positions are priced up to six times a
@@ -328,6 +338,8 @@ export class AgentRunner {
   private hot: AgentHot | null = null;
   private loading: Promise<AgentHot> | null = null;
   private busy: { what: string; since: number; done: Promise<void> } | null = null;
+  /** The latest alert in flight: each alert is sent after the one before it, so they arrive in order. */
+  private alerting: Promise<void> = Promise.resolve();
   private readonly clock: Clock;
   private readonly newId: IdGenerator;
 
@@ -448,12 +460,22 @@ export class AgentRunner {
     }
   }
 
+  /**
+   * A Telegram alert, sent after the ones before it and waited for at most ALERT_WAIT_MS: a slow chat never holds up the
+   * agent's exits, its halt or a step's decisions, and the send carries on. Never throws.
+   */
   private async alert(text: string, o?: { key?: string; minIntervalMs?: number }): Promise<void> {
-    try {
-      await this.o.alerts.send(`${ALERT_PREFIX}: ${text}`, o);
-    } catch (err) {
-      this.o.logger.warn("agent alert failed", { error: message(err) });
-    }
+    const before = this.alerting;
+    const sent = (async () => {
+      await within(() => before, ALERT_QUEUE_MS);
+      try {
+        await this.o.alerts.send(`${ALERT_PREFIX}: ${text}`, o);
+      } catch (err) {
+        this.o.logger.warn("agent alert failed", { error: message(err) });
+      }
+    })();
+    this.alerting = sent;
+    await within(() => sent, ALERT_WAIT_MS);
   }
 
   // -------------------------------------------------------------------------
@@ -485,7 +507,10 @@ export class AgentRunner {
     await this.exclusive("exits", () => this.codeExits(this.deps(cal)));
   }
 
-  /** The whole per-tick sequence (see the module comment). Never throws; `deadlineMs` bounds its remote calls. */
+  /**
+   * The whole per-tick sequence (see the module comment). Never throws; `deadlineMs` bounds its calls to other Durable
+   * Objects.
+   */
   async step(report: CycleReport, cal: TradingCalendar, degraded: boolean, deadlineMs: number): Promise<void> {
     await this.exclusive("step", () => this.pass(report, cal, { kind: "step", degraded, deadlineMs }));
   }
@@ -494,9 +519,10 @@ export class AgentRunner {
    * The agent's part of one of TE's exit-poll waits (main's own 10 s waits while main is positioned): the step without
    * its decisions, so whatever a step left undone for lack of budget, or a step TE skipped, is done within one wait.
    * That is the kill coupling, the code exits, the drawdown check and its halt, the risk row, the book, and the latest
-   * closed bar while it is unsent and fresh. Each part starts, and each remote call is sent, only before `deadlineMs`
-   * (the wait's end) and while `stopped()` is false (a kill squaring off main). Before the open only the code exits run.
-   * Never throws; skipped while another agent step runs.
+   * closed bar while it is unsent and fresh. Each part starts, and each call to another Durable Object is sent, only
+   * before `deadlineMs` (the wait's end) and while `stopped()` is false (a kill squaring off main). A part already
+   * started can finish after the wait with its D1, quote and Telegram calls, and a drawdown halt always finishes. Before
+   * the open only the code exits run. Never throws; skipped while another agent step runs.
    */
   async pollStep(report: CycleReport, cal: TradingCalendar, deadlineMs: number, stopped: () => boolean = () => false): Promise<void> {
     await this.exclusive("poll", () => this.pass(report, cal, { kind: "wait", degraded: false, deadlineMs, stopped }));
@@ -760,15 +786,18 @@ export class AgentRunner {
   }
 
   /**
-   * Step 7: the book as of now (the snapshots of later bars read it), and the tags of positions that closed. It is
-   * stamped after its positions are read: the marks the exits just set are then at or before its time (so the
-   * snapshot shows the open P&L), and a fill made after a bar's close can never reach that bar's book.
+   * Step 7: the book as of now (the snapshots of later bars read it), and the tags of positions that closed. A tag
+   * stays while its position is open or its entry order still rests (a resting entry has no position yet), so the
+   * model's exits apply once it fills. The book is stamped after its positions are read: the marks the exits just set
+   * are then at or before its time (so the snapshot shows the open P&L), and a fill made after a bar's close can never
+   * reach that bar's book.
    */
   private async recordBook(risk: AgentRiskSnapshot): Promise<void> {
     const hot = this.hot!;
-    const open = await this.o.account.repo.positions.open("PAPER");
+    const { repo } = this.o.account;
+    const [open, orders] = await Promise.all([repo.positions.open("PAPER"), repo.orders.open("PAPER")]);
     const t = this.now();
-    const ids = new Set(open.map((p) => p.id));
+    const ids = new Set([...open.map((p) => p.id), ...orders.filter((o) => o.reason === "ENTRY" && o.positionId).map((o) => o.positionId)]);
     for (const id of Object.keys(hot.positions)) if (!ids.has(id)) delete hot.positions[id];
     hot.books.push(bookFrom({ ...risk, t }, open, (p) => p.contract.lotSize));
     if (hot.books.length > AGENT_STEP.bookRing) hot.books.splice(0, hot.books.length - AGENT_STEP.bookRing);
@@ -819,14 +848,30 @@ export class AgentRunner {
       nowMs: now,
     });
     if (!this.has(b, AGENT_RPC_MS.submitBar)) return;
+    // Read again just before the send: a pause or mode off that came in during this pass sends no bar (the AgentDO's
+    // own pause is only a backstop), and a bar that the flow read and the input took past its age limit is skipped, as
+    // one found too old at the start is: its decisions could never be executed.
+    if (hot.paused || this.mode === "off") return;
+    if (this.now() - t > AGENT_POLICY.maxDecisionAgeMs) {
+      hot.lastSubmittedBarMs = t;
+      this.o.logger.warn("agent bar skipped: not submitted in time", { bar: hhmm(t), complete: bar.complete });
+      return;
+    }
     const res = await within(() => this.o.agentDo.submitBar(input), AGENT_RPC_MS.submitBar);
     if ("error" in res) {
       this.o.logger.warn("agent bar not submitted (retried while fresh)", { bar: hhmm(t), error: res.error });
       return;
     }
     hot.lastSubmittedBarMs = t;
-    hot.inputs = [...hot.inputs.filter((x) => x.barCloseMs !== t), { barCloseMs: t, snapshots: input.snapshots }].slice(-INPUTS_KEPT);
-    if (!res.value.accepted) this.o.logger.info("agent bar not accepted", { bar: hhmm(t), reason: res.value.reason });
+    if (!res.value.accepted) {
+      // No batch comes from a copy the AgentDO refused, so the gate keeps none of it.
+      this.o.logger.info("agent bar not accepted", { bar: hhmm(t), reason: res.value.reason });
+      return;
+    }
+    // The gate reads the copy the model judges: a bar the AgentDO already had (an earlier send timed out here but
+    // reached it) comes back as a duplicate with the snapshots it stored. Without them the gate gets none.
+    const snapshots = res.value.reason === "duplicate" ? (res.value.snapshots ?? {}) : input.snapshots;
+    hot.inputs = [...hot.inputs.filter((x) => x.barCloseMs !== t), { barCloseMs: t, snapshots }].slice(-INPUTS_KEPT);
   }
 
   /** The option flow as of the bar close for each index, in parallel; null for an index whose feed did not answer within `ms`. */

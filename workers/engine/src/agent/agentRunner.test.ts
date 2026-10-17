@@ -8,9 +8,21 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { ACCOUNTS, accountConfig } from "../../../../src/engine/accounts";
 import { agentPositionPass, bookAsOf, bookFrom, buildReflexInput, executeAgentBatch, initialBook } from "../../../../src/engine/agent/agentCycle";
 import { latestClosedBarMs } from "../../../../src/engine/agent/causal";
-import { AGENT_STEP } from "../../../../src/engine/agent/constants";
+import { AGENT_POLICY, AGENT_STEP } from "../../../../src/engine/agent/constants";
 import { drawdownBreached, riskSnapshotFrom } from "../../../../src/engine/agent/risk";
-import type { AgentRiskSnapshot, AgentSettings, AgentTradeRecord, DecisionRecord, ExecutionRecord, IndexSnapshot, ReflexBatch, ReflexInput } from "../../../../src/engine/agent/types";
+import { codeToxicity } from "../../../../src/engine/agent/policy";
+import type {
+  AgentPositionTag,
+  AgentRiskSnapshot,
+  AgentSettings,
+  AgentTradeRecord,
+  DecisionRecord,
+  ExecutionRecord,
+  IndexSnapshot,
+  ReflexBatch,
+  ReflexInput,
+  SubmitBarResult,
+} from "../../../../src/engine/agent/types";
 import { TradingCalendar } from "../../../../src/engine/calendar/calendar";
 import { FixedClock, istAt, istDate, istMidnight, type Clock } from "../../../../src/engine/clock";
 import { DEFAULT_CONFIG } from "../../../../src/engine/config";
@@ -21,8 +33,8 @@ import type { CycleReport } from "../../../../src/engine/pipeline/tradingCycle";
 import { sequentialIds, silentLogger, type OptionQuoteSource, type Repository } from "../../../../src/engine/ports";
 import { accountRepository } from "../../../../src/engine/repo/accountRepo";
 import { InMemoryRepository } from "../../../../src/engine/repo/memory";
-import type { MarketSnapshot, OptionContract, Position, TradeRecord, TradingMode } from "../../../../src/engine/types";
-import { AGENT_NO_MARKET, AgentRunner, HOT_KEY, agentQuoteSource, agentStepBudgetMs, killAll, type AgentDoPort, type AgentHot, type AgentResult, type KillStep } from "./agentRunner";
+import type { MarketSnapshot, OptionContract, Order, Position, TradeRecord, TradingMode } from "../../../../src/engine/types";
+import { AGENT_NO_MARKET, AgentRunner, HOT_KEY, agentQuoteSource, agentStepBudgetMs, killAll, type AgentDoPort, type AgentHot, type AgentResult, type AgentRunnerOptions, type KillStep } from "./agentRunner";
 
 vi.mock("../../../../src/engine/agent/agentCycle", () => ({
   agentPositionPass: vi.fn(),
@@ -159,21 +171,25 @@ function report(o: Partial<CycleReport> = {}): CycleReport {
   return { t: T0, phase: "OPEN", features: {}, convictions: {}, pressure: {}, decisions: [], entries: [], halted: null, errors: [], snapshot: {} as unknown as MarketSnapshot, perf: [], ...o };
 }
 
-/** The AgentDO as the runner sees it: each answer can be replaced; it keeps each bar once, like the real one. */
+/**
+ * The AgentDO as the runner sees it: each answer can be replaced; it keeps each bar once, like the real one, and answers
+ * a resubmitted bar as a duplicate with the snapshots it stored.
+ */
 class FakeAgentDo implements AgentDoPort {
-  stored = new Set<number>();
+  stored = new Map<number, ReflexInput["snapshots"]>();
   submits: ReflexInput[] = [];
   takes: number[] = [];
   records: ExecutionRecord[] = [];
   batches: ReflexBatch[] = [];
-  submit: (input: ReflexInput) => Promise<{ accepted: boolean; reason: string | null }> = async (input) => this.store(input);
+  submit: (input: ReflexInput) => Promise<SubmitBarResult> = async (input) => this.store(input);
   take: (afterBarMs: number) => Promise<ReflexBatch | null> = async (after) => this.batches.filter((b) => b.barCloseMs > after).at(-1) ?? null;
   record: (rec: ExecutionRecord) => Promise<void> = async () => {};
 
-  store(input: ReflexInput): { accepted: boolean; reason: string | null } {
-    const duplicate = this.stored.has(input.barCloseMs);
-    this.stored.add(input.barCloseMs);
-    return { accepted: true, reason: duplicate ? "duplicate" : null };
+  store(input: ReflexInput): SubmitBarResult {
+    const kept = this.stored.get(input.barCloseMs);
+    if (kept) return { accepted: true, reason: "duplicate", snapshots: structuredClone(kept) };
+    this.stored.set(input.barCloseMs, structuredClone(input.snapshots));
+    return { accepted: true, reason: null };
   }
   async submitBar(input: ReflexInput) {
     this.submits.push(input);
@@ -208,6 +224,10 @@ function setup(
     kept?: Map<string, unknown>;
     /** True: this put to TE's storage fails. */
     failPut?: () => boolean;
+    /** The MarketFeedDO's option flow (default: none). */
+    feed?: AgentRunnerOptions["feed"];
+    /** How long each Telegram alert takes to send (default: at once). */
+    alertMs?: number;
   } = {},
 ) {
   const clock = o.clock ?? new FixedClock(T0);
@@ -218,6 +238,8 @@ function setup(
   if (o.hot) kept.set(HOT_KEY, structuredClone(o.hot));
   const agentDo = o.agentDo ?? new FakeAgentDo();
   const alerts: string[] = [];
+  /** Each alert's send, from its start to its end. */
+  const sends: { text: string; from: number; to: number }[] = [];
   const marketContext = new MarketContextStore();
   marketContext.set("NIFTY", { spot: 25_000, vix: 13, t: T0 });
   marketContext.set("SENSEX", { spot: 82_000, vix: 13, t: T0 });
@@ -233,13 +255,16 @@ function setup(
       },
     },
     agentDo,
-    feed: { getOptionFlowAsOf: async () => null },
+    feed: o.feed ?? { getOptionFlowAsOf: async () => null },
     quotes: o.quotes === undefined ? QUOTES : o.quotes,
     instruments: { expiries: async () => [], resolve: async () => null, strikes: async () => [] },
     marketContext,
     alerts: {
       send: async (text) => {
         alerts.push(text);
+        const from = Date.now();
+        if (o.alertMs) await sleep(o.alertMs);
+        sends.push({ text, from, to: Date.now() });
         return true;
       },
     },
@@ -250,7 +275,7 @@ function setup(
   });
   const hot = () => kept.get(HOT_KEY) as AgentHot;
   // The tests that pass a live clock never move it by hand.
-  return { runner, clock: clock as FixedClock, base, agentRepo, agentDo, alerts, hot };
+  return { runner, clock: clock as FixedClock, base, agentRepo, agentDo, alerts, sends, hot };
 }
 
 /** A clock that moves with real time (for the time-budget tests), starting at T0. */
@@ -556,8 +581,71 @@ describe("AgentRunner.step", () => {
     await sleep(700);
     await h.runner.step(report(), calendar, false, clock.now() + AGENT_STEP.maxMs);
     expect(agentDo.submits.map((i) => i.barCloseMs)).toEqual([BAR, BAR]);
-    expect([...agentDo.stored]).toEqual([BAR]);
+    expect([...agentDo.stored.keys()]).toEqual([BAR]);
     expect(h.hot().lastSubmittedBarMs).toBe(BAR);
+  });
+
+  for (const firstHasOptions of [true, false]) {
+    it(`gives the code gate the copy of a resubmitted bar that the AgentDO stored (the first, ${firstHasOptions ? "with" : "without"} its option block)`, async () => {
+      vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "Date"] });
+      try {
+        vi.setSystemTime(T0);
+        const clock: Clock = { now: () => Date.now(), sleep: (ms) => new Promise((resolve) => setTimeout(resolve, ms)) };
+        // The second copy's flow read went the other way, so only one of the two has the option block.
+        const withBlock = { c: 25_000, o: { oa: 30, cs: 0.6, ps: 0.7 } } as unknown as IndexSnapshot;
+        const withoutBlock = { c: 25_000, o: null } as unknown as IndexSnapshot;
+        const copies = firstHasOptions ? [withBlock, withoutBlock] : [withoutBlock, withBlock];
+        let built = 0;
+        vi.mocked(buildReflexInput).mockImplementation((a) => ({ barCloseMs: a.barCloseMs, date: istDate(a.barCloseMs), builtMs: a.nowMs, snapshots: { NIFTY: copies[built++] }, tokensEst: {}, closes: { NIFTY: 25_000 }, problems: [] }));
+        vi.mocked(latestClosedBarMs).mockReturnValue({ barCloseMs: BAR, complete: ["NIFTY", "SENSEX"] });
+        const agentDo = new FakeAgentDo();
+        let first = true;
+        agentDo.submit = async (input) => {
+          const answer = agentDo.store(input);
+          if (first) {
+            first = false;
+            await sleep(2_500); // past the runner's 2 s: the AgentDO stored the first copy all the same
+          }
+          return answer;
+        };
+        const h = setup({ clock, agentDo });
+        const step = async () => {
+          const running = h.runner.step(report({ t: Date.now() }), calendar, false, Date.now() + AGENT_STEP.maxMs);
+          await vi.advanceTimersByTimeAsync(5_000);
+          await running;
+        };
+        await step();
+        expect(h.hot().lastSubmittedBarMs).toBe(istMidnight(DAY));
+        await step();
+        expect(agentDo.submits.map((i) => i.snapshots.NIFTY)).toEqual(copies);
+        expect(h.hot().lastSubmittedBarMs).toBe(BAR);
+        // The batch the model made from the stored copy is gated on that copy, not on the one resubmitted.
+        expect(h.hot().inputs).toEqual([{ barCloseMs: BAR, snapshots: { NIFTY: copies[0] } }]);
+        agentDo.batches = [batch()];
+        await step();
+        const gated = vi.mocked(executeAgentBatch).mock.calls[0][2].snapshots.NIFTY ?? null;
+        expect(gated).toEqual(copies[0]);
+        expect(codeToxicity(gated, "LONG")).toEqual(codeToxicity(copies[0], "LONG"));
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+  }
+
+  it("keeps no snapshots for a bar the AgentDO refused, and empty ones for a duplicate it sent none with", async () => {
+    vi.mocked(latestClosedBarMs).mockReturnValue({ barCloseMs: BAR, complete: ["NIFTY", "SENSEX"] });
+    const refused = new FakeAgentDo();
+    refused.submit = async () => ({ accepted: false, reason: "paused: the operator paused the agent" });
+    const r = setup({ agentDo: refused });
+    await r.runner.step(report(), calendar, false, LATER);
+    expect(r.hot()).toMatchObject({ lastSubmittedBarMs: BAR, inputs: [] });
+
+    // A duplicate that names no stored snapshots: the gate gets none, so it blocks the bar's entries (exits still run).
+    const bare = new FakeAgentDo();
+    bare.submit = async () => ({ accepted: true, reason: "duplicate" });
+    const b = setup({ agentDo: bare });
+    await b.runner.step(report(), calendar, false, LATER);
+    expect(b.hot().inputs).toEqual([{ barCloseMs: BAR, snapshots: {} }]);
   });
 
   it("couples main's kill switch to the agent's; resetting main leaves the agent's on", async () => {
@@ -1011,6 +1099,61 @@ describe("the book's time", () => {
   });
 });
 
+describe("a paper entry that rests before it fills", () => {
+  const TAG: AgentPositionTag = { finalistId: "gen:NIFTY", decisionId: "d-entry", index: "NIFTY", side: "LONG" };
+  /** The entry as submitEntry leaves it while it rests: a buy limit under the ask, no fill yet, its position id reserved. */
+  const resting = (positionId: string): Order => ({
+    id: `ord-${positionId}`,
+    refId: `REF${positionId}`,
+    contract: CONTRACT,
+    side: "BUY",
+    qty: 65,
+    type: "LIMIT",
+    limitPrice: 99,
+    product: agentCfg.broker.product,
+    reason: "ENTRY",
+    planId: `plan-${positionId}`,
+    positionId,
+    status: "OPEN",
+    filledQty: 0,
+    createdMs: T0 - 5_000,
+    updatedMs: T0 - 5_000,
+    mode: "PAPER",
+  });
+
+  it("keeps its tag while the order rests, so the model's exit applies once it has filled", async () => {
+    const real = await vi.importActual<typeof import("../../../../src/engine/agent/agentCycle")>("../../../../src/engine/agent/agentCycle");
+    const h = setup({ hot: { date: DAY, positions: { "pos-r": TAG } } });
+    await h.agentRepo.orders.save(resting("pos-r"));
+    await h.runner.step(report(), calendar, false, LATER);
+    expect(h.hot().positions).toEqual({ "pos-r": TAG });
+
+    // It fills; the next batch calls a CRISIS on NIFTY, which closes the agent's NIFTY position at market.
+    await h.agentRepo.orders.save({ ...resting("pos-r"), status: "FILLED", filledQty: 65, avgFillPrice: 99, updatedMs: T0 + 10_000 });
+    await h.agentRepo.positions.save(position({ id: "pos-r", planId: "plan-pos-r", avgEntry: 99, markPremium: 99, entryMs: T0 + 10_000 }));
+    h.agentDo.batches = [batch({ decisions: [decision({ id: "d-crisis", regime: "CRISIS", direction: "NEUTRAL" })] })];
+    vi.mocked(executeAgentBatch).mockImplementationOnce(real.executeAgentBatch);
+    h.clock.advance(20_000);
+    await h.runner.step(report({ t: T0 + 20_000 }), calendar, false, LATER + 20_000);
+    expect(h.agentDo.records.at(-1)?.exits).toEqual([{ positionId: "pos-r", decisionId: "d-crisis", reason: "AGENT_CRISIS", status: "FILLED" }]);
+    expect(await h.agentRepo.positions.get("pos-r")).toMatchObject({ status: "CLOSED", exitReason: "SIGNAL_FLIP" });
+    // Closed and no order left: the tag goes at that step's book.
+    expect(h.hot().positions).toEqual({});
+  });
+
+  it("drops the tag once the order is cancelled unfilled", async () => {
+    const h = setup({ hot: { date: DAY, positions: { "pos-c": TAG } } });
+    await h.agentRepo.orders.save(resting("pos-c"));
+    await h.runner.step(report(), calendar, false, LATER);
+    expect(h.hot().positions).toEqual({ "pos-c": TAG });
+    // Past the chase timeout the code exits cancel the entry, never filled: no position and no open order, so no tag.
+    h.clock.advance(agentCfg.broker.limitChaseTimeoutSec * 1_000);
+    await h.runner.step(report({ t: h.clock.now() }), calendar, false, h.clock.now() + 60_000);
+    expect((await h.agentRepo.orders.get("ord-pos-c"))?.status).toBe("CANCELLED");
+    expect(h.hot().positions).toEqual({});
+  });
+});
+
 /** A repository whose every call takes `lat` ms of the clock (a D1 round trip); calls sent together overlap. */
 function slowRepo<T extends object>(target: T, clock: FixedClock, lat: number): T {
   return new Proxy(target, {
@@ -1304,5 +1447,103 @@ describe("AgentRunner.pollStep: the step but its decisions, inside main's exit-p
     expect(h.agentDo.takes).toEqual([]);
     expect(h.agentDo.records).toEqual([]);
     expect(h.agentDo.submits).toEqual([]);
+  });
+});
+
+describe("the bar's checks just before it is sent", () => {
+  it("sends no bar when the operator's pause lands while the pass reads its flow; resumed, the next pass sends it while fresh", async () => {
+    vi.mocked(latestClosedBarMs).mockReturnValue({ barCloseMs: BAR, complete: ["NIFTY", "SENSEX"] });
+    let pause = async () => {};
+    const h = setup({
+      feed: {
+        getOptionFlowAsOf: async () => {
+          await pause();
+          return null;
+        },
+      },
+    });
+    pause = async () => void (await h.runner.setPaused(true, "ops"));
+    await h.runner.pollStep(report(), calendar, T0 + 10_000);
+    expect(h.agentDo.submits).toEqual([]);
+    expect(h.hot()).toMatchObject({ paused: true, lastSubmittedBarMs: istMidnight(DAY) });
+
+    pause = async () => {};
+    await h.runner.setPaused(false, "ops");
+    h.clock.advance(10_000);
+    await h.runner.pollStep(report({ t: T0 + 10_000 }), calendar, T0 + 20_000);
+    expect(h.agentDo.submits.map((i) => i.barCloseMs)).toEqual([BAR]);
+  });
+
+  it("sends no bar when the mode reads off by the time of the send (it is read from the settings each time)", async () => {
+    vi.mocked(latestClosedBarMs).mockReturnValue({ barCloseMs: BAR, complete: ["NIFTY", "SENSEX"] });
+    const settings = { ...SETTINGS };
+    const h = setup({
+      feed: {
+        getOptionFlowAsOf: async () => {
+          settings.mode = "off";
+          return null;
+        },
+      },
+    });
+    (h.runner as unknown as { o: AgentRunnerOptions }).o.settings = settings;
+    await h.runner.step(report(), calendar, false, LATER);
+    expect(h.agentDo.submits).toEqual([]);
+    expect(h.hot().lastSubmittedBarMs).toBe(istMidnight(DAY));
+  });
+
+  it("skips a bar that its flow read took past the age limit, before the send: no model call is spent on it", async () => {
+    vi.mocked(latestClosedBarMs).mockReturnValue({ barCloseMs: BAR, complete: ["NIFTY", "SENSEX"] });
+    // Fresh when the pass reaches the bar (half a second to spare); each index's flow read then takes a second.
+    const clock = new FixedClock(BAR + AGENT_POLICY.maxDecisionAgeMs - 500);
+    const h = setup({
+      clock,
+      feed: {
+        getOptionFlowAsOf: async () => {
+          clock.advance(1_000);
+          return null;
+        },
+      },
+    });
+    await h.runner.pollStep(report({ t: clock.now() }), calendar, clock.now() + 10_000);
+    expect(buildReflexInput).toHaveBeenCalledTimes(1);
+    expect(h.agentDo.submits).toEqual([]);
+    // Skipped for good, as a bar found too old at the start of the pass is.
+    expect(h.hot().lastSubmittedBarMs).toBe(BAR);
+  });
+});
+
+describe("a slow Telegram", () => {
+  it("holds the agent at most a second an alert: a halt in a wait ends within it and the next step still takes its decisions; the alerts go out in order", async () => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "Date"] });
+    try {
+      vi.setSystemTime(T0);
+      const clock: Clock = { now: () => Date.now(), sleep: (ms) => new Promise((resolve) => setTimeout(resolve, ms)) };
+      // Each alert takes 10 s (sendTelegram's own timeout).
+      const h = setup({ clock, alertMs: 10_000, hot: { date: DAY, peakEquity: 500_000 } });
+      await seedDrawdown(h.agentRepo);
+      await h.agentRepo.positions.save(position());
+      h.agentDo.batches = [batch()];
+      // A 10 s exit-poll wait: the drawdown halt in it alerts twice (the halt, then the exit at market).
+      const waiting = h.runner.pollStep(report(), calendar, T0 + 10_000);
+      // The wait, then main's 1 s of poll exits, then the step with its 4 s floor: it is not skipped for the halt's pass.
+      await vi.advanceTimersByTimeAsync(11_000);
+      const stepping = h.runner.step(report({ t: Date.now() }), calendar, false, Date.now() + AGENT_STEP.minMs);
+      await vi.advanceTimersByTimeAsync(AGENT_STEP.minMs);
+      await stepping;
+      expect(h.agentDo.takes).toEqual([istMidnight(DAY)]);
+      expect(executeAgentBatch).toHaveBeenCalledTimes(1);
+      // The halt was done within its wait: flattened at market and latched.
+      expect(h.hot().ddHalt).toBe(true);
+      const [trade] = await h.base.trades.recent(5, "PAPER@agent" as TradingMode);
+      expect(trade).toMatchObject({ positionId: "pos-1", exitReason: "KILL_SWITCH" });
+      expect(trade.exitMs).toBeLessThanOrEqual(T0 + 10_000);
+      // Every alert was sent, each after the one before it had gone out, in the order the agent raised them.
+      await vi.advanceTimersByTimeAsync(30_000);
+      await waiting;
+      expect(h.sends.map((x) => x.text)).toEqual([expect.stringMatching(/from its peak equity/), expect.stringMatching(/EXIT NIFTY26O2725000CE KILL_SWITCH/)]);
+      expect(h.sends[1].from).toBeGreaterThanOrEqual(h.sends[0].to);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });

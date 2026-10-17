@@ -49,6 +49,7 @@ import type {
   ReflexInput,
   ReplayResult,
   StoredBar,
+  SubmitBarResult,
 } from "./types";
 import { validateEscalation } from "./validate";
 import { buildAgentView } from "./view";
@@ -165,16 +166,17 @@ export class AgentBrain {
   // -------------------------------------------------------------------------
 
   /**
-   * Stores the bar and queues its reflex job; idempotent per barCloseMs (a resubmitted bar is a "duplicate"); refused
-   * while paused. Bars after the reflex window (15:05) or outside it are stored for grading only, with no model call.
+   * Stores the bar and queues its reflex job; idempotent per barCloseMs (a resubmitted bar is a "duplicate", answered
+   * with the snapshots stored first, which the model judges); refused while paused. Bars after the reflex window (15:05)
+   * or outside it are stored for grading only, with no model call.
    */
-  async submitBar(input: ReflexInput): Promise<{ accepted: boolean; reason: string | null }> {
+  async submitBar(input: ReflexInput): Promise<SubmitBarResult> {
     const { store } = this.d;
     if (await this.paused()) return { accepted: false, reason: "paused: the operator paused the agent" };
     const T = input.barCloseMs;
     const date = istDate(T);
     if (!Number.isFinite(T) || T % BAR_5M_MS !== 0) return { accepted: false, reason: "not a 5-minute bar close" };
-    if (await this.barKnown(T)) return { accepted: true, reason: "duplicate" };
+    if (await this.barKnown(T)) return { accepted: true, reason: "duplicate", snapshots: (await this.storedInput(T, [])).snapshots };
 
     for (const index of this.d.cfg.indices) {
       const snapshot = input.snapshots[index] ?? null;

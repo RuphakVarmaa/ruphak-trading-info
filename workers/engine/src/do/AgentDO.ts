@@ -20,7 +20,7 @@ import { AgentBrain, type AgentStatus } from "../../../../src/engine/agent/brain
 import { SNAPSHOT_TOKEN_LIMIT } from "../../../../src/engine/agent/constants";
 import { ClaudeDeepJudge, ClaudeReflexJudge } from "../../../../src/engine/agent/judge";
 import { encodeSnapshot, estimateTokens, worstCaseSnapshot } from "../../../../src/engine/agent/snapshot";
-import type { AgentSettings, ExecutionRecord, IndexSnapshot, ReflexBatch, ReflexInput } from "../../../../src/engine/agent/types";
+import type { AgentSettings, ExecutionRecord, IndexSnapshot, ReflexBatch, ReflexInput, SubmitBarResult } from "../../../../src/engine/agent/types";
 import type { AccountView, AdvisorView, AgentView, IndexId } from "../../../../src/engine/api-types";
 import { MINUTE_MS, istIso } from "../../../../src/engine/clock";
 import { randomId } from "../../../../src/engine/ports";
@@ -114,8 +114,11 @@ export class AgentDO extends DurableObject<Env> {
   // RPC from TradingEngineDO
   // -------------------------------------------------------------------------
 
-  /** Stores the bar and queues its reflex job (idempotent per bar; refused while paused); the alarm makes the call. */
-  async submitBar(input: ReflexInput): Promise<{ accepted: boolean; reason: string | null }> {
+  /**
+   * Stores the bar and queues its reflex job (idempotent per bar: a duplicate comes back with the snapshots stored first;
+   * refused while paused); the alarm makes the call.
+   */
+  async submitBar(input: ReflexInput): Promise<SubmitBarResult> {
     const res = await this.brain.submitBar(input);
     if (res.accepted) await this.wakeAt(Date.now());
     return res;

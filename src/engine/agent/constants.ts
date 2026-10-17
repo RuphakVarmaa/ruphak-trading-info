@@ -105,7 +105,7 @@ export const REVIEW_CALL = {
 /**
  * The TE runner's step, inside TE's tick after main's exit polls. It runs under a time budget of
  * clamp(tickStart + fromTickStartMs − now, minMs, maxMs); exits always run first. While main is positioned, its two
- * exit-poll waits run the rest of the step but the decisions, each by the wait's end.
+ * exit-poll waits run the rest of the step but the decisions, each part started by the wait's end.
  */
 export const AGENT_STEP = {
   fromTickStartMs: 27_000,
