@@ -55,6 +55,8 @@ const RISK: AgentRiskView = {
   drawdownHalt: false,
   codeRiskState: "SAFE",
 };
+/** The agent switched on, not paused, within the day's model budget: candles are judged in paper and shadow mode. */
+const JUDGING = { enabled: true, status: { state: "WAITING", paused: false } } as const;
 
 const line = (gate: string, passed: boolean | null, words = gate): AgentGateLineView => ({ gate, passed, words });
 
@@ -349,30 +351,50 @@ describe("the risk headline and re-arm", () => {
   });
 
   it("is green only when nothing stops entries, in the order the code checks", () => {
-    expect(riskHeadline(RISK, "paper")).toEqual({ tone: "ok", words: "Within every limit: new entries are allowed when a decision passes every check." });
+    expect(riskHeadline(RISK, "paper", JUDGING)).toEqual({ tone: "ok", words: "Within every limit: new entries are allowed when a decision passes every check." });
     // The dashboard review's render.test.ts: a 3.2% day loss (cap 3%) and a 1.6% one (near the limit) are not "within every limit".
-    const capped = riskHeadline({ ...RISK, dayLossPct: 3.2, codeRiskState: "REDUCE" }, "paper");
+    const capped = riskHeadline({ ...RISK, dayLossPct: 3.2, codeRiskState: "REDUCE" }, "paper", JUDGING);
     expect(capped.tone).toBe("stopped");
     expect(capped.words).toBe("Stopped for today: today's loss 3.20% reached the 3% cap; positions closed, no new entries until the next session.");
-    const near = riskHeadline({ ...RISK, dayLossPct: 1.6, codeRiskState: "NEAR_LIMIT" }, "paper");
+    const near = riskHeadline({ ...RISK, dayLossPct: 1.6, codeRiskState: "NEAR_LIMIT" }, "paper", JUDGING);
     expect(near.tone).toBe("blocked");
     expect(near.words).toBe(
       "No new entries now: the code's risk state is Near a limit; entries need Safe (day loss under 1.5%, drawdown under 10%, fewer than 2 positions open and fewer than 5 entries today).",
     );
-    expect(riskHeadline({ ...RISK, drawdownPct: 15.18, drawdownHalt: true, killSwitch: true, codeRiskState: "REDUCE" }, "paper").words).toBe(
+    expect(riskHeadline({ ...RISK, drawdownPct: 15.18, drawdownHalt: true, killSwitch: true, codeRiskState: "REDUCE" }, "paper", JUDGING).words).toBe(
       "Halted: the account fell 15.18% from its peak (the limit is 15%). No new entries until you re-arm.",
     );
-    expect(riskHeadline({ ...RISK, killSwitch: true, killReason: "main kill switch engaged at 11:30", dayLossPct: 3.2 }, "shadow").words).toBe("Kill switch on: main kill switch engaged at 11:30. No new entries.");
+    expect(riskHeadline({ ...RISK, killSwitch: true, killReason: "main kill switch engaged at 11:30", dayLossPct: 3.2 }, "shadow", JUDGING).words).toBe("Kill switch on: main kill switch engaged at 11:30. No new entries.");
   });
 
   it("says what being within every limit allows in each mode: shadow places no order and off judges no candle", () => {
-    expect(riskHeadline(RISK, "shadow")).toEqual({
+    expect(riskHeadline(RISK, "shadow", JUDGING)).toEqual({
       tone: "ok",
       words: "Within every limit: paper mode would allow new entries when a decision passes every check (shadow mode places no order).",
     });
-    expect(riskHeadline(RISK, "off")).toEqual({ tone: "ok", words: "Within every limit. The agent is off: no candle is judged, so no entry is made." });
+    expect(riskHeadline(RISK, "off", JUDGING)).toEqual({ tone: "ok", words: "Within every limit. The agent is off: no candle is judged, so no entry is made." });
     // A block reads the same in every mode.
-    for (const mode of ["paper", "shadow", "off"] as const) expect(riskHeadline({ ...RISK, killSwitch: true, killReason: "manual" }, mode).words).toBe("Kill switch on: manual. No new entries.");
+    for (const mode of ["paper", "shadow", "off"] as const) expect(riskHeadline({ ...RISK, killSwitch: true, killReason: "manual" }, mode, JUDGING).words).toBe("Kill switch on: manual. No new entries.");
+  });
+
+  it("never says entries are (or would be) allowed while no candle is judged: paused, past the day's model budget, or not switched on", () => {
+    for (const mode of ["paper", "shadow"] as const) {
+      expect(riskHeadline(RISK, mode, { enabled: true, status: { state: "RUNNING", paused: true } })).toEqual({
+        tone: "ok",
+        words: "Within every limit, but the operator paused the agent: no candle is judged until it is resumed, so no entry is made.",
+      });
+      expect(riskHeadline(RISK, mode, { enabled: true, status: { state: "COST_CAP", paused: false } })).toEqual({
+        tone: "ok",
+        words: "Within every limit, but today's model budget is used up: no candle is judged until tomorrow, so no entry is made.",
+      });
+      expect(riskHeadline(RISK, mode, { enabled: false, status: { state: "OFF", paused: false } })).toEqual({
+        tone: "ok",
+        words: "Within every limit, but the agent's paper account is not switched on in this engine: nothing runs, so no entry is made.",
+      });
+    }
+    // Off judges no candle whether paused or not; a block still comes first.
+    expect(riskHeadline(RISK, "off", { enabled: true, status: { state: "OFF", paused: true } }).words).toBe("Within every limit. The agent is off: no candle is judged, so no entry is made.");
+    expect(riskHeadline({ ...RISK, killSwitch: true, killReason: "manual" }, "paper", { enabled: true, status: { state: "RUNNING", paused: true } }).words).toBe("Kill switch on: manual. No new entries.");
   });
 
   it("re-arms after a halt (the peak restarts), clears a kill switch alone (the peak stays), and is off while main's switch is on", () => {

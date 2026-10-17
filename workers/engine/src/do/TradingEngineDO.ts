@@ -6,19 +6,22 @@
  * cycles for every mode with open positions, polling exits twice more while positioned. Last, under
  * its own time budget, comes the options agent's step (a paper experiment on its own account,
  * workers/engine/src/agent/agentRunner.ts): main's work and its timing never wait for it. The budget
- * ends before main's next alarm is due, and a kill that squares off holds the agent from the moment it
- * comes in, before main's switch is written: TE stops waiting for a running agent step and runs none of
- * the agent's work but its code exits until the square-off, the relay panic and the agent's own kill are
- * done, so main is flat (and the relay panic sent) before the agent's kill switch and exits come. A step
- * already running still runs its kill coupling, code exits and drawdown check (a drawdown halt it finds
- * acts at once), but from the kill on it calls no other Durable Object (no batch taken, no record or bar
- * sent) and sends none of the model's exits; a batch it took before reads the kill switches again before
- * each entry. A follower's square-off holds the agent the same way until its square-off tick is done.
+ * ends before main's next alarm is due, and a kill of main or of every account that squares off holds the
+ * agent from the moment it comes in, before main's switch is written: TE stops waiting for a running agent
+ * step and runs none of the agent's work but its code exits until the square-off, the relay panic and the
+ * agent's own kill are done, so main is flat (and the relay panic sent) before the agent's kill switch and
+ * exits come. A step already running still runs its kill coupling, code exits and drawdown check (a
+ * drawdown halt it finds acts at once), but from the kill on it calls no other Durable Object (no batch
+ * taken, no record or bar sent) and sends none of the model's exits; a batch it took before reads the kill
+ * switches again before each entry. A follower's square-off only holds the agent's step until the tick in
+ * progress is done: no step starts in it and TE stops waiting for one already running, which carries on.
  * Inside main's 10 s waits between exit polls (while main or a follower account holds a position or an
  * order) the agent also does all of its step but the decisions: the kill coupling and the code exits
- * always run; each later part starts, and each call to another Durable Object is sent, only before the
- * wait ends (the book always follows the risk row). So a step cut short or skipped is made up within one
- * wait; a kill stops that work too.
+ * always run (but before 09:15 a wait runs only the code exits, and a wait does nothing while earlier
+ * agent work, such as a step, is still running, at most 2 minutes); each later part starts, and each call
+ * to another Durable Object is sent, only before the wait ends (the book always follows the risk row). So a
+ * step cut short or skipped is made up within one wait; a kill of main or of every account that squares
+ * off stops that work too.
  * Off hours it refreshes a market snapshot hourly and sleeps until 09:00 IST.
  * After a tick (never inside it) the read-only quote recorder may take a snapshot of option quotes (the
  * Groww Trade API, or Upstox's free read-only token) for the 09:15 straddle study
@@ -191,20 +194,22 @@ export class TradingEngineDO extends DurableObject<Env> {
   /** Telegram for the agent when its runner is missing, deduplicated under the agent's kv prefix (acct:agent:). */
   private readonly agentAlerts: Alerts;
   /**
-   * Ends TE's wait for the agent step in progress at once and stops that step (its stopped() reads true): it carries on
-   * with its kill coupling, code exits and drawdown check, but calls no other Durable Object and sends none of the
-   * model's exits.
+   * Ends TE's wait for the agent step in progress at once. With `stop` (a kill of main or of every account that squares
+   * off) it also stops that step, or the agent's work in a wait (stopped() reads true): the step carries on with its kill
+   * coupling, code exits and drawdown check, but calls no other Durable Object and sends none of the model's exits. A
+   * follower's square-off does not stop it: it is not a kill of the agent.
    */
-  private agentPreempt: (() => void) | null = null;
+  private agentPreempt: ((stop: boolean) => void) | null = null;
   /**
-   * While above zero no agent step starts, a running one is stopped and a wait runs only the agent's code exits: a kill
-   * that squares off is running, from before its first switch is written until the agent's own kill is done (a
-   * follower's: until its square-off tick is done).
+   * While above zero no agent step starts: a kill that squares off is running, from before its first switch is written
+   * until the agent's own kill is done (a follower's: until the tick in progress is done).
    */
   private agentHold = 0;
   /**
-   * Kills of main or of every account that square off, while they run: each sets the agent's switch itself after its
-   * panic, so a kill without a square-off that comes meanwhile leaves the agent's switch to it.
+   * Kills of main or of every account that square off, while they run: the agent's work stops (a running step's or
+   * wait's stopped() reads true, and a wait runs only the agent's code exits). Each sets the agent's switch itself after
+   * its panic, also when it fails part way, so a kill without a square-off that comes meanwhile leaves the agent's switch
+   * to it.
    */
   private agentKillsDue = 0;
   /** The running bar-archive job, if any (concurrent callers share it). */
@@ -679,13 +684,15 @@ export class TradingEngineDO extends DurableObject<Env> {
   /**
    * Main's wait between exit polls; the agent's work during it never fails it, and never makes it longer by more than
    * one piece of the agent's code that runs without a pause (a few ms: the timer that ends the wait runs between them).
-   * Unless a kill is squaring off, the agent catches up there on its whole step but the decisions
-   * (AgentRunner.pollStep): its kill coupling, code exits and drawdown halt, its risk row and book, and the latest closed
-   * bar while it is unsent and fresh. The kill coupling and the code exits always run; each later part starts, and each
-   * call to another Durable Object is sent, only before the wait ends (the book always follows the risk row). A part
-   * already started may finish after it (a drawdown halt always does). A kill that squares off stops that work before
-   * its next part from the moment it comes in (agentPreempt, agentHold); while one runs, a wait starts only the agent's
-   * code exits.
+   * Unless a kill of main or of every account is squaring off, the agent catches up there on its whole step but the
+   * decisions (AgentRunner.pollStep): its kill coupling, code exits and drawdown halt, its risk row and book, and the
+   * latest closed bar while it is unsent and fresh. The kill coupling and the code exits always run (but before 09:15
+   * only the code exits run, and nothing runs while earlier agent work, such as a step, is still running, at most 2
+   * minutes); each later part starts, and each call to another Durable Object is sent, only before the wait ends (the
+   * book always follows the risk row). A part already started may finish after it (a drawdown halt always does). A kill
+   * of main or of every account that squares off stops that work before its next part from the moment it comes in
+   * (agentPreempt, agentKillsDue); while one runs, a wait starts only the agent's code exits. A follower's square-off
+   * stops none of it.
    */
   private async pollWait(ms: number, cal: TradingCalendar, report: CycleReport): Promise<void> {
     const endMs = Date.now() + ms;
@@ -695,13 +702,13 @@ export class TradingEngineDO extends DurableObject<Env> {
       await pause;
       return;
     }
-    const held = this.agentHold > 0;
+    const held = this.agentKillsDue > 0;
     let preempted = false;
-    const preempt = () => {
-      preempted = true;
+    const preempt = (stop: boolean) => {
+      preempted ||= stop;
     };
     if (!held) this.agentPreempt = preempt;
-    const stopped = () => preempted || this.agentHold > 0;
+    const stopped = () => preempted || this.agentKillsDue > 0;
     // Started inside an async function, so even a synchronous throw only ends the agent's part.
     const work = (async () => (held ? runner.exitsOnly(cal) : runner.pollStep(report, cal, endMs, stopped)))();
     try {
@@ -716,8 +723,9 @@ export class TradingEngineDO extends DurableObject<Env> {
    * AGENT_STEP_ALARM_MARGIN_MS before main's next alarm (a step with less than AGENT_STEP_MIN_MS is skipped; main's
    * exit-poll waits make up all of it but the decisions). TE waits at most that long, and the runner checks the same
    * deadline before each call to another Durable Object. A kill that squares off ends the wait as it comes in
-   * (agentPreempt), stops the step (its stopped(): no call to another Durable Object and none of the model's exits after
-   * it) and starts no step while it runs (agentHold). It never throws and never counts toward DEGRADED.
+   * (agentPreempt) and starts no step while it runs (agentHold); a kill of main or of every account also stops the step
+   * (its stopped(): no call to another Durable Object and none of the model's exits after it), a follower's does not. It
+   * never throws and never counts toward DEGRADED.
    */
   private async agentStep(report: CycleReport, cal: TradingCalendar, degraded: boolean, tickStartMs: number): Promise<void> {
     if (!this.agentEnabled || this.agentHold > 0) return;
@@ -737,13 +745,13 @@ export class TradingEngineDO extends DurableObject<Env> {
     }
     let timer: ReturnType<typeof setTimeout> | undefined;
     let preempted = false;
-    const stopped = () => preempted || this.agentHold > 0;
+    const stopped = () => preempted || this.agentKillsDue > 0;
     try {
       await Promise.race([
         runner.step(report, cal, degraded, Date.now() + budget, stopped),
         new Promise<void>((resolve) => {
-          this.agentPreempt = () => {
-            preempted = true;
+          this.agentPreempt = (stop) => {
+            preempted ||= stop;
             resolve();
           };
           timer = setTimeout(resolve, budget);
@@ -1094,7 +1102,8 @@ export class TradingEngineDO extends DurableObject<Env> {
    * squaring off); inside one, the agent's own coupling at its next step does it. A square-off outside a tick holds
    * the agent from the start, before main's switch is written, until the agent's own kill is done. A kill without one
    * that comes while another kill of main (or of every account) squares off does not set the agent's switch: that kill
-   * sets it after its panic, and the agent's own coupling at its next step is the backstop.
+   * sets it after its panic, or on its way out when it fails part way (agentKillAfterFailure), and the agent's own
+   * coupling at its next step is the backstop.
    */
   private async engageKill(reason: string, actor: string, squareOff: boolean, inTick = false): Promise<void> {
     const hold = squareOff && !inTick;
@@ -1102,13 +1111,15 @@ export class TradingEngineDO extends DurableObject<Env> {
       this.agentHold++;
       this.agentKillsDue++;
     }
+    let coupled = false;
     try {
-      if (hold) this.agentPreempt?.();
+      if (hold) this.agentPreempt?.(true);
       await this.setMainKill(reason, actor, squareOff);
       if (squareOff) await this.squareOffNow(reason, actor, inTick);
-      if (!inTick && (hold || this.agentKillsDue === 0)) await this.coupleAgentKill(reason, actor, squareOff);
+      if (!inTick && (hold || this.agentKillsDue === 0)) coupled = await this.coupleAgentKill(reason, actor, squareOff);
     } finally {
       if (hold) {
+        if (!coupled) await this.agentKillAfterFailure(reason, actor);
         this.agentHold--;
         this.agentKillsDue--;
       }
@@ -1117,17 +1128,36 @@ export class TradingEngineDO extends DurableObject<Env> {
 
   /**
    * Main's kill engages the agent's at once, so a main kill reset seconds later can never leave the agent trading.
-   * Called after main's square-off, so the agent's exits never delay main's. Never throws: a failure is logged and the
-   * agent's coupling at its next step is the backstop.
+   * Called after main's square-off, so the agent's exits never delay main's. Never throws: a failure is logged (false)
+   * and the agent's coupling at its next step is the backstop.
    */
-  private async coupleAgentKill(reason: string, actor: string, squareOff: boolean): Promise<void> {
-    if (!this.agentEnabled) return;
+  private async coupleAgentKill(reason: string, actor: string, squareOff: boolean): Promise<boolean> {
+    if (!this.agentEnabled) return true;
     try {
       const res = await this.agentKill({ engaged: true, squareOff, reason: `main kill switch: ${reason}` }, actor, false);
       if (!res.ok) this.rt.logger.warn("agent kill switch not engaged with main's", { message: res.message.slice(0, 200) });
+      return res.ok;
     } catch (err) {
       this.rt.logger.error("agent kill switch not engaged with main's", { error: errorMessage(err) });
+      return false;
     }
+  }
+
+  /**
+   * The way out of a kill of main or of every account that squares off and did not set the agent's switch itself (it
+   * failed part way, or its agent kill did). A kill without a square-off that came meanwhile left the switch to it, so
+   * while main's switch is on this sets the agent's now, without the agent's exits (its code exits run them at its next
+   * pass): a main reset seconds later still cannot leave the agent trading. Never throws.
+   */
+  private async agentKillAfterFailure(reason: string, actor: string): Promise<void> {
+    if (!this.agentEnabled) return;
+    try {
+      if (!(await this.rt.repo.settings.get()).killSwitch) return;
+    } catch (err) {
+      this.rt.logger.error("agent kill switch not engaged with main's", { error: errorMessage(err) });
+      return;
+    }
+    await this.coupleAgentKill(reason, actor, false);
   }
 
   /** Main's kill switch on, audited and alerted; no exits yet. */
@@ -1153,7 +1183,7 @@ export class TradingEngineDO extends DurableObject<Env> {
     }
     this.agentHold++;
     try {
-      this.agentPreempt?.();
+      this.agentPreempt?.(true);
       if (this.ticking) await this.ticking;
       await this.runTick();
       await this.relayPanic(reason, actor);
@@ -1178,8 +1208,10 @@ export class TradingEngineDO extends DurableObject<Env> {
   /**
    * Kill switch for main (default), one follower account, the agent, or "all". A follower's kill switch only
    * stops that account; its position cycles treat it as a halt and exit at market. A follower's square-off holds the
-   * agent as main's does, from before the follower's switch is written until its square-off tick is done, so the
-   * agent never delays that tick or main's next alarm.
+   * agent's step, from before the follower's switch is written until the tick in progress is done: no step starts in
+   * it, and TE stops waiting for one already running, so the agent never delays the square-off tick or main's next
+   * alarm. It stops none of the agent's work (it is not the agent's kill): a step in progress carries on, the waits run
+   * as in any tick, and the square-off tick runs the follower's exits before its own agent step.
    */
   async setKillSwitch(req: { engaged: boolean; squareOff: boolean; reason: string }, actor: string, account?: string): Promise<AdminResult> {
     const target = account === "all" ? "all" : parseAccountId(account);
@@ -1189,20 +1221,19 @@ export class TradingEngineDO extends DurableObject<Env> {
     if (target === "main") return this.setMainKillSwitch(req, actor);
     const f = this.followers.find((x) => x.spec.id === target);
     if (!f) return { ok: false, message: `account ${target} is not enabled` };
-    const hold = req.engaged && req.squareOff;
-    if (hold) this.agentHold++;
+    if (!(req.engaged && req.squareOff)) return this.followerKill(f, req, actor);
+    let res: AdminResult;
+    this.agentHold++;
     try {
       // The follower's exits come before the agent's step in a tick; a running agent step is not waited for.
-      if (hold) this.agentPreempt?.();
-      const res = await this.followerKill(f, req, actor);
-      if (hold) {
-        if (this.ticking) await this.ticking;
-        await this.runTick();
-      }
-      return res;
+      this.agentPreempt?.(false);
+      res = await this.followerKill(f, req, actor);
+      if (this.ticking) await this.ticking;
     } finally {
-      if (hold) this.agentHold--;
+      this.agentHold--;
     }
+    await this.runTick();
+    return res;
   }
 
   /**
@@ -1211,8 +1242,8 @@ export class TradingEngineDO extends DurableObject<Env> {
    * before the agent's switch is set and its own exits run: the agent never delays main's square-off, and it is held
    * from the start, before any switch is written, until its own kill is done. Without one, and for a reset, the agent's
    * switch is set in the same pass as the others; but a kill without one that comes while another kill of main (or of
-   * every account) squares off leaves the agent's switch to that kill, which sets it after its panic, with the agent's
-   * own coupling at its next step as the backstop.
+   * every account) squares off leaves the agent's switch to that kill, which sets it after its panic (or on its way out
+   * when it fails part way), with the agent's own coupling at its next step as the backstop.
    */
   private async killAllAccounts(req: { engaged: boolean; squareOff: boolean; reason: string }, actor: string): Promise<AdminResult> {
     const reason = req.reason || "manual";
@@ -1234,8 +1265,9 @@ export class TradingEngineDO extends DurableObject<Env> {
     }
     this.agentHold++;
     this.agentKillsDue++;
+    let agentSet = false;
     try {
-      this.agentPreempt?.();
+      this.agentPreempt?.(true);
       const res = await killAll(true, main, followers);
       await this.squareOffNow(reason, actor);
       if (!this.agentEnabled) return res;
@@ -1246,8 +1278,10 @@ export class TradingEngineDO extends DurableObject<Env> {
       } catch (err) {
         agent = { ok: false, message: `Agent: kill switch not engaged: ${errorMessage(err).slice(0, 200)}` };
       }
+      agentSet = agent.ok;
       return { ok: res.ok && agent.ok, message: `${res.message}; ${agent.message}` };
     } finally {
+      if (!agentSet) await this.agentKillAfterFailure(reason, actor);
       this.agentHold--;
       this.agentKillsDue--;
     }

@@ -405,11 +405,23 @@ const WITHIN_LIMITS: Record<AgentMode, string> = {
   off: "Within every limit. The agent is off: no candle is judged, so no entry is made.",
 };
 
+/** "Within every limit" while no candle is judged in any mode: the account is not switched on, paused, or past the day's model budget. */
+const NOT_JUDGING = {
+  disabled: "Within every limit, but the agent's paper account is not switched on in this engine: nothing runs, so no entry is made.",
+  paused: "Within every limit, but the operator paused the agent: no candle is judged until it is resumed, so no entry is made.",
+  costCap: "Within every limit, but today's model budget is used up: no candle is judged until tomorrow, so no entry is made.",
+} as const;
+
 /**
  * The risk panel's headline: the first of the halt, the kill switch, the day's loss cap and a risk state that is not
- * Safe, as the code blocks entries on each; "within every limit" only when none applies, in the agent mode's words.
+ * Safe, as the code blocks entries on each; "within every limit" only when none applies, in the agent mode's words, or
+ * with why no candle is judged now (not switched on, paused, or today's model budget used up).
  */
-export function riskHeadline(r: AgentRiskView, mode: AgentMode): { tone: "stopped" | "blocked" | "ok"; words: string } {
+export function riskHeadline(
+  r: AgentRiskView,
+  mode: AgentMode,
+  now: { enabled: boolean; status: Pick<AgentView["status"], "state" | "paused"> },
+): { tone: "stopped" | "blocked" | "ok"; words: string } {
   if (r.drawdownHalt) return { tone: "stopped", words: `Halted: the account fell ${pct(r.drawdownPct ?? 0)} from its peak (the limit is ${r.maxDrawdownPct}%). No new entries until you re-arm.` };
   if (r.killSwitch) return { tone: "stopped", words: `Kill switch on${r.killReason ? `: ${r.killReason}` : ""}. No new entries.` };
   if (r.dayLossPct != null && r.dayLossPct >= r.dailyLossCapPct)
@@ -422,6 +434,9 @@ export function riskHeadline(r: AgentRiskView, mode: AgentMode): { tone: "stoppe
       tone: "blocked",
       words: `No new entries now: the code's risk state is ${riskWords(r.codeRiskState)}; entries need Safe (day loss under ${ENTRY_STOP.dayLossPct}%, drawdown under ${ENTRY_STOP.drawdownPct}%, fewer than ${r.maxOpenPositions} positions open and fewer than ${ENTRY_STOP.entriesToday} entries today).`,
     };
+  if (!now.enabled) return { tone: "ok", words: NOT_JUDGING.disabled };
+  if (mode !== "off" && now.status.paused) return { tone: "ok", words: NOT_JUDGING.paused };
+  if (mode !== "off" && now.status.state === "COST_CAP") return { tone: "ok", words: NOT_JUDGING.costCap };
   return { tone: "ok", words: WITHIN_LIMITS[mode] };
 }
 

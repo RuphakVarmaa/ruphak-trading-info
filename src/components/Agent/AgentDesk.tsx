@@ -171,7 +171,7 @@ export default function AgentDesk({ initial, initialSource }: { initial: AgentVi
           </Section>
 
           <Section id="risk" title="Risk limits" sub="Hard limits in code: the model can never change or override them.">
-            <RiskPanel risk={view.risk} mode={view.mode} hasToken={hasToken} onRearm={rearm} generatedAt={view.generatedAt} />
+            <RiskPanel risk={view.risk} mode={view.mode} enabled={view.enabled} status={view.status} hasToken={hasToken} onRearm={rearm} generatedAt={view.generatedAt} />
           </Section>
 
           <Section id="calibration" title="Is the confidence honest?" sub="Calibration: how often calls at each stated confidence turned out right, and what that means for sizing.">

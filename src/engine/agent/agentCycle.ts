@@ -251,7 +251,7 @@ export interface ExecuteContext {
   timeLeftMs?: () => number;
   /** The operator's pause, read with the kill switches right before each order: true stops the batch's remaining entries (its exits already ran). */
   paused?: () => boolean;
-  /** True once a kill that squares off stops the runner's step: the decision exits not yet sent are not sent (shadow records the same). */
+  /** True once a kill of main or of every account that squares off stops the runner's step: the decision exits not yet sent are not sent (shadow records the same). */
   stopped?: () => boolean;
 }
 

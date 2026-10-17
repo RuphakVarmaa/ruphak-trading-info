@@ -16,17 +16,19 @@
  *  8. the latest closed bar's snapshots to the AgentDO, which calls the model on its own alarm: TE never waits.
  * Steps 1-4 always run, and step 6 sends the risk (and any closed trade) in every mode; in mode "off" and while
  * paused nothing else does. Every call to another Durable Object checks the deadline first and has its own timeout,
- * so a slow or silent Durable Object costs the agent's step, never main's tick. Once a kill that squares off pre-empts
- * a step (TE's stopped()), the step takes no batch, sends no record or bar and sends none of the model's exits. A
- * Telegram alert is waited for at most ALERT_WAIT_MS; it is still sent, and alerts go out in order unless an earlier
- * send is still out ALERT_QUEUE_MS after a later alert was raised.
+ * so a slow or silent Durable Object costs the agent's step, never main's tick. Once a kill of main or of every account
+ * that squares off pre-empts a step (TE's stopped()), the step takes no batch, sends no record or bar and sends none of
+ * the model's exits. A Telegram alert is waited for at most ALERT_WAIT_MS; it is still sent, and alerts go out in order
+ * unless an earlier send is still out ALERT_QUEUE_MS after a later alert was raised.
  *
  * pollStep() runs the same sequence without step 5 inside main's 10 s exit-poll waits (while main or a follower
- * account holds a position or an order). The kill coupling and the code exits always run; each later part starts, and
- * each call to another Durable Object is sent, only before the wait ends (the book always follows the risk row). A
- * part already started, a drawdown halt above all, can finish after it. A bar the step had no budget left to submit,
- * or a drawdown halt in a tick whose step TE skipped, therefore waits at most one wait; only the decisions wait for a
- * step. A kill that squares off stops it before its next part or call to another Durable Object.
+ * account holds a position or an order). The kill coupling and the code exits always run (but before the open a wait
+ * runs only the code exits, and a wait does nothing while earlier agent work, such as a step, is still running, at most
+ * STUCK_MS); each later part starts, and each call to another Durable Object is sent, only before the wait ends (the
+ * book always follows the risk row). A part already started, a drawdown halt above all, can finish after it. A bar the
+ * step had no budget left to submit, or a drawdown halt in a tick whose step TE skipped, therefore waits at most one
+ * wait; only the decisions wait for a step. A kill of main or of every account that squares off stops it before its
+ * next part or call to another Durable Object.
  *
  * The runner never reads main's market data source: the features of main's own tick are the agent's only market
  * input, so the agent can never spend main's request budget or move main's cached prices.
@@ -160,7 +162,7 @@ export interface AgentHot {
 /** How long a piece of the agent's work may run: its deadline and a kill that stops it (in TE's step and exit-poll waits). */
 interface Budget {
   deadlineMs: number;
-  /** True once a kill that squares off pre-empts the work: no call to another Durable Object is sent after it. */
+  /** True once a kill of main or of every account that squares off pre-empts the work: no call to another Durable Object is sent after it. */
   stopped?: () => boolean;
 }
 
@@ -465,8 +467,9 @@ export class AgentRunner {
 
   /**
    * A Telegram alert, waited for at most ALERT_WAIT_MS: a slow chat never holds up the agent's exits, its halt or a
-   * step's decisions, and the send carries on. It goes out after the alerts before it, unless an earlier send is still
-   * out ALERT_QUEUE_MS after this one was raised (one hung send never holds back every later alert). Never throws.
+   * step's decisions, and the send carries on. It waits for the alert before it to go out, at most ALERT_QUEUE_MS from
+   * when this one was raised (one hung send never holds back every later alert), so alerts go out in order unless an
+   * earlier send is still out ALERT_QUEUE_MS after a later alert was raised. Never throws.
    */
   private async alert(text: string, o?: { key?: string; minIntervalMs?: number }): Promise<void> {
     const before = this.alerting;
@@ -513,8 +516,9 @@ export class AgentRunner {
 
   /**
    * The whole per-tick sequence (see the module comment). Never throws; `deadlineMs` bounds its calls to other Durable
-   * Objects. Once `stopped()` is true (a kill that squares off has pre-empted it), it takes no batch, sends no record or
-   * bar, and sends none of the model's exits; its kill coupling, code exits and drawdown check run as in every step.
+   * Objects. Once `stopped()` is true (a kill of main or of every account that squares off has pre-empted it), it takes
+   * no batch, sends no record or bar, and sends none of the model's exits; its kill coupling, code exits and drawdown
+   * check run as in every step.
    */
   async step(report: CycleReport, cal: TradingCalendar, degraded: boolean, deadlineMs: number, stopped?: () => boolean): Promise<void> {
     await this.exclusive("step", () => this.pass(report, cal, { kind: "step", degraded, deadlineMs, stopped }));
@@ -526,9 +530,10 @@ export class AgentRunner {
    * TE skipped, is done within one wait. That is the kill coupling, the code exits, the drawdown check and its halt, the
    * risk row, the book, and the latest closed bar while it is unsent and fresh. The kill coupling and the code exits
    * always run; each later part starts, and each call to another Durable Object is sent, only before `deadlineMs` (the
-   * wait's end) and while `stopped()` is false (a kill that squares off), the book always following the risk row. A
-   * part already started can finish after the wait with its D1, quote and Telegram calls, and a drawdown halt always
-   * finishes. Before the open only the code exits run. Never throws; skipped while another agent step runs.
+   * wait's end) and while `stopped()` is false (a kill of main or of every account that squares off), the book always
+   * following the risk row. A part already started can finish after the wait with its D1, quote and Telegram calls, and
+   * a drawdown halt always finishes. Before the open only the code exits run. Never throws; skipped while another agent
+   * step runs.
    */
   async pollStep(report: CycleReport, cal: TradingCalendar, deadlineMs: number, stopped: () => boolean = () => false): Promise<void> {
     await this.exclusive("poll", () => this.pass(report, cal, { kind: "wait", degraded: false, deadlineMs, stopped }));

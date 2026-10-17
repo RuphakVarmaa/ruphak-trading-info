@@ -8,8 +8,10 @@
  * - the latest closed bar is submitted within its 4-minute window;
  * - a drawdown halt flattens the agent within one wait;
  * - main's waits stay 10 s and its next alarm stays 30 s after the tick's start;
- * - a kill that squares off still goes first: the agent's work in a wait stops, and main's square-off and the relay
- *   panic come exactly as early as without the agent.
+ * - a kill of main or of every account that squares off still goes first: the agent's work in a wait stops, and main's
+ *   square-off and the relay panic come exactly as early as without the agent;
+ * - a follower's square-off keeps main's timing too, and stops none of the agent's own work (its drawdown halt, the
+ *   model's exits).
  * Main's own reads and writes take 60 ms and its Telegram alerts 300 ms, and production's two follower accounts are
  * there, so a kill spends 0.4 s (main) to 1.5 s (every account) on its switches before the square-off starts. A wait or
  * step that starts in that time must not set the agent's switch, close its position or send to the AgentDO first. In
@@ -422,6 +424,7 @@ describe("a kill that squares off, with main's own writes and alerts taking real
       // When the agent's own kill switch went on (its audit rows carry the actor "…@agent"), and when its position closed.
       agentKillRows: (await h.base.audit.recent(100)).filter((a) => a.action === "kill" && a.actor.endsWith("@agent")).map((a) => from(a.ts)),
       agentExits: (await h.base.trades.recent(10, "PAPER@agent" as TradingMode)).map((t) => from(t.exitMs)),
+      agentExitReasons: (await h.base.trades.recent(10, "PAPER@agent" as TradingMode)).map((t) => t.exitReason),
     };
   }
 
@@ -468,8 +471,8 @@ describe("a kill that squares off, with main's own writes and alerts taking real
     }
   }
 
-  // A follower's kill that squares off holds the agent too, from before the follower's switch is written until its
-  // square-off tick is done: main's square-off tick and its next alarm come exactly as without the agent.
+  // A follower's kill that squares off holds the agent's step, from before the follower's switch is written until the
+  // tick in progress is done: main's square-off tick and its next alarm come exactly as without the agent.
   for (const target of ["small10k", "small5k"] as const) {
     it(`${target}, a kill in either wait or from 1.6 s before the agent's step starts to 0.4 s after: main's timing as without the agent`, async () => {
       const times = [CYCLE_MS + 200, CYCLE_MS + 10_000 + POLL_EXITS_MS + 200];
@@ -480,13 +483,42 @@ describe("a kill that squares off, with main's own writes and alerts taking real
         const at = `${target}, kill at ${atMs} ms`;
         expect(withAgent.squareOffStart, at).toBe(without.squareOffStart);
         expect(withAgent.alarms, at).toEqual(without.alarms);
-        expect(withAgent.sent, at).toEqual([]);
         expect(withAgent.hold, at).toBe(0);
         expect(withAgent.preempt, at).toBeNull();
-        // The follower's kill is that account's alone: the agent's switch stays off and its position open.
+        // The follower's kill is that account's alone: the agent's switch stays off, and only the model's own call may
+        // close its position (a step in progress carries on, and the square-off tick runs a step of its own).
         expect(withAgent.agentKill, at).toBe(false);
-        expect(withAgent.agentExits, at).toEqual([]);
+        expect(withAgent.agentExitReasons.filter((r) => r !== "SIGNAL_FLIP"), at).toEqual([]);
       }
     });
   }
+
+  it("small10k, a kill after the agent's step took its batch: the model's exit still goes out (the agent is not being killed)", async () => {
+    const atMs = MAIN_WORK_MS + 1_000;
+    const without = await kill({ agent: false, target: "small10k", atMs });
+    const withAgent = await kill({ agent: true, target: "small10k", atMs });
+    expect(withAgent.squareOffStart).toBe(without.squareOffStart);
+    expect(withAgent.alarms).toEqual(without.alarms);
+    // The model's CRISIS exit (it was recorded as not executed, and the position stayed open).
+    expect(withAgent.agentExitReasons).toEqual(["SIGNAL_FLIP"]);
+    expect(withAgent.agentKill).toBe(false);
+    expect(withAgent.hold).toBe(0);
+  });
+
+  it("small10k, a kill before the first wait: the agent's drawdown halt still flattens it within one wait", async () => {
+    const h = harness({ mainWorkMs: MAIN_WORK_MS });
+    await seedDrawdown(h);
+    void h.te.runTick();
+    await vi.advanceTimersByTimeAsync(500);
+    const killing = h.te.setKillSwitch({ engaged: true, squareOff: true, reason: "owner" }, "dashboard", "small10k");
+    await vi.advanceTimersByTimeAsync(120_000);
+    expect((await killing).ok).toBe(true);
+    // In the first wait, as without the kill (it waited for the next tick after the follower's square-off tick: the
+    // waits ran only the agent's code exits and no step ran until then).
+    const [trade] = await h.base.trades.recent(5, "PAPER@agent" as TradingMode);
+    expect(trade).toMatchObject({ positionId: "pos-1", exitReason: "KILL_SWITCH" });
+    expect(trade.exitMs).toBeLessThanOrEqual(TICK0 + CYCLE_MS + 10_000);
+    expect(await h.agentRepo.settings.get()).toMatchObject({ killSwitch: true, killReason: "max drawdown 15% reached: re-arm on the Agent page" });
+    expect(h.te.agentHold).toBe(0);
+  });
 });

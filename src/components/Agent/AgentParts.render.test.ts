@@ -7,7 +7,7 @@ import { genericFinalist } from "@/engine/agent/finalists";
 import { BUILTIN_GUIDANCE } from "@/engine/agent/prompt";
 import { agentSample } from "@/engine/agent/storeContract";
 import type { DecisionRecord, GateLine, SizingTrace } from "@/engine/agent/types";
-import { buildAgentView } from "@/engine/agent/view";
+import { buildAgentView, emptyAgentView } from "@/engine/agent/view";
 import { TradingCalendar } from "@/engine/calendar/calendar";
 import { MockAgent } from "@/lib/engine/mockAgent";
 import type { AgentReplayView, AgentSizingView } from "@/lib/engine/types";
@@ -22,7 +22,9 @@ const html = (el: ReactElement) => renderToStaticMarkup(el);
 /** The markup as the reader sees it: tags dropped, entities and spaces folded. */
 const text = (markup: string) => markup.replace(/<[^>]+>/g, " ").replace(/&#x27;|&apos;/g, "'").replace(/&amp;/g, "&").replace(/\s+/g, " ");
 const noop = async () => ({ ok: true as const });
-const riskPanel = (risk: AgentRiskView, mode: AgentMode = "paper", generatedAt = "2026-10-16T11:42:05+05:30") => html(createElement(RiskPanel, { risk, mode, hasToken: true, onRearm: noop, generatedAt }));
+/** The risk panel of an agent that is switched on, not paused and within the day's model budget (candles are judged). */
+const riskPanel = (risk: AgentRiskView, mode: AgentMode = "paper", generatedAt = "2026-10-16T11:42:05+05:30") =>
+  html(createElement(RiskPanel, { risk, mode, enabled: true, status: { state: "RUNNING", lastBarAt: null, lastError: null, paused: false }, hasToken: true, onRearm: noop, generatedAt }));
 const candidateOf = (v: AgentView): AgentCandidateView => v.candidate!;
 /** Nothing may say or imply that the agent has, found or measured an edge: once the allowed negations are gone, no "edge" is left. */
 const claimsEdge = (s: string) =>
@@ -40,7 +42,7 @@ function parts(view: AgentView, hasToken = false): ReactElement[] {
     createElement(StatusBar, { view }),
     ...view.indices.map((card) => createElement(IndexDecisionCard, { key: card.index, card, view })),
     createElement(EscalationList, { escalations: view.escalations, finalists: view.finalists, generatedAt: view.generatedAt }),
-    createElement(RiskPanel, { risk: view.risk, mode: view.mode, hasToken, onRearm: noop, generatedAt: view.generatedAt }),
+    createElement(RiskPanel, { risk: view.risk, mode: view.mode, enabled: view.enabled, status: view.status, hasToken, onRearm: noop, generatedAt: view.generatedAt }),
     createElement(CalibrationPanel, { cal: view.calibration }),
     createElement(ReviewPanel, { review: view.review, candidate: view.candidate, generatedAt: view.generatedAt, hasToken, onDecide: noop }),
     createElement(CostPanel, { cost: view.cost }),
@@ -233,6 +235,24 @@ describe("the risk panel matches the code's blocks (dashboard review M3, L8)", (
     const off = text(riskPanel(base(), "off"));
     expect(off).toContain("✓ Within every limit. The agent is off: no candle is judged, so no entry is made.");
     expect(off).not.toContain("new entries are allowed");
+  });
+
+  it("says why no candle is judged instead of 'entries are allowed' on the desk: paused, past the day's model budget, not switched on", () => {
+    const desk = (view: AgentView) => text(html(createElement(AgentDesk, { initial: view, initialSource: "mock" })));
+    const head = (t: string) => /✓ Within every limit[^.]*\./.exec(t)?.[0];
+    for (const mode of ["paper", "shadow"] as const) {
+      const at = () => istAt("2026-10-16", "11:42:05");
+      const paused = desk(new MockAgent(at, { mode, paused: true }).view());
+      expect(head(paused), mode).toBe("✓ Within every limit, but the operator paused the agent: no candle is judged until it is resumed, so no entry is made.");
+      const running = new MockAgent(at, { mode }).view();
+      const capped = desk({ ...running, status: { ...running.status, state: "COST_CAP" }, cost: { ...running.cost, capReached: true } });
+      expect(head(capped), mode).toBe("✓ Within every limit, but today's model budget is used up: no candle is judged until tomorrow, so no entry is made.");
+      // ACCOUNTS without the agent, AGENT_MODE paper or shadow: the engine's own empty view.
+      const settings = { mode, reflexModel: "r", escalationModel: "d", reviewModel: "d", dailyUsdCap: 3, escalationsPerDay: 8 };
+      const disabled = desk(emptyAgentView(istAt("2026-10-19", "11:00"), settings, false, null));
+      expect(head(disabled), mode).toBe("✓ Within every limit, but the agent's paper account is not switched on in this engine: nothing runs, so no entry is made.");
+      for (const t of [paused, capped, disabled]) expect(t, mode).not.toMatch(/new entries are allowed|would allow new entries/);
+    }
   });
 
   it("offers re-arm during a halt, 'clear the kill switch' when only the switch is on, and nothing while main's switch is on", () => {

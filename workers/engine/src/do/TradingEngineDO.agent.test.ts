@@ -2,7 +2,8 @@
  * The trading DO's glue around the options agent (TradingEngineDO.ts), on the real class methods with the Workers
  * runtime module stubbed and every collaborator a fake (a real AgentRunner where the coupling matters):
  * - a kill that squares off flattens main (and sends the relay panic) before the agent is waited for, a kill without
- *   one leaves the agent's switch to it, and a follower's square-off holds the agent too;
+ *   one leaves the agent's switch to it (set even when that kill fails part way), and a follower's square-off holds the
+ *   agent's step too, without stopping the agent's work;
  * - the agent's step never pushes main's next alarm back;
  * - main's kill switch engages the agent's at once;
  * - a failing alert, a silent AgentDO or a bad agent config never reaches main's tick, its end of day or its /status.
@@ -47,6 +48,7 @@ type KillReq = { engaged: boolean; squareOff: boolean; reason: string };
 interface Te {
   hot: { consecutiveErrors: number; lastError: string | null };
   agentHold: number;
+  agentKillsDue: number;
   agent: unknown;
   agentInitError: string | null;
   agentAlerts: { send(text: string, o?: unknown): Promise<boolean> };
@@ -224,7 +226,7 @@ describe("kills that square off: main first, the agent after", () => {
     const repo = new InMemoryRepository(DEFAULT_CONFIG, Date.now());
     const atWrite: number[] = [];
     const update = repo.settings.update.bind(repo.settings);
-    const { agent } = hangingAgent();
+    const { agent, calls } = hangingAgent();
     const te = makeTe({ rt: { logger: silentLogger, repo, calendar: cal, cfg: DEFAULT_CONFIG }, agentEnabled: true, agent, tick: fakeTick(1_000, []) });
     repo.settings.update = async (patch, by) => {
       atWrite.push(te.agentHold);
@@ -236,7 +238,7 @@ describe("kills that square off: main first, the agent after", () => {
       (err: unknown) => err as Error,
     );
     await vi.advanceTimersByTimeAsync(60_000);
-    return { res: await killing, atWrite, after: te.agentHold };
+    return { res: await killing, atWrite, after: te.agentHold, agentKills: calls.kills.length };
   }
 
   it("a kill that squares off holds the agent before main's switch is written, and always lets it go after", async () => {
@@ -247,6 +249,8 @@ describe("kills that square off: main first, the agent after", () => {
       expect(failed).toMatchObject({ atWrite: [1], after: 0 });
       if (target === "main") expect(failed.res).toEqual(new Error("D1 write failed"));
       else expect(failed.res).toMatchObject({ ok: false });
+      // Main's switch stays off, so a kill of main leaves the agent's alone on its way out; "all" sets it in its own line.
+      expect(failed.agentKills).toBe(target === "main" ? 0 : 1);
     }
   });
 
@@ -265,7 +269,7 @@ describe("kills that square off: main first, the agent after", () => {
     const f = { spec: ACCOUNTS.small10k, cfg: accountConfig(DEFAULT_CONFIG, "small10k"), repo: accountRepository(base, "small10k", accountConfig(DEFAULT_CONFIG, "small10k"), Date.now), alerts: { send: async () => true }, errors: 0 };
     expect(await squareOffDelay({ agent: false, mainWorkMs: 2_000, account: "small10k", followers: [f] })).toBe(1_000);
     expect(await squareOffDelay({ agent: true, mainWorkMs: 2_000, account: "small10k", followers: [f] })).toBe(1_000);
-    // The hold ends after the follower's square-off tick, also when its writes fail.
+    // The hold ends once the tick in progress is done, also when the follower's writes fail.
     const failing = { ...f, repo: { settings: { update: () => Promise.reject(new Error("D1 write failed")) } } };
     const { agent } = hangingAgent();
     const te = makeTe({ agentEnabled: true, agent, tick: fakeTick(1_000, []), followers: [failing] });
@@ -297,24 +301,53 @@ describe("kills that square off: main first, the agent after", () => {
     // Pre-empted: it stays stopped after the kill's hold has ended.
     expect(te.agentHold).toBe(0);
     expect(stopped()).toBe(true);
-    // A step that no kill pre-empts is stopped only while a kill that squares off holds the agent.
+    // A step that no kill pre-empts is stopped only while a kill of main or of every account squares off.
     void te.runTick();
     await vi.advanceTimersByTimeAsync(1_000);
     const next = calls.stopped.at(-1)!;
     expect(calls.stopped).toHaveLength(2);
     expect(next()).toBe(false);
-    te.agentHold++;
+    te.agentKillsDue++;
     expect(next()).toBe(true);
-    te.agentHold--;
+    te.agentKillsDue--;
+  });
+
+  it("a follower's square-off ends TE's wait for a running step without stopping it, and its square-off tick runs a step: it is not the agent's kill", async () => {
+    const base = new InMemoryRepository(DEFAULT_CONFIG, Date.now());
+    const fcfg = accountConfig(DEFAULT_CONFIG, "small10k");
+    const f = { spec: ACCOUNTS.small10k, cfg: fcfg, repo: accountRepository(base, "small10k", fcfg, Date.now), alerts: { send: async () => true }, errors: 0 };
+    const { agent, calls } = hangingAgent();
+    const starts: number[] = [];
+    const te = makeTe({ agentEnabled: true, agent, tick: fakeTick(500, starts), followers: [f] });
+    void te.runTick();
+    await vi.advanceTimersByTimeAsync(1_000);
+    expect(calls.steps).toBe(1);
+    const killAt = Date.now();
+    const killing = te.setKillSwitch({ engaged: true, squareOff: true, reason: "owner" }, "dashboard", "small10k");
+    await vi.advanceTimersByTimeAsync(60_000);
+    expect((await killing).ok).toBe(true);
+    // The square-off tick starts at once. The step in progress carries on, its batch's exits and its calls to the
+    // AgentDO included (it was stopped as if the agent were killed), and the square-off tick runs a step of its own
+    // after its exits (it was skipped, and the waits ran only the agent's code exits until then).
+    expect(starts[1] - killAt).toBe(0);
+    expect(calls.steps).toBe(2);
+    expect(calls.stopped.map((stopped) => stopped())).toEqual([false, false]);
+    expect(te.agentHold).toBe(0);
   });
 
   /**
    * A kill that squares off (`first`) and, 100 ms after it, one without a square-off (`second`, the dashboard with the
-   * box unticked), with main holding a LIVE position and one follower account. Times are from the first kill.
+   * box unticked), with main holding a LIVE position and one follower account. Times are from the first kill. With
+   * `failPanic` the relay panic's read of main's LIVE positions fails, so the first kill throws after its square-off tick.
    */
-  async function mixedKills(first: "all" | "main" | "small10k", second: "all" | "main") {
+  async function mixedKills(first: "all" | "main" | "small10k", second: "all" | "main" | null, failPanic = false) {
     const repo = new InMemoryRepository(DEFAULT_CONFIG, Date.now());
     await repo.positions.save({ id: "live-1", mode: "LIVE", status: "OPEN", index: "NIFTY", contract: { tradingSymbol: "NIFTY-LIVE" } } as unknown as Position);
+    if (failPanic) {
+      repo.positions.open = async () => {
+        throw new Error("D1: LIVE positions read failed");
+      };
+    }
     let panicAt: number | null = null;
     const { agent, calls } = hangingAgent();
     const fcfg = accountConfig(DEFAULT_CONFIG, "small10k");
@@ -334,12 +367,16 @@ describe("kills that square off: main first, the agent after", () => {
     void te.runTick();
     await vi.advanceTimersByTimeAsync(1_000);
     const killAt = Date.now();
-    const k1 = te.setKillSwitch({ engaged: true, squareOff: true, reason: "owner /kill" }, "telegram", first);
+    let k1At = Number.NaN;
+    const k1 = te.setKillSwitch({ engaged: true, squareOff: true, reason: "owner /kill" }, "telegram", first).then(
+      (res) => ((k1At = Date.now() - killAt), res),
+      (err: unknown) => ((k1At = Date.now() - killAt), err as Error),
+    );
     await vi.advanceTimersByTimeAsync(100);
-    const k2 = te.setKillSwitch({ engaged: true, squareOff: false, reason: "dashboard, box unticked" }, "dashboard", second);
+    const k2 = second ? te.setKillSwitch({ engaged: true, squareOff: false, reason: "dashboard, box unticked" }, "dashboard", second) : null;
     await vi.advanceTimersByTimeAsync(120_000);
     const [r1, r2] = await Promise.all([k1, k2]);
-    return { r1, r2, panic: (panicAt ?? Number.NaN) - killAt, kills: calls.kills.map((k) => ({ ...k, at: k.at - killAt })), hold: te.agentHold, mainKill: (await repo.settings.get()).killSwitch };
+    return { r1, r2, k1At, panic: (panicAt ?? Number.NaN) - killAt, kills: calls.kills.map((k) => ({ ...k, at: k.at - killAt })), hold: te.agentHold, mainKill: (await repo.settings.get()).killSwitch };
   }
 
   it("a kill without a square-off while one of main or of every account squares off leaves the agent's switch to that kill, after the panic", async () => {
@@ -357,12 +394,36 @@ describe("kills that square off: main first, the agent after", () => {
       expect(m.kills, at).toHaveLength(1);
       expect(m.kills[0].at, at).toBeGreaterThanOrEqual(m.panic);
       expect(m.kills[0].req, at).toMatchObject({ engaged: true, squareOff: true });
-      expect(m.r1.ok, at).toBe(true);
+      expect(m.r1, at).toMatchObject({ ok: true });
       expect(m.r2, at).toEqual(
         second === "all"
           ? { ok: true, message: `kill switch engaged; ${ACCOUNTS.small10k.shortLabel} kill switch engaged; Agent kill switch follows main's after the square-off in progress` }
           : { ok: true, message: "kill switch engaged" },
       );
+      expect(m.hold, at).toBe(0);
+    }
+  });
+
+  it("a kill of main or of every account that squares off and fails after its square-off tick still sets the agent's switch on its way out", async () => {
+    for (const [first, second] of [
+      ["all", "main"],
+      ["all", "all"],
+      ["main", "main"],
+      ["main", "all"],
+      ["all", null],
+      ["main", null],
+    ] as const) {
+      const at = `${first} with a square-off, failing at its panic, then ${second ?? "no other kill"}`;
+      const m = await mixedKills(first, second, true);
+      expect(m.r1, at).toEqual(new Error("D1: LIVE positions read failed"));
+      expect(m.mainKill, at).toBe(true);
+      // Once, as the first kill fails (the second left it to that kill), with no exits of the agent's own: its code
+      // exits close its positions at its next pass. A reset of main after that cannot leave the agent trading.
+      expect(m.kills, at).toHaveLength(1);
+      expect(m.kills[0].at, at).toBe(m.k1At);
+      expect(m.kills[0].at, at).toBeGreaterThan(20_000);
+      expect(m.kills[0].req, at).toEqual({ engaged: true, squareOff: false, reason: "main kill switch: owner /kill" });
+      if (second) expect(m.r2, at).toMatchObject({ ok: true });
       expect(m.hold, at).toBe(0);
     }
   });

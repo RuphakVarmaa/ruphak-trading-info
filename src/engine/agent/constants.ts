@@ -106,8 +106,9 @@ export const REVIEW_CALL = {
  * The TE runner's step, inside TE's tick after main's exit polls. It runs under a time budget of
  * clamp(tickStart + fromTickStartMs − now, minMs, maxMs); exits always run first. While main or a follower account holds
  * a position or an order, main's two exit-poll waits run the rest of the step but the decisions: the kill coupling and
- * the code exits always run; each later part starts, and each call to another Durable Object is sent, only before the
- * wait ends (the book always follows the risk row).
+ * the code exits always run (but before 09:15 a wait runs only the code exits, and a wait does nothing while earlier
+ * agent work, such as a step, is still running, at most 2 minutes); each later part starts, and each call to another
+ * Durable Object is sent, only before the wait ends (the book always follows the risk row).
  */
 export const AGENT_STEP = {
   fromTickStartMs: 27_000,
