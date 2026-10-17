@@ -19,3 +19,17 @@ export function flowViewAsOf(snaps: readonly ChainSnapshot[], index: IndexId, as
   );
   return m.snapshots(index).length > 0 ? m.view(index, asOfMs, { source: "feed", dte: opts.dte ?? null }) : null;
 }
+
+/** flowViewAsOf for the market feed, one call per bar close and index. */
+export class FlowAsOfCache {
+  private readonly stats: FlowStatsFile | undefined;
+
+  constructor(opts: { stats?: FlowStatsFile } = {}) {
+    this.stats = opts.stats;
+  }
+
+  /** Equal to flowViewAsOf(snaps, index, asOfMs, { stats, dte }) for any sequence of calls; incremental while asOfMs moves forward within one IST date. */
+  viewAt(snaps: readonly ChainSnapshot[], index: IndexId, asOfMs: number, dte: number | null): OptionFlowView | null {
+    return flowViewAsOf(snaps, index, asOfMs, { ...(this.stats ? { stats: this.stats } : {}), dte });
+  }
+}

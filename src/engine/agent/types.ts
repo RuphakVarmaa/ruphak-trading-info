@@ -145,6 +145,8 @@ export interface DecisionRecord extends ReflexDecision {
   sizing: SizingHint | null;
   execution: DecisionExecution | null;
   outcome: DecisionOutcome | null;
+  /** True when code, not a model, set this row's direction and confidence (the NEUTRAL 0.5 of a reflex/escalation disagreement). Never scored. */
+  codeMade?: boolean;
 }
 
 export type BatchStatus = "OK" | "FAILED" | "COST_CAP" | "OFF" | "NO_FINALISTS" | "STALE";
@@ -226,6 +228,16 @@ export interface ReplayResult {
   brierCandidate: number | null; brierCurrentReplayed: number | null; brierCurrentLive: number | null;
   firesCandidate: number; firesCurrent: number; hitRateCandidate: number | null; hitRateCurrent: number | null;
   costUsd: number; complete: boolean; cursorBarMs: number | null; label: "in-sample, not proof";
+  /** The day's candles with an OK batch: what the replay set out to judge. Fallback: bars. */
+  barsTotal?: number;
+  /** Directional calls each run labelled HIT or MISS. Fallback for each: graded. */
+  gradedCandidate?: number;
+  gradedCurrent?: number;
+  gradedLive?: number;
+  /** Calls (candle and finalist) that all three runs labelled HIT or MISS; all three Brier scores are over exactly these. `graded` now equals this. */
+  gradedCommon?: number;
+  /** Why an incomplete replay stopped; null when complete. Absent on an incomplete replay: say "stopped early" with no cause. */
+  stopReason?: "cost_cap" | "interrupted" | "no_key" | null;
 }
 export interface CandidateRecord {
   id: string; date: string; createdMs: number; baseVersion: string; guidance: string; rationale: string; wouldBeWrongIf: string;
@@ -262,9 +274,9 @@ export interface AgentStore {
   decisionsForBar(barCloseMs: number): Promise<DecisionRecord[]>;
   updateExecution(id: string, e: DecisionExecution): Promise<void>;
   updateOutcomes(rows: { id: string; outcome: DecisionOutcome }[]): Promise<void>;
-  /** Graded directional decisions (outcome HIT or MISS) dated on or after fromDate. */
+  /** Graded directional decisions (outcome HIT or MISS) dated on or after fromDate; never a codeMade row. */
   graded(fromDate: string): Promise<GradedDecision[]>;
-  /** Graded NEUTRAL decisions (outcome NEUTRAL with y set) dated on or after fromDate. */
+  /** Graded NEUTRAL decisions (outcome NEUTRAL with y set) dated on or after fromDate; never a codeMade row. */
   gradedNeutral(fromDate: string): Promise<GradedNeutral[]>;
   putCall(c: CallRecord): Promise<void>;
   calls(date: string): Promise<CallRecord[]>;
@@ -284,6 +296,8 @@ export interface AgentStore {
   latestCandidate(): Promise<CandidateRecord | null>;
   putInstruction(i: InstructionRecord): Promise<void>;
   activeInstruction(): Promise<InstructionRecord | null>;
+  /** The stored text of one guidance version, active or not; null when it was never stored. */
+  instruction?(version: string): Promise<InstructionRecord | null>;
   setActiveInstruction(version: string): Promise<void>;
   /** Inserts or replaces a job by id (also how a job is marked RUNNING). */
   putJob(j: AgentJob): Promise<void>;

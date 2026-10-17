@@ -3,7 +3,7 @@ import { MINUTE_MS, istAt, istIso } from "../clock";
 import { FlowMonitor, type ChainRow, type ChainSnapshot, type SideQuote } from "../flow/flowMonitor";
 import type { FlowStatsFile } from "../flow/flowStatsTypes";
 import type { IndexId } from "../types";
-import { flowViewAsOf } from "./flowAsOf";
+import { FlowAsOfCache, flowViewAsOf } from "./flowAsOf";
 import { optionBlock } from "./snapshot";
 
 const DAY = "2026-10-14";
@@ -76,6 +76,14 @@ describe("flowViewAsOf", () => {
     const m = new FlowMonitor({ stats: EMPTY_STATS });
     for (const s of upTo) m.ingest(s);
     expect(flowViewAsOf([...upTo, ...later], "NIFTY", asOf, { stats: EMPTY_STATS })).toEqual(m.view("NIFTY", asOf, { source: "feed", dte: null }));
+  });
+
+  it("FlowAsOfCache.viewAt gives flowViewAsOf's view", () => {
+    const cache = new FlowAsOfCache({ stats: EMPTY_STATS });
+    const all = [...upTo, ...later, ...sensex];
+    expect(cache.viewAt(all, "NIFTY", asOf, 3)).toEqual(flowViewAsOf(all, "NIFTY", asOf, { stats: EMPTY_STATS, dte: 3 }));
+    expect(cache.viewAt(all, "SENSEX", asOf, null)).toEqual(flowViewAsOf(all, "SENSEX", asOf, { stats: EMPTY_STATS, dte: null }));
+    expect(cache.viewAt([], "NIFTY", asOf, null)).toBeNull();
   });
 
   it("is null without a sample of the index at or before asOf on asOf's date", () => {

@@ -44,4 +44,22 @@ describe("parseAgentSettings", () => {
     expect(esc("100")).toBe(24);
     expect(esc("many")).toBe(8);
   });
+
+  it("reports every var that was set but not used as given, and nothing for unset or accepted ones", () => {
+    const heard: [string, string, string][] = [];
+    const s = parseAgentSettings(
+      { AGENT_MODE: "live", AGENT_ESCALATION_MODEL: "two words", AGENT_DAILY_USD_CAP: "25", AGENT_ESCALATIONS_PER_DAY: "many", AGENT_MODEL: "" },
+      (name, value, reason) => heard.push([name, value, reason]),
+    );
+    expect(s).toMatchObject({ mode: "off", escalationModel: AGENT_DEFAULTS.escalationModel, dailyUsdCap: 20, escalationsPerDay: 8 });
+    expect(heard).toEqual([
+      ["AGENT_MODE", "live", "not one of off, shadow, paper; using off"],
+      ["AGENT_ESCALATION_MODEL", "two words", `not a model id; using ${AGENT_DEFAULTS.escalationModel}`],
+      ["AGENT_DAILY_USD_CAP", "25", "outside 0..20; using 20"],
+      ["AGENT_ESCALATIONS_PER_DAY", "many", "not a number; using 8"],
+    ]);
+    const quiet: string[] = [];
+    parseAgentSettings({ AGENT_MODE: "shadow", AGENT_DAILY_USD_CAP: "3", AGENT_ESCALATIONS_PER_DAY: "8" }, (name) => quiet.push(name));
+    expect(quiet).toEqual([]);
+  });
 });

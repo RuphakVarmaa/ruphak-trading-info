@@ -1239,7 +1239,15 @@ export interface AgentDecisionView {
   actionDetail: string | null;
   /** The measured-edge check this account skips, as it would have read. */
   edge: { passed: boolean; detail: string } | null;
-  sizing: { p: number; b: number; kelly: number; riskPct: number; lots: number } | null;
+  sizing: {
+    p: number;
+    b: number;
+    kelly: number;
+    riskPct: number;
+    lots: number;
+    /** Effective (overlap-weighted) number of graded calls behind p; null or absent when unknown. */
+    n?: number | null;
+  } | null;
   outcome: { status: "PENDING" | "HIT" | "MISS" | "NEUTRAL" | "CENSORED" | "MISSING"; ret30Pct: number | null };
 }
 
@@ -1357,6 +1365,10 @@ export interface AgentCandidateView {
   baseVersion: string;
   guidance: string;
   currentGuidance: string;
+  /** The text the candidate was written against: the text the reviewed session ran with. The diff's "before". Fallback: currentGuidance. */
+  baseGuidance?: string;
+  /** APPROVED, and its text is the active one now. Fallback: status === "APPROVED". */
+  inUse?: boolean;
   rationale: string;
   wouldBeWrongIf: string;
   /**
@@ -1374,6 +1386,16 @@ export interface AgentCandidateView {
     firesCurrent: number;
     complete: boolean;
     label: "in-sample, not proof";
+    /** The day's candles with an OK batch: what the replay set out to judge. Fallback: bars. */
+    barsTotal?: number;
+    /** Directional calls each run labelled HIT or MISS. Fallback for each: graded. */
+    gradedCandidate?: number;
+    gradedCurrent?: number;
+    gradedLive?: number;
+    /** Calls (candle and finalist) that all three runs labelled HIT or MISS; all three Brier scores are over exactly these. `graded` now equals this. */
+    gradedCommon?: number;
+    /** Why an incomplete replay stopped; null when complete. Absent on an incomplete replay: say "stopped early" with no cause. */
+    stopReason?: "cost_cap" | "interrupted" | "no_key" | null;
   } | null;
   decidedAt: string | null;
   decidedBy: string | null;

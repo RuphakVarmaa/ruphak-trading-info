@@ -247,6 +247,8 @@ export interface ExecuteContext {
   acceptSyntheticQuotes?: boolean;
   /** Milliseconds left in the runner's time budget; once ≤ 0 the remaining entries are not executed. Exits always run. */
   timeLeftMs?: () => number;
+  /** The operator's pause, read with the kill switches right before each order: true stops the batch's remaining entries (its exits already ran). */
+  paused?: () => boolean;
 }
 
 const KIND_ORDER: Record<Finalist["kind"], number> = { IDEA: 0, GENERIC: 1 };
