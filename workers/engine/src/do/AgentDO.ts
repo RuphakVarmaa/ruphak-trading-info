@@ -124,7 +124,7 @@ export class AgentDO extends DurableObject<Env> {
     return res;
   }
 
-  /** The newest batch after `afterBarMs` (null when there is none yet). */
+  /** The newest batch after `afterBarMs`, with its bar's stored snapshots (null when there is none yet). */
   async takeDecisions(afterBarMs: number): Promise<ReflexBatch | null> {
     return this.brain.takeDecisions(Number(afterBarMs));
   }

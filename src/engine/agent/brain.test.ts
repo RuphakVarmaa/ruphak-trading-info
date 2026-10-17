@@ -294,6 +294,21 @@ describe("AgentBrain: bars and the reflex job", () => {
     });
   }
 
+  it("hands TE a batch with its bar's stored snapshots, the ones the model judged; the stored batch is left as it was", async () => {
+    const h = harness();
+    // The first copy reached the AgentDO although TE timed out on it; the second, without the option block, is a duplicate.
+    const first = input(bar(0));
+    const second = input(bar(0));
+    second.snapshots.NIFTY = { ...second.snapshots.NIFTY!, o: null };
+    expect(await h.brain.submitBar(first)).toEqual({ accepted: true, reason: null });
+    expect((await h.brain.submitBar(second)).reason).toBe("duplicate");
+    await h.brain.runDue(h.clock.now(), h.clock.now() + 10 * MINUTE_MS);
+    const b = (await h.brain.takeDecisions(0))!;
+    expect(b.snapshots).toEqual(first.snapshots);
+    expect(b.snapshots).toEqual(h.reflex.calls[0].input.snapshots);
+    expect((await h.store.batch(bar(0)))!.snapshots).toBeUndefined();
+  });
+
   it("never runs an interrupted job again: a RUNNING job left by a crashed alarm becomes FAILED with no call", async () => {
     const h = harness();
     await h.brain.submitBar(input(bar(0)));

@@ -189,9 +189,13 @@ export class AgentBrain {
     return { accepted: true, reason: null };
   }
 
-  /** The newest batch after `afterBarMs` (TE executes it when it is fresh), or null. */
-  takeDecisions(afterBarMs: number): Promise<ReflexBatch | null> {
-    return this.d.store.latestBatchAfter(afterBarMs);
+  /**
+   * The newest batch after `afterBarMs` (TE executes it when it is fresh), or null. It comes with its bar's snapshots as
+   * stored, the ones the model judged, so the code gate reads them even when TE has no copy of its own yet.
+   */
+  async takeDecisions(afterBarMs: number): Promise<ReflexBatch | null> {
+    const batch = await this.d.store.latestBatchAfter(afterBarMs);
+    return batch && { ...batch, snapshots: (await this.storedInput(batch.barCloseMs, [])).snapshots };
   }
 
   /**

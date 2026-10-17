@@ -12,7 +12,9 @@
  *   panic come exactly as early as without the agent.
  * Main's own reads and writes take 60 ms and its Telegram alerts 300 ms, and production's two follower accounts are
  * there, so a kill spends 0.4 s (main) to 1.5 s (every account) on its switches before the square-off starts. A wait or
- * step that starts in that time must not set the agent's switch, close its position or send to the AgentDO first.
+ * step that starts in that time must not set the agent's switch, close its position or send to the AgentDO first. In
+ * the kill tests the AgentDO has a fresh batch whose decision calls a crisis on NIFTY, where the agent holds a tagged
+ * paper position, so a step that is already running when the kill comes in has a batch to take and an exit to make.
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -38,7 +40,7 @@ import { ACCOUNTS, accountConfig } from "../../../../src/engine/accounts";
 import { buildReflexInput } from "../../../../src/engine/agent/agentCycle";
 import { latestClosedBarMs } from "../../../../src/engine/agent/causal";
 import { AGENT_POLICY } from "../../../../src/engine/agent/constants";
-import type { AgentSettings, IndexSnapshot } from "../../../../src/engine/agent/types";
+import type { AgentMode, AgentPositionTag, AgentSettings, DecisionRecord, IndexSnapshot, ReflexBatch } from "../../../../src/engine/agent/types";
 import { TradingCalendar } from "../../../../src/engine/calendar/calendar";
 import { istAt, istDate } from "../../../../src/engine/clock";
 import { DEFAULT_CONFIG } from "../../../../src/engine/config";
@@ -136,6 +138,47 @@ function agentPosition(): Position {
   };
 }
 
+/** The model calls a crisis on NIFTY: a decision exit (AGENT_CRISIS) for the agent's tagged NIFTY position. */
+const CRISIS_DECISION: DecisionRecord = {
+  id: "d-crisis",
+  date: DAY,
+  barCloseMs: BAR,
+  index: "NIFTY",
+  finalistKind: "GENERIC",
+  source: "REFLEX",
+  callId: "c-1",
+  instructionVersion: "core-1/test",
+  effective: true,
+  finalistId: "gen:NIFTY",
+  regime: "CRISIS",
+  direction: "NEUTRAL",
+  directionConfidence: 0.5,
+  toxicFlow: false,
+  setupQuality: 1,
+  riskState: "SAFE",
+  reason: "test",
+  sizing: null,
+  execution: null,
+  outcome: null,
+};
+const CRISIS_BATCH: ReflexBatch = {
+  barCloseMs: BAR,
+  date: DAY,
+  status: "OK",
+  error: null,
+  callId: "c-1",
+  instructionVersion: "core-1/test",
+  finalists: [],
+  briefId: null,
+  briefContext: null,
+  decisions: [CRISIS_DECISION],
+  exitOnly: [],
+  payoff: { b: 1, n: 0 },
+  completedMs: BAR + 40_000,
+};
+/** The tag of the agent's paper position: the model's exits apply to it. */
+const TAG: AgentPositionTag = { finalistId: "gen:NIFTY", decisionId: "d-entry", index: "NIFTY", side: "LONG" };
+
 interface Harness {
   te: Te;
   base: InMemoryRepository;
@@ -144,6 +187,8 @@ interface Harness {
   kept: Map<string, unknown>;
   /** When each bar reached the AgentDO, and which. */
   submits: { at: number; bar: number }[];
+  /** When each takeDecisions reached the AgentDO. */
+  takes: number[];
   records: number[];
   alerts: string[];
   /** Per tick: when main's poll exits started after each wait, from the tick's start. */
@@ -156,15 +201,24 @@ interface Harness {
 
 /**
  * TE positioned, its own work `mainWorkMs` a tick (its cycle and exits, two 10 s waits, 1 s of poll exits after each),
- * with a real AgentRunner on the same slow D1, or with no agent. `agentDoHangs`: the AgentDO never answers.
+ * with a real AgentRunner on the same slow D1, or with no agent. `agentDoHangs`: the AgentDO never answers. `batch`:
+ * what takeDecisions answers (none by default); `mode` and `hot`: the agent's mode and its stored state.
  */
-function harness(o: { mainWorkMs: number; agent?: boolean; agentDoHangs?: boolean }): Harness {
+function harness(o: {
+  mainWorkMs: number;
+  agent?: boolean;
+  agentDoHangs?: boolean;
+  mode?: AgentMode;
+  batch?: (afterBarMs: number) => ReflexBatch | null;
+  hot?: Partial<AgentHot>;
+}): Harness {
   // Each run starts at TICK0, without what an earlier run in the same test left running.
   vi.clearAllTimers();
   vi.setSystemTime(TICK0);
   const base = new InMemoryRepository(cfg, TICK0);
   const slow = slowRepo(base as unknown as Repository, D1_MS);
   const kept = new Map<string, unknown>();
+  if (o.hot) kept.set(HOT_KEY, structuredClone(o.hot));
   // The object returned: TE and the fakes below write into it as they run.
   const h: Harness = {
     te: Object.create(TradingEngineDO.prototype) as Te,
@@ -172,6 +226,7 @@ function harness(o: { mainWorkMs: number; agent?: boolean; agentDoHangs?: boolea
     agentRepo: accountRepository(base, "agent", agentCfg, () => Date.now()),
     kept,
     submits: [],
+    takes: [],
     records: [],
     alerts: [],
     polls: [],
@@ -189,7 +244,7 @@ function harness(o: { mainWorkMs: number; agent?: boolean; agentDoHangs?: boolea
   const runner = new AgentRunner({
     account: { spec: ACCOUNTS.agent, cfg: agentCfg, repo: accountRepository(slow, "agent", agentCfg, () => Date.now()) },
     mainRepo: slow,
-    settings: SETTINGS,
+    settings: { ...SETTINGS, mode: o.mode ?? SETTINGS.mode },
     storage: {
       get: async <T,>(k: string) => (kept.has(k) ? (structuredClone(kept.get(k)) as T) : undefined),
       put: async <T,>(k: string, v: T) => void kept.set(k, structuredClone(v)),
@@ -199,7 +254,10 @@ function harness(o: { mainWorkMs: number; agent?: boolean; agentDoHangs?: boolea
         h.submits.push({ at: Date.now(), bar: input.barCloseMs });
         return answer({ accepted: true, reason: null });
       },
-      takeDecisions: () => answer(null),
+      takeDecisions: async (afterBarMs) => {
+        h.takes.push(Date.now());
+        return answer(o.batch?.(afterBarMs) ?? null);
+      },
       recordExecution: async () => {
         h.records.push(Date.now());
         await answer(undefined);
@@ -243,6 +301,7 @@ function harness(o: { mainWorkMs: number; agent?: boolean; agentDoHangs?: boolea
     agentAlerts: { send: async () => true },
     agentPreempt: null,
     agentHold: 0,
+    agentKillsDue: 0,
     writeHeartbeat: async () => {},
     kickQuoteRecorder: () => {},
     calendarFor: () => cal,
@@ -336,11 +395,12 @@ describe("a kill that squares off, with main's own writes and alerts taking real
   const CYCLE_MS = MAIN_WORK_MS - 2 * (10_000 + POLL_EXITS_MS);
 
   /**
-   * Telegram /kill ("all", or main) `atMs` after an alarm tick's start, with main holding a LIVE position and the agent a
-   * paper one. Times are from the kill.
+   * A kill that squares off `atMs` after an alarm tick's start (Telegram /kill "all", a kill of main, or of one
+   * follower), with main holding a LIVE position, the agent a tagged paper one, and the AgentDO a fresh batch whose
+   * decision calls a crisis on it (in paper mode a running step would close the position on it). Times are from the kill.
    */
-  async function kill(o: { agent: boolean; target: "all" | "main"; atMs: number }) {
-    const h = harness({ mainWorkMs: MAIN_WORK_MS, agent: o.agent });
+  async function kill(o: { agent: boolean; target: "all" | "main" | "small10k" | "small5k"; atMs: number }) {
+    const h = harness({ mainWorkMs: MAIN_WORK_MS, agent: o.agent, mode: "paper", batch: (after) => (after < BAR ? CRISIS_BATCH : null), hot: { date: DAY, positions: { "pos-1": TAG } } });
     await h.base.positions.save({ id: "live-1", mode: "LIVE", status: "OPEN", index: "NIFTY", contract: { tradingSymbol: "NIFTY-LIVE" } } as unknown as Position);
     await h.agentRepo.positions.save(agentPosition());
     void h.te.runTick();
@@ -352,9 +412,10 @@ describe("a kill that squares off, with main's own writes and alerts taking real
     const from = (at: number) => at - killAt;
     return {
       squareOffStart: from(h.tickStarts[1]),
+      alarms: h.alarms.map(from),
       panic: from(h.panicAt ?? Number.NaN),
-      // Bars and execution records that reached the AgentDO from the kill on.
-      sent: [...h.submits.map((s) => s.at), ...h.records].filter((at) => at >= killAt).map(from),
+      // Batches taken, execution records and bars that reached the AgentDO from the kill on.
+      sent: [...h.takes, ...h.records, ...h.submits.map((s) => s.at)].filter((at) => at >= killAt).map(from),
       hold: h.te.agentHold,
       preempt: h.te.agentPreempt,
       agentKill: (await h.agentRepo.settings.get()).killSwitch,
@@ -393,15 +454,39 @@ describe("a kill that squares off, with main's own writes and alerts taking real
       });
     }
     // A kill up to 1.6 s before a wait or the step starts lands while main's (and the followers') switches are being
-    // written and alerted: the agent is held from the kill's start, not from main's square-off.
-    for (const [name, startMs] of [
-      ["the first wait", CYCLE_MS],
-      ["the second wait", CYCLE_MS + 10_000 + POLL_EXITS_MS],
-      ["the agent's step", MAIN_WORK_MS],
+    // written and alerted: the agent is held from the kill's start, not from main's square-off. A step already running
+    // takes its batch about 0.8 s in and sends the exit the model calls for about 1.25 s in: a kill before then stops it
+    // before either (an exit sent before the kill still goes through).
+    for (const [name, startMs, untilMs] of [
+      ["the first wait", CYCLE_MS, 400],
+      ["the second wait", CYCLE_MS + 10_000 + POLL_EXITS_MS, 400],
+      ["the agent's step", MAIN_WORK_MS, 1_200],
     ] as const) {
-      it(`${target}, a kill from 1.6 s before ${name} starts to 0.4 s after: main first, then the agent`, async () => {
-        for (let atMs = startMs - 1_600; atMs <= startMs + 400; atMs += 100) await expectMainFirst(target, atMs);
+      it(`${target}, a kill from 1.6 s before ${name} starts to ${untilMs / 1000} s after: main first, then the agent`, async () => {
+        for (let atMs = startMs - 1_600; atMs <= startMs + untilMs; atMs += 100) await expectMainFirst(target, atMs);
       });
     }
+  }
+
+  // A follower's kill that squares off holds the agent too, from before the follower's switch is written until its
+  // square-off tick is done: main's square-off tick and its next alarm come exactly as without the agent.
+  for (const target of ["small10k", "small5k"] as const) {
+    it(`${target}, a kill in either wait or from 1.6 s before the agent's step starts to 0.4 s after: main's timing as without the agent`, async () => {
+      const times = [CYCLE_MS + 200, CYCLE_MS + 10_000 + POLL_EXITS_MS + 200];
+      for (let atMs = MAIN_WORK_MS - 1_600; atMs <= MAIN_WORK_MS + 400; atMs += 100) times.push(atMs);
+      for (const atMs of times) {
+        const without = await kill({ agent: false, target, atMs });
+        const withAgent = await kill({ agent: true, target, atMs });
+        const at = `${target}, kill at ${atMs} ms`;
+        expect(withAgent.squareOffStart, at).toBe(without.squareOffStart);
+        expect(withAgent.alarms, at).toEqual(without.alarms);
+        expect(withAgent.sent, at).toEqual([]);
+        expect(withAgent.hold, at).toBe(0);
+        expect(withAgent.preempt, at).toBeNull();
+        // The follower's kill is that account's alone: the agent's switch stays off and its position open.
+        expect(withAgent.agentKill, at).toBe(false);
+        expect(withAgent.agentExits, at).toEqual([]);
+      }
+    });
   }
 });

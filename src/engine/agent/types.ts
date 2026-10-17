@@ -177,6 +177,8 @@ export interface ReflexBatch {
   exitOnly: DecisionRecord[];
   payoff: { b: number; n: number };
   completedMs: number;
+  /** Only in takeDecisions' answer, never stored with the batch: the bar's snapshots as the AgentDO stored them. */
+  snapshots?: ReflexInput["snapshots"];
 }
 
 export type AgentExitReason = "AGENT_REDUCE" | "AGENT_CRISIS" | "AGENT_OPPOSITE";

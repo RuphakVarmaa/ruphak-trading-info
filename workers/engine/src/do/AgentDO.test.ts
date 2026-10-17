@@ -2,7 +2,7 @@
  * The AgentDO's own guards around approve and revert (AgentDO.ts), on node:sqlite in place of the Durable Object's
  * SQLite and with the Workers runtime module stubbed: refused during the session with the window that applies, and
  * outside it the brain's answer (its own refusals included) reaches the caller unchanged. A resubmitted bar comes back
- * with the snapshots stored first.
+ * with the snapshots stored first, and so does the bar's batch.
  */
 import { DatabaseSync } from "node:sqlite";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -98,5 +98,9 @@ describe("a bar sent to the AgentDO twice", () => {
     const second: ReflexInput = { ...first, builtMs: T + 50_000, snapshots: { NIFTY: { c: 25_000, o: null } as unknown as IndexSnapshot } };
     expect(await dO.submitBar(first)).toEqual({ accepted: true, reason: null });
     expect(await dO.submitBar(second)).toEqual({ accepted: true, reason: "duplicate", snapshots: first.snapshots });
+    // The bar's batch (no API key here, so FAILED) comes to TE with those snapshots too, read back from SQLite.
+    await dO.alarm();
+    const batch = await dO.takeDecisions(T - 1);
+    expect(batch).toMatchObject({ barCloseMs: T, snapshots: first.snapshots });
   });
 });

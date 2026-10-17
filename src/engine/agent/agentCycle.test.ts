@@ -398,6 +398,26 @@ describe("executeAgentBatch", () => {
     expect((await agent.repo.positions.get(pid))?.status).toBe("OPEN");
   });
 
+  it("sends no decision exit once a kill stops the runner's step: not executed, the position left to the code exits", async () => {
+    const { agent, ctx } = await setup();
+    const x = ctx();
+    const first = await executeAgentBatch(agent, batchOf([fired()]), x);
+    const pid = exec(first, "d-long").positionId!;
+    const crisis = fired({ id: "d-crisis", regime: "CRISIS", direction: "NEUTRAL", directionConfidence: 0.5 });
+    // Shadow mode records what paper mode would have done: the same.
+    for (const mode of ["paper", "shadow"] as const) {
+      const r = await executeAgentBatch(agent, batchOf([crisis]), ctx({ mode, positions: x.positions, stopped: () => true }));
+      expect(r.exits).toEqual([]);
+      expect(exec(r, "d-crisis").action).toBe("NOT_EXECUTED");
+      expect(exec(r, "d-crisis").detail).toMatch(/^AGENT_CRISIS for \S+ not sent: a kill came in while the step ran/);
+      expect((await agent.repo.positions.get(pid))?.status).toBe("OPEN");
+    }
+    // Not stopped: the same batch closes it.
+    const r = await executeAgentBatch(agent, batchOf([crisis]), ctx({ positions: x.positions, stopped: () => false }));
+    expect(r.exits).toEqual([{ positionId: pid, decisionId: "d-crisis", reason: "AGENT_CRISIS", status: "FILLED" }]);
+    expect((await agent.repo.positions.get(pid))?.status).toBe("CLOSED");
+  });
+
   it("caps the quarter-Kelly budget on the account's capital as the planner sizes it (AMENDMENTS #22)", async () => {
     // One lot's risk at the stop, from a plain entry.
     const probe = await setup();

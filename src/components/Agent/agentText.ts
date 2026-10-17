@@ -398,11 +398,18 @@ export const ENTRY_STOP = {
   entriesToday: (ACCOUNTS.agent.configPatch.sizing?.maxTradesPerDay ?? 6) - 1,
 } as const;
 
+/** "Within every limit" in each mode's words: shadow mode places no order, and off judges no candle. */
+const WITHIN_LIMITS: Record<AgentMode, string> = {
+  paper: "Within every limit: new entries are allowed when a decision passes every check.",
+  shadow: "Within every limit: paper mode would allow new entries when a decision passes every check (shadow mode places no order).",
+  off: "Within every limit. The agent is off: no candle is judged, so no entry is made.",
+};
+
 /**
  * The risk panel's headline: the first of the halt, the kill switch, the day's loss cap and a risk state that is not
- * Safe, as the code blocks entries on each; "within every limit" only when none applies.
+ * Safe, as the code blocks entries on each; "within every limit" only when none applies, in the agent mode's words.
  */
-export function riskHeadline(r: AgentRiskView): { tone: "stopped" | "blocked" | "ok"; words: string } {
+export function riskHeadline(r: AgentRiskView, mode: AgentMode): { tone: "stopped" | "blocked" | "ok"; words: string } {
   if (r.drawdownHalt) return { tone: "stopped", words: `Halted: the account fell ${pct(r.drawdownPct ?? 0)} from its peak (the limit is ${r.maxDrawdownPct}%). No new entries until you re-arm.` };
   if (r.killSwitch) return { tone: "stopped", words: `Kill switch on${r.killReason ? `: ${r.killReason}` : ""}. No new entries.` };
   if (r.dayLossPct != null && r.dayLossPct >= r.dailyLossCapPct)
@@ -415,7 +422,7 @@ export function riskHeadline(r: AgentRiskView): { tone: "stopped" | "blocked" | 
       tone: "blocked",
       words: `No new entries now: the code's risk state is ${riskWords(r.codeRiskState)}; entries need Safe (day loss under ${ENTRY_STOP.dayLossPct}%, drawdown under ${ENTRY_STOP.drawdownPct}%, fewer than ${r.maxOpenPositions} positions open and fewer than ${ENTRY_STOP.entriesToday} entries today).`,
     };
-  return { tone: "ok", words: "Within every limit: new entries are allowed when a decision passes every check." };
+  return { tone: "ok", words: WITHIN_LIMITS[mode] };
 }
 
 /**

@@ -16,6 +16,7 @@ import type {
   AgentEscalationView,
   AgentFinalistView,
   AgentIndexCardView,
+  AgentMode,
   AgentReviewView,
   AgentRiskView,
   AgentSnapshotFieldView,
@@ -558,10 +559,11 @@ export function EscalationList({ escalations, finalists, generatedAt }: { escala
 // 4. Risk limits and re-arm
 // ---------------------------------------------------------------------------
 
-export function RiskPanel({ risk, hasToken, onRearm, generatedAt }: { risk: AgentRiskView; hasToken: boolean; onRearm: AdminAction; generatedAt: string }) {
+export function RiskPanel({ risk, mode, hasToken, onRearm, generatedAt }: { risk: AgentRiskView; mode: AgentMode; hasToken: boolean; onRearm: AdminAction; generatedAt: string }) {
   const dialog = useAdminDialog<"rearm">((_, token) => onRearm(undefined, token), hasToken);
-  // The headline names the first thing that stops entries, in the order the code checks them; green only when none does.
-  const head = riskHeadline(risk);
+  // The headline names the first thing that stops entries, in the order the code checks them; green only when none does,
+  // in the mode's words (shadow mode places no order, and off judges no candle).
+  const head = riskHeadline(risk, mode);
   // Re-arm undoes a halt (the peak restarts) or clears the kill switch alone (the peak stays); main's switch must be off.
   const rearm = rearmWords(risk);
   const dd = risk.drawdownPct ?? 0;

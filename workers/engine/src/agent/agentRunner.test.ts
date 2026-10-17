@@ -648,6 +648,69 @@ describe("AgentRunner.step", () => {
     expect(b.hot().inputs).toEqual([{ barCloseMs: BAR, snapshots: {} }]);
   });
 
+  it("gates a batch on the snapshots it comes with, the ones the model judged; without them (an older AgentDO) on its own copy", async () => {
+    const judged = { c: 25_000, o: { oa: 30, cs: 0.6, ps: 0.7 } } as unknown as IndexSnapshot;
+    const kept = { date: DAY, inputs: [{ barCloseMs: BAR, snapshots: { NIFTY: SNAP } }] };
+    const h = setup({ hot: kept });
+    h.agentDo.batches = [batch({ snapshots: { NIFTY: judged } })];
+    await h.runner.step(report(), calendar, false, LATER);
+    expect(vi.mocked(executeAgentBatch).mock.calls[0][2].snapshots).toEqual({ NIFTY: judged });
+    // Empty when the AgentDO stored none for the bar: the model judged none either.
+    const none = setup({ hot: kept });
+    none.agentDo.batches = [batch({ snapshots: {} })];
+    await none.runner.step(report(), calendar, false, LATER);
+    expect(vi.mocked(executeAgentBatch).mock.calls[1][2].snapshots).toEqual({});
+    const old = setup({ hot: kept });
+    old.agentDo.batches = [batch()];
+    await old.runner.step(report(), calendar, false, LATER);
+    expect(vi.mocked(executeAgentBatch).mock.calls[2][2].snapshots).toEqual({ NIFTY: SNAP });
+  });
+
+  it("gates a batch taken before its bar's resubmission on the copy the AgentDO stored (main flat: no wait resubmits it first)", async () => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "Date"] });
+    try {
+      vi.setSystemTime(T0);
+      const clock: Clock = { now: () => Date.now(), sleep: (ms) => new Promise((resolve) => setTimeout(resolve, ms)) };
+      const withBlock = { c: 25_000, o: { oa: 30, cs: 0.6, ps: 0.7 } } as unknown as IndexSnapshot;
+      vi.mocked(buildReflexInput).mockImplementation((a) => ({ barCloseMs: a.barCloseMs, date: istDate(a.barCloseMs), builtMs: a.nowMs, snapshots: { NIFTY: withBlock }, tokensEst: {}, closes: { NIFTY: 25_000 }, problems: [] }));
+      vi.mocked(latestClosedBarMs).mockReturnValue({ barCloseMs: BAR, complete: ["NIFTY", "SENSEX"] });
+      const agentDo = new FakeAgentDo();
+      let first = true;
+      agentDo.submit = async (input) => {
+        const answer = agentDo.store(input);
+        if (first) {
+          first = false;
+          await sleep(2_500); // past the runner's 2 s: the AgentDO stored the bar all the same
+        }
+        return answer;
+      };
+      // As the AgentDO answers: a batch comes with its bar's snapshots as stored.
+      agentDo.take = async (after) => {
+        const b = agentDo.batches.filter((x) => x.barCloseMs > after).at(-1);
+        return b ? { ...b, snapshots: structuredClone(agentDo.stored.get(b.barCloseMs) ?? {}) } : null;
+      };
+      const h = setup({ clock, agentDo });
+      const step = async () => {
+        const running = h.runner.step(report({ t: Date.now() }), calendar, false, Date.now() + AGENT_STEP.maxMs);
+        await vi.advanceTimersByTimeAsync(5_000);
+        await running;
+      };
+      await step();
+      expect(h.hot()).toMatchObject({ lastSubmittedBarMs: istMidnight(DAY), inputs: [] });
+      // The AgentDO's alarm judged the stored copy; the next step takes the batch before it resubmits the bar.
+      agentDo.batches = [batch()];
+      await vi.advanceTimersByTimeAsync(25_000);
+      await step();
+      expect(executeAgentBatch).toHaveBeenCalledTimes(1);
+      const gated = vi.mocked(executeAgentBatch).mock.calls[0][2].snapshots.NIFTY ?? null;
+      expect(gated).toEqual(withBlock);
+      expect(codeToxicity(gated, "LONG")).toEqual(codeToxicity(withBlock, "LONG"));
+      expect(agentDo.submits).toHaveLength(2);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("couples main's kill switch to the agent's; resetting main leaves the agent's on", async () => {
     const h = setup();
     await h.base.settings.update({ killSwitch: true, killReason: "operator" }, "tester");
@@ -1447,6 +1510,67 @@ describe("AgentRunner.pollStep: the step but its decisions, inside main's exit-p
     expect(h.agentDo.takes).toEqual([]);
     expect(h.agentDo.records).toEqual([]);
     expect(h.agentDo.submits).toEqual([]);
+  });
+});
+
+describe("a step that a kill pre-empts (TE's stopped())", () => {
+  const TAG: AgentPositionTag = { finalistId: "gen:NIFTY", decisionId: "d-entry", index: "NIFTY", side: "LONG" };
+
+  it("from its start: its kill coupling and code exits run; it takes no batch and sends no record or bar; the next step does", async () => {
+    vi.mocked(latestClosedBarMs).mockReturnValue({ barCloseMs: BAR, complete: ["NIFTY", "SENSEX"] });
+    const h = setup();
+    await h.agentRepo.positions.save(position());
+    await h.base.settings.update({ killSwitch: true, killReason: "operator" }, "tester");
+    h.agentDo.batches = [batch()];
+    await h.runner.step(report(), calendar, false, LATER, () => true);
+    expect((await h.agentRepo.settings.get()).killSwitch).toBe(true);
+    expect(agentPositionPass).toHaveBeenCalledTimes(1);
+    expect(h.agentDo.takes).toEqual([]);
+    expect(executeAgentBatch).not.toHaveBeenCalled();
+    expect(h.agentDo.records).toEqual([]);
+    expect(h.agentDo.submits).toEqual([]);
+    expect(h.hot()).toMatchObject({ lastExecutedBarMs: istMidnight(DAY), lastSubmittedBarMs: istMidnight(DAY) });
+
+    h.clock.advance(30_000);
+    await h.runner.step(report({ t: T0 + 30_000 }), calendar, false, LATER + 30_000);
+    expect(h.agentDo.takes).toEqual([istMidnight(DAY)]);
+    expect(executeAgentBatch).toHaveBeenCalledTimes(1);
+    expect(h.agentDo.records).toHaveLength(1);
+    expect(h.agentDo.submits.map((i) => i.barCloseMs)).toEqual([BAR]);
+  });
+
+  it("once its batch is on its way: the model's exit is not sent, the record waits in the outbox and no bar goes", async () => {
+    const real = await vi.importActual<typeof import("../../../../src/engine/agent/agentCycle")>("../../../../src/engine/agent/agentCycle");
+    vi.mocked(latestClosedBarMs).mockReturnValue({ barCloseMs: BAR, complete: ["NIFTY", "SENSEX"] });
+    const h = setup({ hot: { date: DAY, positions: { "pos-1": TAG } } });
+    await h.agentRepo.positions.save(position());
+    h.agentDo.batches = [batch({ decisions: [decision({ id: "d-crisis", regime: "CRISIS", direction: "NEUTRAL" })] })];
+    // The kill comes in while takeDecisions is on its way.
+    let killed = false;
+    const take = h.agentDo.take;
+    h.agentDo.take = async (after) => {
+      killed = true;
+      return take(after);
+    };
+    vi.mocked(executeAgentBatch).mockImplementationOnce(real.executeAgentBatch);
+    await h.runner.step(report(), calendar, false, LATER, () => killed);
+    expect(h.agentDo.takes).toEqual([istMidnight(DAY)]);
+    expect(vi.mocked(executeAgentBatch).mock.calls[0][2].stopped?.()).toBe(true);
+    // The position stays open for the code exits (and, after a kill of main, the agent's own kill); no exit is alerted.
+    expect((await h.agentRepo.positions.get("pos-1"))?.status).toBe("OPEN");
+    expect(h.alerts.filter((a) => /EXIT/.test(a))).toEqual([]);
+    expect(h.agentDo.records).toEqual([]);
+    expect(h.agentDo.submits).toEqual([]);
+    const [rec] = h.hot().outbox;
+    expect(rec.exits).toEqual([]);
+    expect(rec.decisions.map((d) => d.execution.action)).toEqual(["NOT_EXECUTED"]);
+    expect(rec.decisions[0].execution.detail).toMatch(/^AGENT_CRISIS for NIFTY26O2725000CE not sent: a kill came in/);
+
+    // The next step sends the record first, and the bar.
+    h.clock.advance(30_000);
+    await h.runner.step(report({ t: T0 + 30_000 }), calendar, false, LATER + 30_000);
+    expect(h.agentDo.records.map((r) => r.decisions.length)).toEqual([1, 0]);
+    expect(h.agentDo.submits.map((i) => i.barCloseMs)).toEqual([BAR]);
   });
 });
 

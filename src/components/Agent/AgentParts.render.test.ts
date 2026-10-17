@@ -1,7 +1,7 @@
 import { createElement, type ReactElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
-import type { AgentCandidateView, AgentDecisionView, AgentRiskView, AgentView } from "@/engine/api-types";
+import type { AgentCandidateView, AgentDecisionView, AgentMode, AgentRiskView, AgentView } from "@/engine/api-types";
 import { AGENT_DEFAULTS } from "@/engine/agent/config";
 import { genericFinalist } from "@/engine/agent/finalists";
 import { BUILTIN_GUIDANCE } from "@/engine/agent/prompt";
@@ -22,7 +22,7 @@ const html = (el: ReactElement) => renderToStaticMarkup(el);
 /** The markup as the reader sees it: tags dropped, entities and spaces folded. */
 const text = (markup: string) => markup.replace(/<[^>]+>/g, " ").replace(/&#x27;|&apos;/g, "'").replace(/&amp;/g, "&").replace(/\s+/g, " ");
 const noop = async () => ({ ok: true as const });
-const riskPanel = (risk: AgentRiskView, generatedAt = "2026-10-16T11:42:05+05:30") => html(createElement(RiskPanel, { risk, hasToken: true, onRearm: noop, generatedAt }));
+const riskPanel = (risk: AgentRiskView, mode: AgentMode = "paper", generatedAt = "2026-10-16T11:42:05+05:30") => html(createElement(RiskPanel, { risk, mode, hasToken: true, onRearm: noop, generatedAt }));
 const candidateOf = (v: AgentView): AgentCandidateView => v.candidate!;
 /** Nothing may say or imply that the agent has, found or measured an edge: once the allowed negations are gone, no "edge" is left. */
 const claimsEdge = (s: string) =>
@@ -40,7 +40,7 @@ function parts(view: AgentView, hasToken = false): ReactElement[] {
     createElement(StatusBar, { view }),
     ...view.indices.map((card) => createElement(IndexDecisionCard, { key: card.index, card, view })),
     createElement(EscalationList, { escalations: view.escalations, finalists: view.finalists, generatedAt: view.generatedAt }),
-    createElement(RiskPanel, { risk: view.risk, hasToken, onRearm: noop, generatedAt: view.generatedAt }),
+    createElement(RiskPanel, { risk: view.risk, mode: view.mode, hasToken, onRearm: noop, generatedAt: view.generatedAt }),
     createElement(CalibrationPanel, { cal: view.calibration }),
     createElement(ReviewPanel, { review: view.review, candidate: view.candidate, generatedAt: view.generatedAt, hasToken, onDecide: noop }),
     createElement(CostPanel, { cost: view.cost }),
@@ -224,8 +224,15 @@ describe("the risk panel matches the code's blocks (dashboard review M3, L8)", (
     expect(t).toContain("New entries stop from 10%");
   });
 
-  it("is green only within every limit", () => {
+  it("is green only within every limit, in the words of the agent's mode", () => {
     expect(text(riskPanel(base()))).toContain("✓ Within every limit: new entries are allowed when a decision passes every check.");
+    // Shadow mode places no order and off judges no candle: neither says that entries are allowed.
+    const shadow = text(riskPanel(base(), "shadow"));
+    expect(shadow).toContain("✓ Within every limit: paper mode would allow new entries when a decision passes every check (shadow mode places no order).");
+    expect(shadow).not.toContain("new entries are allowed");
+    const off = text(riskPanel(base(), "off"));
+    expect(off).toContain("✓ Within every limit. The agent is off: no candle is judged, so no entry is made.");
+    expect(off).not.toContain("new entries are allowed");
   });
 
   it("offers re-arm during a halt, 'clear the kill switch' when only the switch is on, and nothing while main's switch is on", () => {

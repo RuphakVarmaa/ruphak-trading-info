@@ -104,8 +104,10 @@ export const REVIEW_CALL = {
 
 /**
  * The TE runner's step, inside TE's tick after main's exit polls. It runs under a time budget of
- * clamp(tickStart + fromTickStartMs − now, minMs, maxMs); exits always run first. While main is positioned, its two
- * exit-poll waits run the rest of the step but the decisions, each part started by the wait's end.
+ * clamp(tickStart + fromTickStartMs − now, minMs, maxMs); exits always run first. While main or a follower account holds
+ * a position or an order, main's two exit-poll waits run the rest of the step but the decisions: the kill coupling and
+ * the code exits always run; each later part starts, and each call to another Durable Object is sent, only before the
+ * wait ends (the book always follows the risk row).
  */
 export const AGENT_STEP = {
   fromTickStartMs: 27_000,
@@ -115,7 +117,8 @@ export const AGENT_STEP = {
   outboxMax: 10,
   /**
    * Recorded books kept for bookAsOf. A book is recorded at each step and each exit-poll wait (three a tick while main
-   * is positioned), and a bar may wait up to AGENT_POLICY.maxDecisionAgeMs for its submission: 36 cover 6 minutes.
+   * or a follower account holds a position or an order), and a bar may wait up to AGENT_POLICY.maxDecisionAgeMs for its
+   * submission: 36 cover 6 minutes.
    */
   bookRing: 36,
 } as const;

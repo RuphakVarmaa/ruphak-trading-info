@@ -349,20 +349,30 @@ describe("the risk headline and re-arm", () => {
   });
 
   it("is green only when nothing stops entries, in the order the code checks", () => {
-    expect(riskHeadline(RISK)).toEqual({ tone: "ok", words: "Within every limit: new entries are allowed when a decision passes every check." });
+    expect(riskHeadline(RISK, "paper")).toEqual({ tone: "ok", words: "Within every limit: new entries are allowed when a decision passes every check." });
     // The dashboard review's render.test.ts: a 3.2% day loss (cap 3%) and a 1.6% one (near the limit) are not "within every limit".
-    const capped = riskHeadline({ ...RISK, dayLossPct: 3.2, codeRiskState: "REDUCE" });
+    const capped = riskHeadline({ ...RISK, dayLossPct: 3.2, codeRiskState: "REDUCE" }, "paper");
     expect(capped.tone).toBe("stopped");
     expect(capped.words).toBe("Stopped for today: today's loss 3.20% reached the 3% cap; positions closed, no new entries until the next session.");
-    const near = riskHeadline({ ...RISK, dayLossPct: 1.6, codeRiskState: "NEAR_LIMIT" });
+    const near = riskHeadline({ ...RISK, dayLossPct: 1.6, codeRiskState: "NEAR_LIMIT" }, "paper");
     expect(near.tone).toBe("blocked");
     expect(near.words).toBe(
       "No new entries now: the code's risk state is Near a limit; entries need Safe (day loss under 1.5%, drawdown under 10%, fewer than 2 positions open and fewer than 5 entries today).",
     );
-    expect(riskHeadline({ ...RISK, drawdownPct: 15.18, drawdownHalt: true, killSwitch: true, codeRiskState: "REDUCE" }).words).toBe(
+    expect(riskHeadline({ ...RISK, drawdownPct: 15.18, drawdownHalt: true, killSwitch: true, codeRiskState: "REDUCE" }, "paper").words).toBe(
       "Halted: the account fell 15.18% from its peak (the limit is 15%). No new entries until you re-arm.",
     );
-    expect(riskHeadline({ ...RISK, killSwitch: true, killReason: "main kill switch engaged at 11:30", dayLossPct: 3.2 }).words).toBe("Kill switch on: main kill switch engaged at 11:30. No new entries.");
+    expect(riskHeadline({ ...RISK, killSwitch: true, killReason: "main kill switch engaged at 11:30", dayLossPct: 3.2 }, "shadow").words).toBe("Kill switch on: main kill switch engaged at 11:30. No new entries.");
+  });
+
+  it("says what being within every limit allows in each mode: shadow places no order and off judges no candle", () => {
+    expect(riskHeadline(RISK, "shadow")).toEqual({
+      tone: "ok",
+      words: "Within every limit: paper mode would allow new entries when a decision passes every check (shadow mode places no order).",
+    });
+    expect(riskHeadline(RISK, "off")).toEqual({ tone: "ok", words: "Within every limit. The agent is off: no candle is judged, so no entry is made." });
+    // A block reads the same in every mode.
+    for (const mode of ["paper", "shadow", "off"] as const) expect(riskHeadline({ ...RISK, killSwitch: true, killReason: "manual" }, mode).words).toBe("Kill switch on: manual. No new entries.");
   });
 
   it("re-arms after a halt (the peak restarts), clears a kill switch alone (the peak stays), and is off while main's switch is on", () => {

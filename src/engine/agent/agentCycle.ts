@@ -251,6 +251,8 @@ export interface ExecuteContext {
   timeLeftMs?: () => number;
   /** The operator's pause, read with the kill switches right before each order: true stops the batch's remaining entries (its exits already ran). */
   paused?: () => boolean;
+  /** True once a kill that squares off stops the runner's step: the decision exits not yet sent are not sent (shadow records the same). */
+  stopped?: () => boolean;
 }
 
 const KIND_ORDER: Record<Finalist["kind"], number> = { IDEA: 0, GENERIC: 1 };
@@ -273,10 +275,11 @@ interface Attempt {
 
 /**
  * Executes one fresh batch (SPEC §5.2.1 as amended): decision exits first (a position with a resting exit order, or
- * no longer open in a fresh read, is left alone: EXIT_PENDING), then entries, best decisions first, each through
- * the code gate, quarter Kelly, the planner with every engine gate except the measured-edge checks, the post-plan
- * checks and a kill-switch re-read right before the order. Shadow mode places no orders and opens no positions or
- * trades; it records what paper mode would have done. One record per decision (effective and exit-only).
+ * no longer open in a fresh read, is left alone: EXIT_PENDING; none is sent once a kill has stopped the step), then
+ * entries, best decisions first, each through the code gate, quarter Kelly, the planner with every engine gate except
+ * the measured-edge checks, the post-plan checks and a kill-switch re-read right before the order. Shadow mode places
+ * no orders and opens no positions or trades; it records what paper mode would have done. One record per decision
+ * (effective and exit-only).
  */
 export async function executeAgentBatch(deps: EngineDeps, batch: ReflexBatch, x: ExecuteContext): Promise<ExecutionRecord> {
   const now = x.nowMs;
@@ -311,6 +314,10 @@ export async function executeAgentBatch(deps: EngineDeps, batch: ReflexBatch, x:
         const why = resting ? "an exit order already rests on it" : "it is no longer open";
         exits.push({ positionId: pos.id, decisionId: trig.decisionId, reason: trig.reason, status: "EXIT_PENDING" });
         note("EXIT_PENDING", `${trig.reason} for ${pos.contract.tradingSymbol} not sent: ${why}`);
+        continue;
+      }
+      if (x.stopped?.()) {
+        note("NOT_EXECUTED", `${trig.reason} for ${pos.contract.tradingSymbol} not sent: a kill came in while the step ran; the code exits still run every tick`);
         continue;
       }
       if (x.mode === "shadow") {
