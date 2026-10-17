@@ -34,7 +34,7 @@ import { optionFlowWithFallback } from "../../../../src/engine/flow/flowFallback
 import { liveIndicesWithFeed, optionChainWithFeed } from "../../../../src/engine/market/liveFeedViews";
 import type { FeedSnapshot } from "../../../../src/engine/market/upstoxFeed";
 import { UpstoxLive } from "../../../../src/engine/market/upstoxLive";
-import { accountRuntime, accountViews, advisorSettings, enabledAccounts, makeRuntime } from "../runtime";
+import { accountRuntime, accountViews, advisorSettings, enabledAccounts, logSkippedAccount, makeRuntime } from "../runtime";
 
 const KEY_META = "meta";
 const KEY_LATEST = "latest";
@@ -169,7 +169,8 @@ export class AdvisorDO extends DurableObject<Env> {
     const market = liveMarket(this.env);
     const ids = enabledAccounts(this.env);
     const a = accountRuntime(rt, "main");
-    const views = accountViews(rt, ids);
+    // An account whose config fails is left out (and logged): the brief reads main's book either way.
+    const views = accountViews(rt, ids, logSkippedAccount(rt.logger));
     const model = () =>
       new ReadModel({
         repo: a.repo,

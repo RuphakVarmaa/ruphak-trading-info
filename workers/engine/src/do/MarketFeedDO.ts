@@ -17,7 +17,6 @@
  * read); none ever carries the token or the authorized wss URL.
  */
 import { DurableObject } from "cloudflare:workers";
-import { flowViewAsOf } from "../../../../src/engine/agent/flowAsOf";
 import type { IndexId, OptionFlowView } from "../../../../src/engine/api-types";
 import { defaultCalendar } from "../../../../src/engine/calendar/calendar";
 import { istDate } from "../../../../src/engine/clock";
@@ -27,6 +26,7 @@ import { PersistentFlowMonitor, type FlowStorage } from "../../../../src/engine/
 import type { FeedSnapshot } from "../../../../src/engine/market/upstoxFeed";
 import { freshTicks, redactFeedError } from "../../../../src/engine/market/upstoxFeed";
 import { UpstoxFeedClient, type FeedSocket, type FeedStatus } from "../../../../src/engine/market/upstoxFeedClient";
+import { FlowAsOfCache } from "../flowAsOfCache";
 import { jsonLogger } from "../runtime";
 
 const MIN_ALARM_MS = 250;
@@ -50,6 +50,8 @@ async function openWorkerSocket(url: string): Promise<FeedSocket> {
 export class MarketFeedDO extends DurableObject<Env> {
   private readonly client: UpstoxFeedClient;
   private readonly flow: PersistentFlowMonitor;
+  /** The options agent's as-of reads, kept incrementally (each call ingests only the samples since the last one). */
+  private readonly flowAsOf = new FlowAsOfCache({ stats: FLOW_STATS });
   /** The epoch minute last sampled into the flow monitor. */
   private flowMinute = 0;
   private readonly logger = jsonLogger("market-feed");
@@ -163,7 +165,8 @@ export class MarketFeedDO extends DurableObject<Env> {
 
   /**
    * The option flow as it read at `asOfMs`, from this session's minute samples taken at or before it (the options
-   * agent's snapshot at a candle close; src/engine/agent/flowAsOf.ts). Null before the first sample.
+   * agent's snapshot at a candle close; the same answer as src/engine/agent/flowAsOf.ts, kept incrementally by
+   * workers/engine/src/flowAsOfCache.ts). Null before the first sample.
    */
   async getOptionFlowAsOf(index: IndexId, asOfMs: number): Promise<OptionFlowView | null> {
     if (index !== "NIFTY" && index !== "SENSEX") throw new Error("index must be NIFTY or SENSEX");
@@ -172,6 +175,6 @@ export class MarketFeedDO extends DurableObject<Env> {
     const snaps = this.flow.monitor.snapshots(index);
     const expiry = snaps[snaps.length - 1]?.expiry ?? null;
     const dte = expiry ? defaultCalendar.tradingDaysBetween(istDate(at), expiry) : null;
-    return flowViewAsOf(snaps, index, at, { stats: FLOW_STATS, dte });
+    return this.flowAsOf.viewAt(snaps, index, at, dte);
   }
 }

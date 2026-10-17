@@ -20,7 +20,7 @@ import { UPSTOX_QUOTE_SOURCE, UpstoxQuotes } from "../../../src/engine/market/up
 import { D1Repository } from "./db/d1Repository";
 import type { QuoteSource } from "./quoteRecorder";
 
-export const ENGINE_VERSION = "2026.10.17-1";
+export const ENGINE_VERSION = "2026.10.17-2";
 
 export interface Runtime {
   env: Env;
@@ -122,16 +122,31 @@ export function agentEnabled(env: Env): boolean {
   return enabledAccounts(env).includes("agent");
 }
 
-/** The options agent's mode, models and limits (Worker vars AGENT_*; defaults and bounds in src/engine/agent/config.ts). */
-export function agentSettings(env: Env): AgentSettings {
-  return parseAgentSettings({
-    AGENT_MODE: env.AGENT_MODE,
-    AGENT_MODEL: env.AGENT_MODEL,
-    AGENT_ESCALATION_MODEL: env.AGENT_ESCALATION_MODEL,
-    AGENT_REVIEW_MODEL: env.AGENT_REVIEW_MODEL,
-    AGENT_DAILY_USD_CAP: env.AGENT_DAILY_USD_CAP,
-    AGENT_ESCALATIONS_PER_DAY: env.AGENT_ESCALATIONS_PER_DAY,
-  });
+/** The AGENT_* vars as parseAgentSettings reads them. */
+type AgentVars = Parameters<typeof parseAgentSettings>[0];
+/** Called for each var the parser ignored (for example a model with no price row), with the default it used instead. */
+type OnIgnoredVar = (varName: string, value: string, reason: string) => void;
+
+/**
+ * The options agent's mode, models and limits (Worker vars AGENT_*; defaults and bounds in src/engine/agent/config.ts).
+ * With a logger, each var the parser ignored is logged as a warning (the value cut to 100 characters).
+ */
+export function agentSettings(env: Env, logger?: Pick<Logger, "warn">): AgentSettings {
+  const parse: (vars: AgentVars, onIgnored?: OnIgnoredVar) => AgentSettings = parseAgentSettings;
+  const onIgnored: OnIgnoredVar | undefined = logger
+    ? (varName, value, reason) => logger.warn("agent setting ignored: the default is used", { var: varName, value: value.slice(0, 100), reason })
+    : undefined;
+  return parse(
+    {
+      AGENT_MODE: env.AGENT_MODE,
+      AGENT_MODEL: env.AGENT_MODEL,
+      AGENT_ESCALATION_MODEL: env.AGENT_ESCALATION_MODEL,
+      AGENT_REVIEW_MODEL: env.AGENT_REVIEW_MODEL,
+      AGENT_DAILY_USD_CAP: env.AGENT_DAILY_USD_CAP,
+      AGENT_ESCALATIONS_PER_DAY: env.AGENT_ESCALATIONS_PER_DAY,
+    },
+    onIgnored,
+  );
 }
 
 export interface AccountRuntime {
@@ -146,14 +161,31 @@ export function accountRuntime(rt: Runtime, id: AccountId): AccountRuntime {
   return { spec: ACCOUNTS[id], cfg, repo: accountRepository(rt.repo, id, cfg, Date.now) };
 }
 
-export function accountViews(rt: Pick<Runtime, "cfg">, ids: AccountId[]): AccountView[] {
-  return ids.map((id) => {
-    const s = ACCOUNTS[id];
-    const view: AccountView = { id, label: s.label, shortLabel: s.shortLabel, paperOnly: s.paperOnly, capitalRupees: accountConfig(rt.cfg, id).capitalRupees };
-    // Only the agent's view carries a kind: main's and the followers' DTOs stay exactly as they were.
-    if (s.kind === "agent") view.kind = "agent";
-    return view;
-  });
+/**
+ * The enabled accounts' views. Each account's config is validated on its own: with `onError`, an account other than
+ * main whose config fails is left out and reported there, so one bad account never stops main (or the others).
+ * Main's failure always throws, and so does any failure without `onError`.
+ */
+export function accountViews(rt: Pick<Runtime, "cfg">, ids: AccountId[], onError?: (id: AccountId, err: unknown) => void): AccountView[] {
+  const views: AccountView[] = [];
+  for (const id of ids) {
+    try {
+      const s = ACCOUNTS[id];
+      const view: AccountView = { id, label: s.label, shortLabel: s.shortLabel, paperOnly: s.paperOnly, capitalRupees: accountConfig(rt.cfg, id).capitalRupees };
+      // Only the agent's view carries a kind: main's and the followers' DTOs stay exactly as they were.
+      if (s.kind === "agent") view.kind = "agent";
+      views.push(view);
+    } catch (err) {
+      if (id === "main" || !onError) throw err;
+      onError(id, err);
+    }
+  }
+  return views;
+}
+
+/** An onError for accountViews that logs the account left out. */
+export function logSkippedAccount(logger: Pick<Logger, "error">): (id: AccountId, err: unknown) => void {
+  return (id, err) => logger.error("account left out: its config failed validation", { account: id, error: errorMessage(err).slice(0, 300) });
 }
 
 export function relayClient(env: Env): RelayClient | null {

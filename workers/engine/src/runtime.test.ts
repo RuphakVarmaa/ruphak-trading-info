@@ -1,9 +1,22 @@
 import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
-import { accountConfig, followerIds } from "../../../src/engine/accounts";
+import { accountConfig, followerIds, type AccountId } from "../../../src/engine/accounts";
 import { GrowwDataClient } from "../../../src/engine/broker/groww";
+import { DEFAULT_CONFIG, withOverrides, type EngineConfig } from "../../../src/engine/config";
 import { UPSTOX_QUOTE_SOURCE, UpstoxQuotes } from "../../../src/engine/market/upstoxQuotes";
-import { accountViews, agentEnabled, agentSettings, enabledAccounts, engineConfig, liveDataSource, parseQuoteSourceChoice, quoteSourceSummary, recorderQuoteSource, upstoxLiveClient } from "./runtime";
+import {
+  accountViews,
+  agentEnabled,
+  agentSettings,
+  enabledAccounts,
+  engineConfig,
+  errorMessage,
+  liveDataSource,
+  parseQuoteSourceChoice,
+  quoteSourceSummary,
+  recorderQuoteSource,
+  upstoxLiveClient,
+} from "./runtime";
 
 const tokens = { token: async () => "t", invalidate: () => {} };
 const env = (o: Partial<Env>): Env => ({ GROWW_DATA_VIA_RELAY: "false", QUOTE_SOURCE: "auto", ...o }) as unknown as Env;
@@ -127,6 +140,26 @@ describe("accountViews", () => {
     const views = accountViews({ cfg: engineConfig(env({ CAPITAL_INR: "500000" })) }, ["main", "small10k", "small5k", "agent"]);
     expect(views.map((v) => ("kind" in v ? v.kind : "-"))).toEqual(["-", "-", "-", "agent"]);
     expect(views[3]).toEqual({ id: "agent", label: "Agent ₹5L", shortLabel: "Agent", paperOnly: true, capitalRupees: 500_000, kind: "agent" });
+  });
+
+  it("leaves out an account whose config fails and reports it, so main (and the others) still start; main's own failure throws", () => {
+    // A later change to main's defaults that is valid for main but not with the agent's pins (its square-off at 15:05).
+    const base = withOverrides(DEFAULT_CONFIG, { gates: { noEntryAfterIst: "15:10" }, exits: { squareOffIst: "15:20" }, features: { indicatorCutoffIst: "15:25" } });
+    const ids: AccountId[] = ["main", "small10k", "small5k", "agent"];
+    const skipped: string[] = [];
+    const views = accountViews({ cfg: base }, ids, (id, err) => skipped.push(`${id}: ${errorMessage(err)}`));
+    expect(views.map((v) => v.id)).toEqual(["main", "small10k", "small5k"]);
+    expect(skipped).toEqual([expect.stringMatching(/^agent: .*noEntryAfterIst must be before exits\.squareOffIst/)]);
+    // Without a handler the failure is thrown, as before.
+    expect(() => accountViews({ cfg: base }, ids)).toThrow(/noEntryAfterIst must be before exits\.squareOffIst/);
+    // Main's own config failing always throws: nothing can run without it.
+    const broken = new Proxy(base, {
+      get(t, p, r) {
+        if (p === "capitalRupees") throw new Error("CAPITAL_INR is not a number");
+        return Reflect.get(t, p, r);
+      },
+    }) as EngineConfig;
+    expect(() => accountViews({ cfg: broken }, ["main", "agent"], () => {})).toThrow(/CAPITAL_INR is not a number/);
   });
 });
 

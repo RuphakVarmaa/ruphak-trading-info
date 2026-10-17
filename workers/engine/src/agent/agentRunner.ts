@@ -14,14 +14,18 @@
  *  6. the execution record, the closed trades and the risk back to the AgentDO (an outbox keeps what it missed);
  *  7. the book the next snapshots read, kept in a ring so a bar's snapshot sees the book as of its close;
  *  8. the latest closed bar's snapshots to the AgentDO, which calls the model on its own alarm: TE never waits.
- * Steps 1-4 always run; in mode "off" and while paused nothing else does. Every remote call checks the deadline
- * first and has its own timeout, so a slow or silent Durable Object costs the agent's step, never main's tick.
+ * Steps 1-4 always run, and step 6 sends the risk (and any closed trade) in every mode; in mode "off" and while
+ * paused nothing else does. Every remote call checks the deadline first and has its own timeout, so a slow or silent
+ * Durable Object costs the agent's step, never main's tick.
+ *
+ * The runner never reads main's market data source: the features of main's own tick are the agent's only market
+ * input, so the agent can never spend main's request budget or move main's cached prices.
  *
  * Everything outside TE comes in as an interface (the AgentDO and MarketFeedDO stubs, TE's storage, the quote
  * source, Telegram), so agentRunner.test.ts runs it with fakes. It never imports cloudflare:workers.
  */
 import type { AccountSpec } from "../../../../src/engine/accounts";
-import { agentPositionPass, bookAsOf, bookFrom, buildReflexInput, executeAgentBatch, initialBook } from "../../../../src/engine/agent/agentCycle";
+import { agentPositionPass, bookAsOf, bookFrom, buildReflexInput, executeAgentBatch, initialBook, type ExecuteContext } from "../../../../src/engine/agent/agentCycle";
 import { latestClosedBarMs } from "../../../../src/engine/agent/causal";
 import { AGENT_LIMITS, AGENT_POLICY, AGENT_QUOTES, AGENT_RPC_MS, AGENT_STEP } from "../../../../src/engine/agent/constants";
 import { drawdownBreached, riskSnapshotFrom } from "../../../../src/engine/agent/risk";
@@ -92,7 +96,6 @@ export interface AgentRunnerOptions {
   feed: FlowAsOfPort;
   /** The runner's own real quote source with its own request budget (agentQuoteSource), never TE's; null: synthetic only. */
   quotes: OptionQuoteSource | null;
-  market: MarketDataSource;
   instruments: InstrumentProvider;
   /** Main's latest spot and VIX per index. Read only: the agent never writes it. */
   marketContext: MarketContextStore;
@@ -153,6 +156,31 @@ const INPUTS_KEPT = 3;
  * minute; at 15 s the requests stay within AGENT_QUOTES.maxRequestsPerMinute instead of spilling onto synthetic prices.
  */
 export const AGENT_QUOTE_CACHE_MS = 15_000;
+
+/**
+ * The market data source in the agent's deps. The agent never reads main's (its spot and candle caches and its
+ * request budget are main's), so every read fails: an entry with no features from main's tick is not taken.
+ */
+export const AGENT_NO_MARKET: MarketDataSource = {
+  snapshot: () => Promise.reject(new Error("the agent never reads main's market data source")),
+};
+
+/** The model's call in Telegram's words: the agent only buys, so a SHORT call is a bought put, never a sold call. */
+const CALL_WORDS: Record<"LONG" | "SHORT", string> = { LONG: "the model's Up call (bought a call)", SHORT: "the model's Down call (bought a put)" };
+/** Why the model's decision closed a position, in plain words. */
+const EXIT_WORDS: Record<AgentExitReason, string> = {
+  AGENT_REDUCE: "the model asked to cut risk",
+  AGENT_CRISIS: "the model saw a crisis",
+  AGENT_OPPOSITE: "the model turned confidently the other way",
+};
+
+/** An exit order's status in plain words. */
+function exitStatusWords(status: string): string {
+  if (status === "FILLED") return "filled";
+  if (status === "REJECTED" || status === "CANCELLED") return `order ${status.toLowerCase()}`;
+  if (status.startsWith("ERROR")) return `not sent: ${status.replace(/^ERROR:\s*/, "").slice(0, 120)}`;
+  return "order sent";
+}
 
 const message = (err: unknown): string => (err instanceof Error ? err.message : String(err));
 
@@ -298,7 +326,10 @@ export class AgentRunner {
     return this.clock.now();
   }
 
-  /** Paper deps on the agent's own book: a PAPER PaperBroker, and the runner's quotes with synthetic ones behind them. */
+  /**
+   * Paper deps on the agent's own book: a PAPER PaperBroker, and the runner's quotes with synthetic ones behind them.
+   * Its market source refuses every read (AGENT_NO_MARKET): the agent never touches main's.
+   */
   deps(calendar: TradingCalendar = this.o.calendar): EngineDeps {
     const { cfg, repo } = this.o.account;
     const { logger, marketContext } = this.o;
@@ -308,7 +339,7 @@ export class AgentRunner {
       ? new FallbackOptionQuotes(real, synthetic, (err) => logger.warn(`agent ${real.kind} quote failed; synthetic quote used (the agent never enters on one)`, { error: message(err) }))
       : synthetic;
     const broker = new PaperBroker({ cfg, clock: this.clock, repo, quotes: optionQuotes, marketContext: (i) => marketContext.get(i), newId: this.newId, mode: "PAPER" });
-    return { cfg, clock: this.clock, calendar, repo, broker, market: this.o.market, optionQuotes, instruments: this.o.instruments, logger, newId: this.newId, mode: "PAPER", marketContext };
+    return { cfg, clock: this.clock, calendar, repo, broker, market: AGENT_NO_MARKET, optionQuotes, instruments: this.o.instruments, logger, newId: this.newId, mode: "PAPER", marketContext };
   }
 
   // -------------------------------------------------------------------------
@@ -449,11 +480,14 @@ export class AgentRunner {
       const checked = await this.riskCheck(deps, main, now);
       let risk = checked.risk;
       const active = this.mode !== "off" && !hot.paused;
+      let rec: ExecutionRecord | null = null;
       if (active) {
-        const rec = await this.executeLatest(deps, report, cal, degraded, risk, deadlineMs);
+        rec = await this.executeLatest(deps, report, cal, degraded, risk, deadlineMs);
         if (rec) risk = rec.risk;
-        await this.report(rec, risk, deadlineMs);
       }
+      // Paused or off too: the risk (at most once a minute) and any closed trade still reach the AgentDO, so the
+      // Agent page never shows an old halt or kill switch.
+      await this.report(rec, risk, deadlineMs);
       await this.recordBook(risk);
       await this.saveHot();
       if (active) {
@@ -498,23 +532,39 @@ export class AgentRunner {
     return { risk, startEquity: rs.day.startEquity };
   }
 
-  /** Step 4: the risk snapshot and the drawdown halt: kill switch, flatten at market, no entries until a re-arm. */
+  /**
+   * Step 4: the risk snapshot and the drawdown halt: kill switch, flatten at market, no entries until a re-arm.
+   * The halt acts first (kill switch, audit, alert, exits) and latches last, so a write that fails part way leaves
+   * it unlatched and the next step does all of it again. Once latched it is checked again on every step: a kill
+   * switch that went off is put back on and the exits run again.
+   */
   private async riskCheck(deps: EngineDeps, main: EngineSettings, now: number): Promise<{ risk: AgentRiskSnapshot; startEquity: number }> {
     const hot = this.hot!;
     const repo = this.o.account.repo;
     let checked = await this.riskNow(main.killSwitch, now);
     hot.peakEquity = checked.risk.peakEquity;
-    if (drawdownBreached(checked.risk) && !hot.ddHalt) {
-      hot.ddHalt = true;
-      await this.saveHot();
-      const dd = checked.risk.ddPct;
+    if (drawdownBreached(checked.risk) || hot.ddHalt) {
       const reason = `max drawdown ${AGENT_LIMITS.maxDrawdownPct}% reached: re-arm on the Agent page`;
-      await repo.settings.update({ killSwitch: true, killReason: reason }, "engine");
-      await repo.audit.append({ ts: now, actor: "engine", action: "kill", detail: { reason, drawdownPct: dd, peakEquity: checked.risk.peakEquity, equity: checked.risk.equity } });
-      await this.alert(`🛑 down ${dd.toFixed(1)}% from its peak equity (limit ${AGENT_LIMITS.maxDrawdownPct}%): kill switch on, positions closed at market, no new entries until it is re-armed on the Agent page`);
-      // The kill switch turns every exit into a market exit now.
-      await this.codeExits(deps);
-      checked = await this.riskNow(main.killSwitch, this.now());
+      const engage = !checked.risk.killSwitch;
+      if (engage) await repo.settings.update({ killSwitch: true, killReason: reason }, "engine");
+      if (!hot.ddHalt) {
+        const dd = checked.risk.ddPct;
+        await repo.audit.append({ ts: now, actor: "engine", action: "kill", detail: { reason, drawdownPct: dd, peakEquity: checked.risk.peakEquity, equity: checked.risk.equity } });
+        await this.alert(
+          `🛑 down ${dd.toFixed(1)}% from its peak equity (limit ${AGENT_LIMITS.maxDrawdownPct}%): kill switch on, positions closed at market, no new entries until it is re-armed on the Agent page`,
+          { key: "agent-dd-halt", minIntervalMs: 6 * 60 * MINUTE_MS },
+        );
+      }
+      // With the kill switch on every exit is a market exit. A latched halt whose switch was already on had its exits
+      // run with the switch on in step 3 of this same step.
+      if (engage || !hot.ddHalt) {
+        await this.codeExits(deps);
+        if (!hot.ddHalt) {
+          hot.ddHalt = true;
+          await this.saveHot();
+        }
+        checked = await this.riskNow(main.killSwitch, this.now());
+      }
     }
     hot.lastRisk = checked.risk;
     return checked;
@@ -543,7 +593,7 @@ export class AgentRunner {
     if (ageMs > AGENT_POLICY.maxDecisionAgeMs) {
       return notExecuted(batch, risk, now, `stale: taken ${Math.round(ageMs / 1000)} s after the candle closed (limit ${AGENT_POLICY.maxDecisionAgeMs / MINUTE_MS} min)`);
     }
-    const rec = await executeAgentBatch(deps, batch, {
+    const ctx: ExecuteContext & { paused?: () => boolean } = {
       mode: this.mode === "paper" ? "paper" : "shadow",
       nowMs: now,
       calendar: cal,
@@ -558,7 +608,10 @@ export class AgentRunner {
       positions: hot.positions,
       trades: await this.todayTrades(now),
       timeLeftMs: () => deadlineMs - this.now(),
-    });
+      // The operator's pause, read with the kill switches before each order: a pause stops the rest of a running batch.
+      paused: () => this.hot?.paused === true,
+    };
+    const rec = await executeAgentBatch(deps, batch, ctx);
     this.rememberTags(rec);
     await this.saveHot();
     await this.alertActions(batch, rec);
@@ -575,18 +628,23 @@ export class AgentRunner {
     }
   }
 
-  /** Telegram for paper orders only (shadow mode places none). Plain alerts: the agent never sends copy-trade tickets. */
+  /**
+   * Telegram for paper orders only (shadow mode places none), in plain words: the agent only buys, so the model's
+   * Up call buys a call and its Down call buys a put. Plain alerts: the agent never sends copy-trade tickets.
+   */
   private async alertActions(batch: ReflexBatch, rec: ExecutionRecord): Promise<void> {
     if (this.mode !== "paper") return;
     for (const { decisionId, execution: e } of rec.decisions) {
       if (e.action !== "ENTERED" && e.action !== "ENTRY_PENDING") continue;
       const d = batch.decisions.find((x) => x.id === decisionId);
-      const call = d ? ` on a ${d.direction} call (confidence ${d.directionConfidence.toFixed(2)}, setup ${d.setupQuality}, ${d.finalistId})` : "";
-      await this.alert(`ENTRY ${e.tradingSymbol ?? "?"}${e.sizing ? ` ${e.sizing.lots} lot${e.sizing.lots === 1 ? "" : "s"}` : ""} (${e.action === "ENTERED" ? "filled" : "order resting"})${call}`);
+      const call =
+        d && d.direction !== "NEUTRAL" ? ` on ${CALL_WORDS[d.direction]}: confidence ${d.directionConfidence.toFixed(2)}, setup ${d.setupQuality}, ${d.finalistId}` : "";
+      await this.alert(`ENTRY ${e.tradingSymbol ?? "?"}${e.sizing ? ` ${e.sizing.lots} lot${e.sizing.lots === 1 ? "" : "s"}` : ""} (${e.action === "ENTERED" ? "filled" : "order sent"})${call}`);
     }
     for (const x of rec.exits) {
       if (x.status === "EXIT_PENDING") continue;
-      await this.alert(`EXIT ${x.positionId} on the model's call: ${x.reason} (${x.status})`);
+      const symbol = (await this.o.account.repo.positions.get(x.positionId).catch(() => null))?.contract.tradingSymbol ?? x.positionId;
+      await this.alert(`EXIT ${symbol} on the model's call: ${EXIT_WORDS[x.reason]} (${exitStatusWords(x.status)})`);
     }
   }
 
@@ -655,13 +713,18 @@ export class AgentRunner {
     if (box.length > AGENT_STEP.outboxMax) box.splice(0, box.length - AGENT_STEP.outboxMax);
   }
 
-  /** Step 7: the book as of now (the snapshots of later bars read it), and the tags of positions that closed. */
+  /**
+   * Step 7: the book as of now (the snapshots of later bars read it), and the tags of positions that closed. It is
+   * stamped after its positions are read: the marks the exits just set are then at or before its time (so the
+   * snapshot shows the open P&L), and a fill made after a bar's close can never reach that bar's book.
+   */
   private async recordBook(risk: AgentRiskSnapshot): Promise<void> {
     const hot = this.hot!;
     const open = await this.o.account.repo.positions.open("PAPER");
+    const t = this.now();
     const ids = new Set(open.map((p) => p.id));
     for (const id of Object.keys(hot.positions)) if (!ids.has(id)) delete hot.positions[id];
-    hot.books.push(bookFrom(risk, open, (p) => p.contract.lotSize));
+    hot.books.push(bookFrom({ ...risk, t }, open, (p) => p.contract.lotSize));
     if (hot.books.length > AGENT_STEP.bookRing) hot.books.splice(0, hot.books.length - AGENT_STEP.bookRing);
   }
 
@@ -689,8 +752,11 @@ export class AgentRunner {
     }
     const allComplete = cfg.indices.every((i) => bar.complete.includes(i));
     if (bar.complete.length === 0 || (!allComplete && now < t + AGENT_POLICY.incompleteBarWaitMs)) return;
-    if (!this.has(deadlineMs, AGENT_RPC_MS.flowAsOf + AGENT_RPC_MS.submitBar)) return;
-    const flows = await this.flowsAt(bar.complete, t);
+    // Only the submission is reserved; the flow read gets what is left, up to its own timeout. A flow that does not
+    // come in time only drops that index's option block (and the gate then blocks its entries), never the bar.
+    if (!this.has(deadlineMs, AGENT_RPC_MS.submitBar + 500)) return;
+    const flowMs = Math.min(AGENT_RPC_MS.flowAsOf, deadlineMs - this.now() - AGENT_RPC_MS.submitBar - 300);
+    const flows = await this.flowsAt(bar.complete, t, flowMs);
     const events = await this.o.mainRepo.events.active(t - cfg.events.staleAfterHours * HOUR_MS);
     const fallback = initialBook(prevRisk && prevRisk.t <= t ? prevRisk : null, startEquity, istMidnight(istDate(t)));
     const input = buildReflexInput({
@@ -717,12 +783,12 @@ export class AgentRunner {
     if (!res.value.accepted) this.o.logger.info("agent bar not accepted", { bar: hhmm(t), reason: res.value.reason });
   }
 
-  /** The option flow as of the bar close for each index, in parallel; null for an index whose feed did not answer. */
-  private async flowsAt(indices: readonly IndexId[], t: number): Promise<Partial<Record<IndexId, OptionFlowView | null>>> {
+  /** The option flow as of the bar close for each index, in parallel; null for an index whose feed did not answer within `ms`. */
+  private async flowsAt(indices: readonly IndexId[], t: number, ms: number = AGENT_RPC_MS.flowAsOf): Promise<Partial<Record<IndexId, OptionFlowView | null>>> {
     const out: Partial<Record<IndexId, OptionFlowView | null>> = {};
     await Promise.all(
       indices.map(async (index) => {
-        const r = await within(() => this.o.feed.getOptionFlowAsOf(index, t), AGENT_RPC_MS.flowAsOf);
+        const r = await within(() => this.o.feed.getOptionFlowAsOf(index, t), ms);
         out[index] = "error" in r ? null : r.value;
       }),
     );
@@ -824,7 +890,10 @@ export class AgentRunner {
     return { ok: true, message: `${spec.shortLabel} kill switch engaged` };
   }
 
-  /** The Agent page's Re-arm: clears the drawdown halt and the kill switch; the peak equity restarts at the current equity. */
+  /**
+   * The Agent page's Re-arm: clears the drawdown halt and the kill switch. After a halt the peak equity restarts at
+   * the current equity; clearing a kill switch alone keeps measuring the drawdown from the old peak.
+   */
   async rearm(actor: string): Promise<AgentResult> {
     try {
       return await this.locked("re-arm", () => this.rearmNow(actor));
@@ -844,12 +913,27 @@ export class AgentRunner {
     const equity = riskSnapshotFrom(rs, null, { killSwitch: false, killReason: null, mainKillSwitch: false, ddHalt: false, nowMs: now }).equity;
     const wasHalted = hot.ddHalt;
     hot.ddHalt = false;
-    hot.peakEquity = equity;
+    if (wasHalted) hot.peakEquity = equity;
     await this.saveHot();
     await repo.settings.update({ killSwitch: false, killReason: null }, actor);
-    await repo.audit.append({ ts: now, actor, action: "agent_rearm", detail: { equity, wasHalted, killReason: settings.killReason } });
-    await this.alert(`✅ re-armed by ${actor}: kill switch off, drawdown now measured from ₹${equity.toFixed(0)}`);
-    return { ok: true, message: `${spec.shortLabel} re-armed: kill switch off; peak equity restarts at ₹${equity.toFixed(0)}` };
+    // The risk from now on (no halt, no kill switch): kept as the latest and sent to the AgentDO at once, so the
+    // Agent page drops the halt without waiting for the next step (none comes after the close, or while paused).
+    const fresh = riskSnapshotFrom(rs, hot.peakEquity, { killSwitch: false, killReason: null, mainKillSwitch: main.killSwitch, ddHalt: false, nowMs: now });
+    const peak = fresh.peakEquity;
+    hot.peakEquity = peak;
+    hot.lastRisk = fresh;
+    await this.saveHot();
+    await repo.audit.append({ ts: now, actor, action: "agent_rearm", detail: { equity, peakEquity: peak, wasHalted, killReason: settings.killReason } });
+    if (wasHalted) await this.alert(`✅ re-armed by ${actor}: kill switch off, drawdown now measured from ₹${equity.toFixed(0)}`);
+    else await this.alert(`✅ kill switch cleared by ${actor}; drawdown still measured from ₹${peak.toFixed(0)}`);
+    // Best effort: a failure is logged, and the next step's risk row corrects it.
+    if (!(await this.send({ barCloseMs: hot.lastExecutedBarMs, t: now, decisions: [], exits: [], trades: [], risk: fresh }))) {
+      this.o.logger.warn("agent re-arm: the new risk did not reach the AgentDO; the next step's risk row corrects it");
+    }
+    await this.saveHot();
+    return wasHalted
+      ? { ok: true, message: `${spec.shortLabel} re-armed: kill switch off; peak equity restarts at ₹${equity.toFixed(0)}` }
+      : { ok: true, message: `${spec.shortLabel} re-armed: kill switch off; drawdown still measured from ₹${peak.toFixed(0)}` };
   }
 
   /** /ops/agent-pause: while paused only the code exits (and the kill-switch and drawdown checks behind them) run. */

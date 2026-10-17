@@ -1,12 +1,12 @@
 import { DatabaseSync } from "node:sqlite";
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { agentStoreContract } from "../../../../src/engine/agent/storeContract";
 import type { AgentJob, CallRecord, DecisionOutcome, DecisionRecord, InstructionRecord, ReflexBatch, StoredBar } from "../../../../src/engine/agent/types";
 import { AGENT_SQL_VERSION, SqlAgentStore, migrateAgentSql, type AgentSql, type AgentSqlValue } from "./sqlAgentStore";
 
 /**
  * node:sqlite in place of a Durable Object's SqlStorage: exec(query, ...bindings) runs one statement now; rows
- * come back for statements that return them (SELECT, WITH, RETURNING) and an empty list otherwise.
+ * come back for statements that return them (SELECT, WITH, PRAGMA, RETURNING) and an empty list otherwise.
  */
 function nodeSql(): AgentSql & { db: DatabaseSync } {
   const db = new DatabaseSync(":memory:");
@@ -14,7 +14,7 @@ function nodeSql(): AgentSql & { db: DatabaseSync } {
     db,
     exec<T extends Record<string, AgentSqlValue>>(query: string, ...bindings: AgentSqlValue[]) {
       const stmt = db.prepare(query);
-      if (/^\s*(SELECT|WITH)\b/i.test(query) || /\bRETURNING\b/i.test(query)) {
+      if (/^\s*(SELECT|WITH|PRAGMA)\b/i.test(query) || /\bRETURNING\b/i.test(query)) {
         const rows = stmt.all(...bindings) as T[];
         return { toArray: () => rows };
       }
@@ -288,5 +288,104 @@ describe("SqlAgentStore", () => {
     const [d] = await s.decisions(D);
     d.reason = "mutated";
     expect((await s.decisions(D))[0].reason).toBe("r5 and r15 agree");
+  });
+});
+
+describe("instruction(version)", () => {
+  it("returns any stored guidance text by its version, active or not, and null for one never stored", async () => {
+    const s = freshStore();
+    await s.putInstruction(instruction({ version: "core-2/builtin0", guidance: "- the built-in text" }));
+    await s.putInstruction(instruction({ version: "core-2/cand0001", guidance: "- a candidate's text", source: "CANDIDATE", candidateId: "cand-1", createdMs: T0 + 1, active: true }));
+    // The built-in text is retired, and still readable: the review judges a session by the text it ran with.
+    expect(await s.instruction("core-2/builtin0")).toMatchObject({ version: "core-2/builtin0", guidance: "- the built-in text", active: false });
+    expect(await s.instruction("core-2/cand0001")).toMatchObject({ guidance: "- a candidate's text", active: true, candidateId: "cand-1" });
+    expect(await s.instruction("core-2/never")).toBeNull();
+  });
+});
+
+/** A decision the code made (a disagreement's NEUTRAL 0.5): the flag the engine sets, written as a plain field. */
+const codeMade = (o: Partial<DecisionRecord>): DecisionRecord => ({ ...decision(o), codeMade: true }) as DecisionRecord;
+
+describe("schema 2: the calibration reads use columns only", () => {
+  afterEach(() => vi.restoreAllMocks());
+
+  it("migrates a version 1 database: adds paid and code_made, filled from each stored body", async () => {
+    const sql = nodeSql();
+    // The version 1 table and two rows as version 1 wrote them.
+    sql.exec(`CREATE TABLE decisions (id TEXT PRIMARY KEY, date TEXT NOT NULL, bar_ms INTEGER NOT NULL, idx TEXT NOT NULL,
+      finalist_id TEXT NOT NULL, kind TEXT NOT NULL, source TEXT NOT NULL, version TEXT NOT NULL, effective INTEGER NOT NULL,
+      direction TEXT NOT NULL, confidence REAL NOT NULL, outcome_status TEXT, y INTEGER, body TEXT NOT NULL)`);
+    sql.exec("CREATE TABLE meta (k TEXT PRIMARY KEY, v TEXT NOT NULL)");
+    sql.exec("INSERT INTO meta (k, v) VALUES ('sql:schema', '1')");
+    const v1 = (d: DecisionRecord) =>
+      sql.exec(
+        "INSERT INTO decisions (id, date, bar_ms, idx, finalist_id, kind, source, version, effective, direction, confidence, outcome_status, y, body) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        d.id, d.date, d.barCloseMs, d.index, d.finalistId, d.finalistKind, d.source, d.instructionVersion, d.effective ? 1 : 0, d.direction, d.directionConfidence, d.outcome?.status ?? null, d.outcome?.y ?? null, JSON.stringify(d),
+      );
+    v1(decision({ id: "paid", outcome: outcome({ paid: true }) }));
+    v1(decision({ id: "unpaid", direction: "SHORT", outcome: outcome({ status: "MISS", y: 0, paid: false }) }));
+    v1(codeMade({ id: "code", direction: "NEUTRAL", directionConfidence: 0.5, outcome: outcome({ status: "NEUTRAL", y: 1, paid: null }) }));
+    v1(decision({ id: "open" }));
+    migrateAgentSql(sql);
+    expect(sql.exec<{ v: string }>("SELECT v FROM meta WHERE k = 'sql:schema'").toArray()).toEqual([{ v: "2" }]);
+    expect(sql.exec<{ id: string; paid: number | null; code_made: number }>("SELECT id, paid, code_made FROM decisions ORDER BY rowid").toArray()).toEqual([
+      { id: "paid", paid: 1, code_made: 0 },
+      { id: "unpaid", paid: 0, code_made: 0 },
+      { id: "code", paid: null, code_made: 1 },
+      { id: "open", paid: null, code_made: 0 },
+    ]);
+    // Migrating again changes nothing.
+    migrateAgentSql(sql);
+    const s = new SqlAgentStore(sql);
+    expect((await s.graded(D)).map((g) => [g.id, g.paid])).toEqual([
+      ["paid", true],
+      ["unpaid", false],
+    ]);
+    expect(await s.gradedNeutral(D)).toEqual([]);
+  });
+
+  it("graded() and gradedNeutral() parse no decision body and return what they returned before", async () => {
+    const s = freshStore();
+    const rows: DecisionRecord[] = [];
+    for (let i = 0; i < 40; i++) {
+      const dir = i % 4 === 0 ? "NEUTRAL" : i % 2 ? "LONG" : "SHORT";
+      const o =
+        dir === "NEUTRAL"
+          ? outcome({ status: "NEUTRAL", y: i % 8 === 0 ? 1 : 0, paid: null })
+          : i % 5 === 0
+            ? outcome({ status: "CENSORED", y: null, paid: null, source: null })
+            : outcome({ status: i % 3 ? "HIT" : "MISS", y: i % 3 ? 1 : 0, paid: i % 3 ? i % 2 === 1 : false });
+      rows.push(decision({ id: `d${i}`, index: i % 2 ? "NIFTY" : "SENSEX", barCloseMs: T0 + Math.floor(i / 2) * 300_000, direction: dir, directionConfidence: 0.5 + (i % 10) / 25, source: i % 7 === 0 ? "ESCALATION" : "REFLEX", effective: i % 7 !== 0, outcome: o }));
+    }
+    await s.putDecisions(rows);
+    const parse = vi.spyOn(JSON, "parse");
+    const graded = await s.graded(D);
+    const neutral = await s.gradedNeutral(D);
+    expect(parse).not.toHaveBeenCalled();
+    parse.mockRestore();
+    // The same rows the body-parsing reads gave.
+    const expectedGraded = rows
+      .filter((d) => d.direction !== "NEUTRAL" && (d.outcome?.status === "HIT" || d.outcome?.status === "MISS"))
+      .map((d) => ({ id: d.id, date: d.date, barCloseMs: d.barCloseMs, index: d.index, finalistKind: d.finalistKind, source: d.source, instructionVersion: d.instructionVersion, effective: d.effective, direction: d.direction, directionConfidence: d.directionConfidence, y: d.outcome!.y, paid: d.outcome!.paid === true }));
+    expect(graded).toEqual(expectedGraded);
+    const expectedNeutral = rows
+      .filter((d) => d.outcome?.status === "NEUTRAL")
+      .map((d) => ({ id: d.id, date: d.date, barCloseMs: d.barCloseMs, index: d.index, finalistKind: d.finalistKind, source: d.source, instructionVersion: d.instructionVersion, effective: d.effective, directionConfidence: d.directionConfidence, y: d.outcome!.y }));
+    expect(neutral).toEqual(expectedNeutral);
+    expect(graded.length).toBeGreaterThan(10);
+    expect(neutral.length).toBeGreaterThan(5);
+  });
+
+  it("never scores a decision the code made, in either read", async () => {
+    const s = freshStore();
+    await s.putDecisions([
+      decision({ id: "model", outcome: outcome({}) }),
+      codeMade({ id: "code-n", direction: "NEUTRAL", directionConfidence: 0.5, outcome: outcome({ status: "NEUTRAL", y: 1, paid: null }) }),
+      codeMade({ id: "code-d", outcome: outcome({}) }),
+    ]);
+    expect((await s.graded(D)).map((g) => g.id)).toEqual(["model"]);
+    expect(await s.gradedNeutral(D)).toEqual([]);
+    // The record itself is kept whole.
+    expect((await s.decisions(D)).find((d) => d.id === "code-n")).toMatchObject({ codeMade: true });
   });
 });

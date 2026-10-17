@@ -7,7 +7,8 @@
  * jobs (AgentBrain.runDue): the reflex call, escalations to the deep model, the nightly review and the candidate's
  * replay, never inside TE's tick. TE takes the decisions on a later tick and executes them through code: this object
  * never places an order. A candidate guidance text from the nightly review waits for the operator's Approve or
- * Reject on the Agent page; approve and revert happen only outside the session.
+ * Reject on the Agent page. Approve and revert are refused during the session (here, then in the brain) and, by the
+ * brain, from the close until that day's review and replay finish, so the review judges the text the session ran with.
  *
  * Uses the existing ANTHROPIC_API_KEY secret; never logs the key, a prompt or a model's raw answer.
  */
@@ -37,6 +38,8 @@ const ADVISOR_CACHE_MS = 5 * MINUTE_MS;
 const ADVISOR_RETRY_MS = MINUTE_MS;
 /** meta key: the last date whose review the end of day scheduled (TE and the POSTMARKET cron both ask; one review a day). */
 const REVIEW_SCHEDULED_KEY = "do:review-scheduled";
+/** When approve and revert are allowed: before the session, or once the day's review and its replay have finished. */
+const OUTSIDE_THE_JUDGED_DAY = "before 09:15 IST, or after today's review and replay finish (about 16:20–16:45 IST)";
 const DATE = /^\d{4}-\d{2}-\d{2}$/;
 
 /** One token count: a stored snapshot (the newest per index) or the synthetic worst case. */
@@ -71,7 +74,7 @@ export class AgentDO extends DurableObject<Env> {
   constructor(ctx: DurableObjectState, env: Env) {
     super(ctx, env);
     this.rt = makeRuntime(env, "agent");
-    this.settings = agentSettings(env);
+    this.settings = agentSettings(env, this.rt.logger);
     const sql = ctx.storage.sql;
     this.store = new SqlAgentStore(sql);
     void ctx.blockConcurrencyWhile(async () => {
@@ -101,7 +104,7 @@ export class AgentDO extends DurableObject<Env> {
     if (current === null || current > ms || current < Date.now() - 60_000) await this.ctx.storage.setAlarm(ms);
   }
 
-  /** Approve, revert and a manual review wait for the session to end, so one session is judged by one text. */
+  /** Approve, revert and a manual review are refused during the session, so one session is judged by one text. */
   private inSession(nowMs: number, opts: { preOpen?: boolean } = {}): boolean {
     const phase = this.rt.calendar.sessionPhase(nowMs);
     return phase === "OPEN" || (opts.preOpen === true && phase === "PRE_OPEN");
@@ -168,15 +171,19 @@ export class AgentDO extends DurableObject<Env> {
     return { ok: true, message: `review of ${d} queued (on the session's own day it waits for 16:20 IST)` };
   }
 
-  /** Approve or reject the pending candidate guidance (approval only outside the session). */
+  /**
+   * Approve or reject the pending candidate guidance. Approval is refused here during the session; outside it the
+   * brain decides (it also refuses from the close until that day's review and replay finish), and its answer comes
+   * back unchanged.
+   */
   async decideCandidate(id: string, decision: "approve" | "reject", actor: string): Promise<{ ok: boolean; message: string }> {
-    if (decision === "approve" && this.inSession(Date.now())) return { ok: false, message: "approve after 15:30 IST, so one session is judged by one text" };
+    if (decision === "approve" && this.inSession(Date.now())) return { ok: false, message: `approve ${OUTSIDE_THE_JUDGED_DAY}, so one session is judged by one text` };
     return this.brain.decideCandidate(String(id), decision, String(actor));
   }
 
-  /** /ops/agent-revert: the built-in guidance becomes active again (only outside the session). */
+  /** /ops/agent-revert: the built-in guidance becomes active again (the same window as approve). */
   async revertInstruction(actor: string): Promise<{ ok: boolean; message: string }> {
-    if (this.inSession(Date.now())) return { ok: false, message: "revert after 15:30 IST, so one session is judged by one text" };
+    if (this.inSession(Date.now())) return { ok: false, message: `revert ${OUTSIDE_THE_JUDGED_DAY}, so one session is judged by one text` };
     return this.brain.revertToBuiltin(String(actor));
   }
 

@@ -35,8 +35,11 @@ export interface AgentSql {
   exec<T extends Record<string, AgentSqlValue>>(query: string, ...bindings: AgentSqlValue[]): { toArray(): T[] };
 }
 
-/** Schema version, recorded in meta under SCHEMA_KEY (a key the brain's own meta never uses). */
-export const AGENT_SQL_VERSION = 1;
+/**
+ * Schema version, recorded in meta under SCHEMA_KEY (a key the brain's own meta never uses).
+ * 2: decisions.paid and decisions.code_made, so the calibration reads never parse a decision's body.
+ */
+export const AGENT_SQL_VERSION = 2;
 const SCHEMA_KEY = "sql:schema";
 
 const DDL = [
@@ -49,7 +52,8 @@ const DDL = [
   "CREATE INDEX IF NOT EXISTS batches_date ON batches(date)",
   `CREATE TABLE IF NOT EXISTS decisions (id TEXT PRIMARY KEY, date TEXT NOT NULL, bar_ms INTEGER NOT NULL, idx TEXT NOT NULL,
     finalist_id TEXT NOT NULL, kind TEXT NOT NULL, source TEXT NOT NULL, version TEXT NOT NULL, effective INTEGER NOT NULL,
-    direction TEXT NOT NULL, confidence REAL NOT NULL, outcome_status TEXT, y INTEGER, body TEXT NOT NULL)`,
+    direction TEXT NOT NULL, confidence REAL NOT NULL, outcome_status TEXT, y INTEGER, paid INTEGER,
+    code_made INTEGER NOT NULL DEFAULT 0, body TEXT NOT NULL)`,
   "CREATE INDEX IF NOT EXISTS decisions_date ON decisions(date, bar_ms)",
   "CREATE INDEX IF NOT EXISTS decisions_bar ON decisions(bar_ms)",
   "CREATE INDEX IF NOT EXISTS decisions_graded ON decisions(outcome_status, date)",
@@ -68,18 +72,55 @@ const DDL = [
   "CREATE INDEX IF NOT EXISTS jobs_due ON jobs(status, due_ms)",
 ];
 
-/** Creates the tables (idempotent) and records the schema version. Run once in the AgentDO's constructor. */
+/** The decisions columns schema 2 added: each is added to a version 1 table only when PRAGMA table_info lacks it. */
+const DECISION_COLUMNS_V2: readonly (readonly [name: string, definition: string])[] = [
+  ["paid", "paid INTEGER"],
+  ["code_made", "code_made INTEGER NOT NULL DEFAULT 0"],
+];
+
+/** Creates the tables (idempotent), brings an older schema up to date and records the version. Run once in the AgentDO's constructor. */
 export function migrateAgentSql(sql: AgentSql): void {
   for (const statement of DDL) sql.exec(statement);
   const row = sql.exec<{ v: string }>("SELECT v FROM meta WHERE k = ?", SCHEMA_KEY).toArray()[0];
   const version = row ? Number(JSON.parse(row.v)) : 0;
   if (version > AGENT_SQL_VERSION) throw new Error(`agent store schema ${version} is newer than this code (${AGENT_SQL_VERSION})`);
-  if (version < AGENT_SQL_VERSION) sql.exec("INSERT INTO meta (k, v) VALUES (?, ?) ON CONFLICT(k) DO UPDATE SET v = excluded.v", SCHEMA_KEY, JSON.stringify(AGENT_SQL_VERSION));
+  if (version < AGENT_SQL_VERSION) {
+    if (version < 2) addDecisionColumnsV2(sql);
+    sql.exec("INSERT INTO meta (k, v) VALUES (?, ?) ON CONFLICT(k) DO UPDATE SET v = excluded.v", SCHEMA_KEY, JSON.stringify(AGENT_SQL_VERSION));
+  }
+}
+
+/** Schema 2: the paid and code_made columns, filled from each stored decision's body. */
+function addDecisionColumnsV2(sql: AgentSql): void {
+  const have = new Set(sql.exec<{ name: string }>("PRAGMA table_info(decisions)").toArray().map((c) => String(c.name)));
+  for (const [name, definition] of DECISION_COLUMNS_V2) if (!have.has(name)) sql.exec(`ALTER TABLE decisions ADD COLUMN ${definition}`);
+  sql.exec("UPDATE decisions SET paid = json_extract(body, '$.outcome.paid'), code_made = CASE WHEN json_extract(body, '$.codeMade') = 1 THEN 1 ELSE 0 END");
 }
 
 const json = (v: unknown): string => JSON.stringify(v);
 const parse = <T>(text: string): T => JSON.parse(text) as T;
 const bodies = <T>(rows: { body: string }[]): T[] => rows.map((r) => parse<T>(r.body));
+
+/** True when code, not a model, set the decision's direction and confidence (a disagreement's NEUTRAL 0.5): never scored. */
+const codeMade = (d: DecisionRecord): boolean => "codeMade" in d && d.codeMade === true;
+/** An outcome's paid flag as a column: 1, 0, or null when there is no outcome or it has no flag. */
+const paidColumn = (d: DecisionRecord): number | null => (d.outcome?.paid === true ? 1 : d.outcome?.paid === false ? 0 : null);
+
+/** The columns the calibration reads select: every field of a graded row, none of the body. */
+type GradedRow = {
+  id: string;
+  date: string;
+  bar_ms: number;
+  idx: string;
+  kind: string;
+  source: string;
+  version: string;
+  effective: number;
+  direction: string;
+  confidence: number;
+  y: number;
+  paid: number | null;
+};
 
 /** Tables whose rows carry a trading date and are pruned after the retention period. */
 const PRUNED_TABLES = ["bars", "batches", "decisions", "calls", "escalations", "risk"] as const;
@@ -174,12 +215,12 @@ export class SqlAgentStore implements AgentStore {
 
   private writeDecision(d: DecisionRecord): void {
     this.run(
-      `INSERT INTO decisions (id, date, bar_ms, idx, finalist_id, kind, source, version, effective, direction, confidence, outcome_status, y, body)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `INSERT INTO decisions (id, date, bar_ms, idx, finalist_id, kind, source, version, effective, direction, confidence, outcome_status, y, paid, code_made, body)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
        ON CONFLICT(id) DO UPDATE SET date = excluded.date, bar_ms = excluded.bar_ms, idx = excluded.idx, finalist_id = excluded.finalist_id,
          kind = excluded.kind, source = excluded.source, version = excluded.version, effective = excluded.effective,
          direction = excluded.direction, confidence = excluded.confidence, outcome_status = excluded.outcome_status, y = excluded.y,
-         body = excluded.body`,
+         paid = excluded.paid, code_made = excluded.code_made, body = excluded.body`,
       d.id,
       d.date,
       d.barCloseMs,
@@ -193,6 +234,8 @@ export class SqlAgentStore implements AgentStore {
       d.directionConfidence,
       d.outcome?.status ?? null,
       d.outcome?.y ?? null,
+      paidColumn(d),
+      codeMade(d) ? 1 : 0,
       json(d),
     );
   }
@@ -225,50 +268,53 @@ export class SqlAgentStore implements AgentStore {
     }
   }
 
+  /**
+   * Graded directional decisions, read from the columns only (no body is parsed, so a calibration read over the whole
+   * retention window stays small). A code-made row is never scored.
+   */
   async graded(fromDate: string): Promise<GradedDecision[]> {
-    const rows = bodies<DecisionRecord>(this.rows("SELECT body FROM decisions WHERE outcome_status IN ('HIT', 'MISS') AND date >= ? ORDER BY date, bar_ms, rowid", fromDate));
-    const out: GradedDecision[] = [];
-    for (const d of rows) {
-      const o = d.outcome;
-      if (!o || (o.y !== 0 && o.y !== 1) || d.direction === "NEUTRAL") continue;
-      out.push({
-        id: d.id,
-        date: d.date,
-        barCloseMs: d.barCloseMs,
-        index: d.index,
-        finalistKind: d.finalistKind,
-        source: d.source,
-        instructionVersion: d.instructionVersion,
-        effective: d.effective,
-        direction: d.direction,
-        directionConfidence: d.directionConfidence,
-        y: o.y,
-        paid: o.paid === true,
-      });
-    }
-    return out;
+    const rows = this.rows<GradedRow>(
+      `SELECT id, date, bar_ms, idx, kind, source, version, effective, direction, confidence, y, paid FROM decisions
+       WHERE outcome_status IN ('HIT', 'MISS') AND y IN (0, 1) AND direction <> 'NEUTRAL' AND code_made = 0 AND date >= ?
+       ORDER BY date, bar_ms, rowid`,
+      fromDate,
+    );
+    return rows.map((r) => ({
+      id: r.id,
+      date: r.date,
+      barCloseMs: Number(r.bar_ms),
+      index: r.idx as IndexId,
+      finalistKind: r.kind as GradedDecision["finalistKind"],
+      source: r.source as GradedDecision["source"],
+      instructionVersion: r.version,
+      effective: Number(r.effective) === 1,
+      direction: r.direction as GradedDecision["direction"],
+      directionConfidence: Number(r.confidence),
+      y: Number(r.y) === 1 ? 1 : 0,
+      paid: Number(r.paid) === 1,
+    }));
   }
 
+  /** Graded NEUTRAL decisions, from the columns only; a code-made row is never scored. */
   async gradedNeutral(fromDate: string): Promise<GradedNeutral[]> {
-    const rows = bodies<DecisionRecord>(this.rows("SELECT body FROM decisions WHERE outcome_status = 'NEUTRAL' AND y IS NOT NULL AND date >= ? ORDER BY date, bar_ms, rowid", fromDate));
-    const out: GradedNeutral[] = [];
-    for (const d of rows) {
-      const y = d.outcome?.y;
-      if (y !== 0 && y !== 1) continue;
-      out.push({
-        id: d.id,
-        date: d.date,
-        barCloseMs: d.barCloseMs,
-        index: d.index,
-        finalistKind: d.finalistKind,
-        source: d.source,
-        instructionVersion: d.instructionVersion,
-        effective: d.effective,
-        directionConfidence: d.directionConfidence,
-        y,
-      });
-    }
-    return out;
+    const rows = this.rows<Omit<GradedRow, "direction" | "paid">>(
+      `SELECT id, date, bar_ms, idx, kind, source, version, effective, confidence, y FROM decisions
+       WHERE outcome_status = 'NEUTRAL' AND y IN (0, 1) AND code_made = 0 AND date >= ?
+       ORDER BY date, bar_ms, rowid`,
+      fromDate,
+    );
+    return rows.map((r) => ({
+      id: r.id,
+      date: r.date,
+      barCloseMs: Number(r.bar_ms),
+      index: r.idx as IndexId,
+      finalistKind: r.kind as GradedNeutral["finalistKind"],
+      source: r.source as GradedNeutral["source"],
+      instructionVersion: r.version,
+      effective: Number(r.effective) === 1,
+      directionConfidence: Number(r.confidence),
+      y: Number(r.y) === 1 ? 1 : 0,
+    }));
   }
 
   // -------------------------------------------------------------------------
@@ -393,6 +439,11 @@ export class SqlAgentStore implements AgentStore {
     for (const other of bodies<InstructionRecord>(this.rows("SELECT body FROM instructions WHERE active = 1 AND version <> ?", version))) {
       this.run("UPDATE instructions SET active = 0, body = ? WHERE version = ?", json({ ...other, active: false }), other.version);
     }
+  }
+
+  /** The stored text of one guidance version, active or not; null when it was never stored. */
+  async instruction(version: string): Promise<InstructionRecord | null> {
+    return bodies<InstructionRecord>(this.rows("SELECT body FROM instructions WHERE version = ?", version))[0] ?? null;
   }
 
   async activeInstruction(): Promise<InstructionRecord | null> {
